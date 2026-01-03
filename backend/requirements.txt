@@ -1,0 +1,4 @@
+librosa>=0.10.1
+essentia>=2.1b6.dev1110
+numpy>=1.24.0
+soundfile>=0.12.1

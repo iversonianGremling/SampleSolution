@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gray-900 text-gray-100;
+}
+
+.waveform-container {
+  @apply bg-gray-800 rounded-lg p-4;
+}
+
+.tag-chip {
+  @apply inline-flex items-center px-2 py-1 rounded-full text-xs font-medium;
+}
