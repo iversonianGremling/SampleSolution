@@ -15,44 +15,19 @@ A simple tool for downloading songs and cutting samples easily using youtube-dlp
 - Paste YouTube URLs to download audio
 - Search YouTube directly in the app
 - Import playlists (with Google OAuth)
-- Automatic high-quality audio extraction
 
 ### Sample Creation & Editing
 - Visual waveform editor
 - Drag to select regions and create slices
-- Preview before saving
 - Zoom and navigate with minimap
 - Download individual slices as MP3
 
 ### AI Auto-Tagging (Locally deployed)
 
 **Audio Analysis** - Runs automatically when you create a slice:
-- Detects if it's a one-shot or loop
-- Finds the BPM/tempo
-- Analyzes spectral features
-- Tries to identify instruments
+- Analyzes several features of the sample (like if it's a one-shot or a loop)
 - Uses Essentia + Librosa Python libraries
-
-**Metadata Tagging** - Optional, uses Ollama LLM:
-- Reads YouTube video titles/descriptions
-- Extracts genre, mood, era tags
-- Not as accurate but can be useful
-
-### Tag Organization
-- Auto-generated tags from AI analysis
-- Color-coded tag system
-- Custom tags you can create manually
-- Tags work on both full tracks and individual slices
-
----
-
-## Tech Stack
-
-- **Frontend**: React + TypeScript, Vite, Tailwind CSS, WaveSurfer.js
-- **Backend**: Node.js + Express, TypeScript, SQLite (Drizzle ORM)
-- **AI/Audio**: TensorFlow.js, Python (Essentia + Librosa), Ollama (optional)
-- **Tools**: yt-dlp, FFmpeg, YouTube Data API v3
-- **Deployment**: Docker Compose
+- Metadata extraction + Ollama analysis
 
 ---
 
@@ -171,6 +146,16 @@ See [SETUP.md](SETUP.md) for more help.
 - You will not use this to infringe on anyone's copyright
 
 **When in doubt, don't download it.** Get proper licenses or use royalty-free content.
+
+---
+
+## Tech Stack
+
+- **Frontend**: React + TypeScript, Vite, Tailwind CSS, WaveSurfer.js
+- **Backend**: Node.js + Express, TypeScript, SQLite (Drizzle ORM)
+- **AI/Audio**: TensorFlow.js, Python (Essentia + Librosa), Ollama (optional)
+- **Tools**: yt-dlp, FFmpeg, YouTube Data API v3
+- **Deployment**: Docker Compose
 
 ---
 
