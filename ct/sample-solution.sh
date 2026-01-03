@@ -44,6 +44,17 @@ description
 msg_ok "Completed Successfully!\n"
 
 msg_info "Setting Up Container OS"
+# Remove enterprise Proxmox repositories if they exist (not needed for Debian containers)
+if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then
+    rm -f /etc/apt/sources.list.d/pve-enterprise.list
+fi
+if [ -f /etc/apt/sources.list.d/ceph.list ]; then
+    rm -f /etc/apt/sources.list.d/ceph.list
+fi
+# Disable enterprise repos in sources.list if present
+if [ -f /etc/apt/sources.list ]; then
+    sed -i '/enterprise.proxmox.com/d' /etc/apt/sources.list
+fi
 $STD apt-get update
 $STD apt-get -y upgrade
 msg_ok "Set Up Container OS"
