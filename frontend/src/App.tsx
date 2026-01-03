@@ -6,6 +6,7 @@ import { YouTubeSearch } from './components/YouTubeSearch'
 import { PlaylistImport } from './components/PlaylistImport'
 import { LinkImport } from './components/LinkImport'
 import { TagManager } from './components/TagManager'
+import { SetupInstructions } from './components/SetupInstructions'
 import { useAuthStatus } from './hooks/useTracks'
 import { getGoogleAuthUrl, logout } from './api/client'
 import type { Track } from './types'
@@ -36,6 +37,9 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-900">
+      {/* Setup Instructions Overlay */}
+      <SetupInstructions />
+
       {/* Header */}
       <header className="bg-gray-800 border-b border-gray-700">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">

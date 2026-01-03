@@ -55,5 +55,22 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
     res.json({ status: 'ok' })
   })
 
+  // Credentials check
+  app.get('/api/credentials/status', (req, res) => {
+    const hasYoutubeApiKey = !!(process.env.YOUTUBE_API_KEY && process.env.YOUTUBE_API_KEY !== 'your_youtube_api_key_here')
+    const hasGoogleClientId = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_ID !== 'your_client_id_here.apps.googleusercontent.com' && process.env.GOOGLE_CLIENT_ID !== 'your-client-id.apps.googleusercontent.com')
+    const hasGoogleClientSecret = !!(process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_CLIENT_SECRET !== 'GOCSPX-your_client_secret_here' && process.env.GOOGLE_CLIENT_SECRET !== 'your-client-secret')
+    const hasSessionSecret = !!(process.env.SESSION_SECRET && process.env.SESSION_SECRET !== 'your_random_session_secret_here' && process.env.SESSION_SECRET !== 'CHANGE-THIS-TO-A-LONG-RANDOM-STRING')
+
+    res.json({
+      configured: hasYoutubeApiKey && hasGoogleClientId && hasGoogleClientSecret && hasSessionSecret,
+      details: {
+        youtubeApiKey: hasYoutubeApiKey,
+        googleOAuth: hasGoogleClientId && hasGoogleClientSecret,
+        sessionSecret: hasSessionSecret,
+      }
+    })
+  })
+
   return app
 }
