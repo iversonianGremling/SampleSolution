@@ -1,8 +1,11 @@
 # Sample Solution
 
-A side project for extracting, organizing, and auto-tagging audio samples from YouTube videos using AI.
+A simple tool for downloading samples easily from youtube using youtube-dlp. It uses local AI to come up with tags.
 
-> ⚠️ **Legal Disclaimer**: This tool downloads audio from YouTube videos. You are responsible for ensuring you have the right to use any downloaded content. Most YouTube content is copyrighted and downloading/using it without permission may violate YouTube's Terms of Service and copyright laws. **Use at your own risk and only with content you have permission to use.**
+<img width="1291" height="880" alt="image" src="https://github.com/user-attachments/assets/d22647c8-f048-4b95-afcc-c72b5ddec871" />
+
+
+> ⚠️ **Legal Disclaimer**: This tool downloads audio from YouTube videos. You are responsible for ensuring you have the right to use any downloaded content. **Use at your own risk and only with content you have permission to use.**
 
 ---
 
@@ -21,7 +24,7 @@ A side project for extracting, organizing, and auto-tagging audio samples from Y
 - Zoom and navigate with minimap
 - Download individual slices as MP3
 
-### AI Auto-Tagging (The Cool Part)
+### AI Auto-Tagging (Locally deployed)
 
 **Audio Analysis** - Runs automatically when you create a slice:
 - Detects if it's a one-shot or loop
@@ -62,10 +65,11 @@ A side project for extracting, organizing, and auto-tagging audio samples from Y
 ### Getting Started
 
 1. **Configure environment variables**
+   [SETUP.md](SETUP.md)
    ```bash
    cd backend
    # Edit .env with your Google API credentials
-   # See SETUP.md for how to get these
+   # See SETUP.md for how to get these and extra details
    ```
 
 2. **Start everything**
@@ -77,7 +81,7 @@ A side project for extracting, organizing, and auto-tagging audio samples from Y
    - Frontend: http://localhost:3000
    - Backend: http://localhost:4000
 
-4. **(Optional) Setup Ollama for metadata tagging**
+4. **(Optional) Setup Ollama for metadata tagging** (the other AI models should still work on their own)
    ```bash
    docker exec -it sample_solution-ollama-1 ollama pull llama3.2:3b
    ```
@@ -101,28 +105,14 @@ A side project for extracting, organizing, and auto-tagging audio samples from Y
 5. Download the slice as MP3
 
 ### Tags
-- AI tags are created automatically when you make slices
-- You can also create custom tags in the Tags tab
-- Color-code them however you want
+- They technically work but it's still a work in progress
 
 ---
 
-## Project Structure
-
-```
-sample_solution/
-├── frontend/          # React app
-├── backend/           # Express API
-│   ├── src/
-│   │   ├── routes/    # API endpoints
-│   │   ├── services/  # Audio analysis, YouTube downloads, etc.
-│   │   └── db/        # SQLite database
-│   └── data/          # Downloaded audio files
-├── docker-compose.yml
-└── SETUP.md
-```
 
 **How it works**: YouTube → yt-dlp downloads audio → FFmpeg processes it → You create slices → Python analyzes audio → AI generates tags → Saved to database
+OR
+YouTube → yt-dlp downloads audio → FFmpeg processes it → You create slices → Download → Profit
 
 ---
 
@@ -166,37 +156,7 @@ See [SETUP.md](SETUP.md) for more help.
 
 ---
 
-## Important Legal Stuff
-
-### Copyright & Terms of Service
-
-**You need to understand this before using this tool:**
-
-1. **YouTube's Terms of Service**: Downloading content from YouTube likely violates their [Terms of Service](https://www.youtube.com/t/terms) unless you have explicit permission.
-
-2. **Copyright Law**: Most YouTube videos contain copyrighted material. Downloading and using copyrighted audio without permission is illegal in most countries.
-
-3. **When It's (Probably) Okay**:
-   - Your own videos/audio
-   - Content with explicit permission from the creator
-   - Content under Creative Commons licenses that allow it
-   - Public domain content
-
-4. **When It's NOT Okay**:
-   - Commercial music from record labels
-   - Most popular songs/beats/instrumentals
-   - Any content you don't have rights to
-   - Using samples in commercial productions without clearing them
-
-### This Tool's Purpose
-
-This is a **personal/educational project** to learn about:
-- Audio processing
-- AI/ML audio analysis
-- Full-stack development
-- Docker deployment
-
-**It is not intended for:**
+**This tool is not intended for:**
 - Commercial sample production
 - Distributing copyrighted material
 - Violating YouTube's TOS
@@ -223,5 +183,3 @@ Built with:
 - **WaveSurfer.js** - Waveform visualization
 - **Ollama** - Local LLM
 - **TensorFlow.js** - ML models
-
-This is a side project for learning and experimentation.
