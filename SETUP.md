@@ -63,18 +63,40 @@ FRONTEND_URL=http://localhost:3000
 SESSION_SECRET=generate-a-random-string-here
 ```
 
-## Ollama Setup
+## AI Classification Setup
 
-The Ollama container will start automatically with docker-compose. You need to pull the model once:
+The app uses two different AI approaches for categorization:
+
+### 1. Audio Analysis (Essentia + Librosa) - For Slices/Samples
+
+**Automatic audio classification** using Python-based audio feature extraction:
+
+- **What**: Analyzes actual audio content (spectral features, tempo, rhythm)
+- **When**: Runs automatically when slices are created
+- **Output**: Tags like `one-shot`, `loop`, BPM detection, instrument classification
+- **Dependencies**: Python libraries (Essentia, Librosa) - installed via Docker
+
+**No setup required** - runs automatically in the backend container.
+
+### 2. Ollama (LLM) - For Full Tracks (Optional)
+
+**Metadata-based tagging** using Ollama LLM:
+
+- **What**: Analyzes YouTube video title and description
+- **When**: Manual trigger via UI (sparkle icon on tracks)
+- **Output**: Genre, mood, era tags based on video metadata
+- **Dependencies**: Ollama container with llama3.2:3b model
+
+**Setup** (only if you want Ollama for track metadata tagging):
 
 ```bash
 # After starting the containers
 docker exec -it sample_solution-ollama-1 ollama pull llama3.2:3b
 ```
 
-This downloads the llama3.2:3b model (~2GB) which will be used for AI tag extraction.
+This downloads the llama3.2:3b model (~2GB) for metadata-based tag extraction.
 
-### Alternative Models
+#### Alternative Ollama Models
 
 If you want to use a different model, update the `OLLAMA_MODEL` environment variable:
 
@@ -82,6 +104,17 @@ If you want to use a different model, update the `OLLAMA_MODEL` environment vari
 - `llama3.2:3b` - Recommended balance (~2GB)
 - `mistral:7b` - Larger, more accurate (~4GB)
 - `phi3:mini` - Microsoft's efficient model (~2GB)
+
+### Comparison: Audio Analysis vs Ollama
+
+| Feature | Audio Analysis (Slices) | Ollama (Tracks) |
+|---------|-------------------------|-----------------|
+| **Input** | Audio waveform | Video title/description |
+| **Accuracy** | High (analyzes sound) | Medium (metadata only) |
+| **Trigger** | Automatic | Manual (UI button) |
+| **Use Case** | Sample classification | Song categorization |
+| **Speed** | ~1-3 seconds | ~2-5 seconds |
+| **Setup** | Pre-installed | Requires model download |
 
 ## Production Deployment
 
@@ -116,3 +149,13 @@ For production on Proxmox:
 ### Container can't connect to Ollama
 - Ensure all containers are on the same network
 - Check with: `docker network inspect sample_solution_app-network`
+
+### Audio analysis fails for slices
+- Ensure Python dependencies (Essentia, Librosa) are installed in the backend container
+- Check backend logs: `docker logs sample_solution-backend-1`
+- The audio analysis runs automatically when creating slices
+
+### TensorFlow warnings on startup
+- Messages like "oneDNN custom operations" are informational only
+- They indicate CPU optimizations are enabled (good for performance)
+- Safe to ignore these warnings
