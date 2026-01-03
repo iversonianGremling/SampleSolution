@@ -43,7 +43,7 @@ A simple tool for downloading songs and cutting samples easily using youtube-dlp
    [SETUP.md](SETUP.md)
    ```bash
    cd backend
-   # Edit .env with your Google API credentials
+   # Edit .env.example with your Google API credentials
    # See SETUP.md for how to get these and extra details
    ```
 
