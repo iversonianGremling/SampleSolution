@@ -161,13 +161,18 @@ echo -e "${GREEN}✓${NC} Container started"
 CT_IP=$(pct exec $CTID -- hostname -I | awk '{print $1}')
 echo "  Container IP: $CT_IP"
 
-# Step 5: Download installation script into container
-echo -e "${BLUE}[5/6]${NC} Downloading installation script..."
+# Step 5: Install curl in container
+echo -e "${BLUE}[5/7]${NC} Installing curl in container..."
+pct exec $CTID -- bash -c "export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y -qq curl"
+echo -e "${GREEN}✓${NC} Curl installed"
+
+# Step 6: Download installation script into container
+echo -e "${BLUE}[6/7]${NC} Downloading installation script..."
 pct exec $CTID -- bash -c "curl -fsSL $REPO_URL/lxc-install-auto.sh -o /tmp/lxc-install.sh && chmod +x /tmp/lxc-install.sh"
 echo -e "${GREEN}✓${NC} Installation script ready"
 
-# Step 6: Provide instructions
-echo -e "${BLUE}[6/6]${NC} Setup complete!"
+# Step 7: Provide instructions
+echo -e "${BLUE}[7/7]${NC} Setup complete!"
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}Container Created Successfully!${NC}"
