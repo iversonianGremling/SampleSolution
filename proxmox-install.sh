@@ -163,71 +163,46 @@ echo "  Container IP: $CT_IP"
 
 # Step 5: Download installation script into container
 echo -e "${BLUE}[5/6]${NC} Downloading installation script..."
-pct exec $CTID -- bash -c "curl -fsSL $REPO_URL/lxc-install.sh -o /tmp/lxc-install.sh && chmod +x /tmp/lxc-install.sh"
+pct exec $CTID -- bash -c "curl -fsSL $REPO_URL/lxc-install-auto.sh -o /tmp/lxc-install.sh && chmod +x /tmp/lxc-install.sh"
 echo -e "${GREEN}✓${NC} Installation script ready"
 
-# Step 6: Run installation
-echo -e "${BLUE}[6/6]${NC} Running installation inside container..."
+# Step 6: Provide instructions
+echo -e "${BLUE}[6/6]${NC} Setup complete!"
 echo ""
-echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW}Container Installation Starting${NC}"
-echo -e "${YELLOW}========================================${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}Container Created Successfully!${NC}"
+echo -e "${GREEN}========================================${NC}"
 echo ""
-
-# Ask if they want to run the installation now or later
-read -p "Run the installation script now? (y/n): " -n 1 -r
-echo
-
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo ""
-    echo -e "${BLUE}Starting installation in container...${NC}"
-    echo -e "${YELLOW}You'll need to interact with the installation script.${NC}"
-    echo ""
-    sleep 2
-
-    # Run the installation script interactively
-    pct enter $CTID -- /tmp/lxc-install.sh
-
-    INSTALL_STATUS=$?
-
-    if [ $INSTALL_STATUS -eq 0 ]; then
-        echo ""
-        echo -e "${GREEN}========================================${NC}"
-        echo -e "${GREEN}Installation Complete!${NC}"
-        echo -e "${GREEN}========================================${NC}"
-        echo ""
-        echo "  Container ID:  $CTID"
-        echo "  IP Address:    $CT_IP"
-        echo ""
-        echo -e "${GREEN}Access your application:${NC}"
-        echo "  Frontend: http://$CT_IP:3000"
-        echo "  Backend:  http://$CT_IP:4000"
-        echo ""
-    else
-        echo ""
-        echo -e "${YELLOW}Installation was interrupted or incomplete.${NC}"
-        echo "You can continue the installation by running:"
-        echo "  pct enter $CTID"
-        echo "  /tmp/lxc-install.sh"
-        echo ""
-    fi
-else
-    echo ""
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}Container Created Successfully!${NC}"
-    echo -e "${GREEN}========================================${NC}"
-    echo ""
-    echo "  Container ID:  $CTID"
-    echo "  IP Address:    $CT_IP"
-    echo ""
-    echo -e "${YELLOW}To complete the installation:${NC}"
-    echo "  1. Enter the container:"
-    echo "     ${GREEN}pct enter $CTID${NC}"
-    echo ""
-    echo "  2. Run the installation script:"
-    echo "     ${GREEN}/tmp/lxc-install.sh${NC}"
-    echo ""
-fi
+echo "  Container ID:  $CTID"
+echo "  IP Address:    $CT_IP"
+echo ""
+echo -e "${YELLOW}To complete the installation:${NC}"
+echo ""
+echo "1. Enter the container shell:"
+echo "   ${GREEN}pct enter $CTID${NC}"
+echo ""
+echo "2. Inside the container, run the installation script:"
+echo "   ${GREEN}/tmp/lxc-install.sh${NC}"
+echo ""
+echo -e "${YELLOW}Or run it directly from Proxmox host:${NC}"
+echo "   ${GREEN}pct exec $CTID -- /tmp/lxc-install.sh${NC}"
+echo ""
+echo -e "${BLUE}Note: The installation script will:${NC}"
+echo "  - Install Docker and dependencies"
+echo "  - Download and setup the application"
+echo "  - Configure environment variables"
+echo "  - Build and start containers"
+echo ""
+echo -e "${YELLOW}After installation, access your app at:${NC}"
+echo "  Frontend: http://$CT_IP:3000"
+echo "  Backend:  http://$CT_IP:4000"
+echo ""
+echo -e "${BLUE}Troubleshooting:${NC}"
+echo "  - If you can't access the ports, check Proxmox firewall:"
+echo "    pve-firewall status"
+echo "  - View container logs:"
+echo "    pct exec $CTID -- docker compose -f /opt/sample-solution/docker-compose.prod.yml logs -f"
+echo ""
 
 echo -e "${YELLOW}Management Commands:${NC}"
 echo "  Start:   pct start $CTID"
