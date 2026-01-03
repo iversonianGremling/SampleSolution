@@ -60,6 +60,11 @@ msg_ok "Installed Dependencies"
 
 msg_info "Installing Docker"
 $STD sh <(curl -sSL https://get.docker.com)
+$STD apt-get install -y docker-compose-plugin
+systemctl enable --now docker
+sleep 2
+docker --version
+docker compose version
 msg_ok "Installed Docker"
 
 msg_info "Cloning Repository"
@@ -95,6 +100,11 @@ msg_ok "Built Application"
 msg_info "Starting Services"
 $STD docker compose -f docker-compose.prod.yml up -d
 msg_ok "Started Services"
+
+msg_info "Verifying Docker Status"
+systemctl is-active --quiet docker && msg_ok "Docker daemon is running" || msg_error "Docker daemon is not running"
+docker ps --format "table {{.Names}}\t{{.Status}}" | grep -v "NAMES"
+msg_ok "Docker containers verified"
 
 msg_info "Pulling AI Model (Background)"
 docker compose -f docker-compose.prod.yml exec -T ollama ollama pull llama3.2:3b 2>/dev/null &
