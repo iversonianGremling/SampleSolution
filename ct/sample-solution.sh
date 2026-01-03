@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 # Copyright (c) 2025
+# Author: iversonianGremling
 # License: MIT
 # Source: https://github.com/iversonianGremling/SampleSolution
 
@@ -11,7 +12,7 @@ var_ram="4096"
 var_disk="20"
 var_os="debian"
 var_version="12"
-var_unprivileged="0"
+var_unprivileged="1"
 
 header_info "$APP"
 variables
@@ -19,54 +20,62 @@ color
 catch_errors
 
 function update_script() {
-  header_info
-  check_container_storage
-  check_container_resources
-
-  msg_info "Updating $APP"
-  cd /opt/sample-solution
-
-  # Pull latest changes
-  git fetch origin
-  git pull origin main
-
-  # Rebuild and restart
-  docker compose -f docker-compose.prod.yml pull
-  docker compose -f docker-compose.prod.yml up -d --build
-
-  msg_ok "Updated $APP"
-  exit
+    header_info
+    check_container_storage
+    check_container_resources
+    if [[ ! -d /opt/sample-solution ]]; then
+        msg_error "No ${APP} Installation Found!"
+        exit
+    fi
+    msg_info "Updating ${APP}"
+    cd /opt/sample-solution
+    git fetch origin
+    git pull origin main
+    docker compose -f docker-compose.prod.yml pull
+    docker compose -f docker-compose.prod.yml up -d --build
+    msg_ok "Updated ${APP}"
+    exit
 }
 
 start
 build_container
 description
 
-msg_ok "Container Created"
+msg_ok "Completed Successfully!\n"
+
+msg_info "Setting Up Container OS"
+$STD apt-get update
+$STD apt-get -y upgrade
+msg_ok "Set Up Container OS"
 
 msg_info "Installing Dependencies"
-$STD apt-get update
-$STD apt-get install -y curl ca-certificates gnupg git
-msg_ok "Dependencies Installed"
+$STD apt-get install -y \
+    curl \
+    sudo \
+    git \
+    make \
+    gnupg \
+    ca-certificates
+msg_ok "Installed Dependencies"
 
 msg_info "Installing Docker"
-$STD bash <(curl -fsSL https://get.docker.com)
-msg_ok "Docker Installed"
+$STD sh <(curl -sSL https://get.docker.com)
+msg_ok "Installed Docker"
 
 msg_info "Cloning Repository"
 cd /opt
 $STD git clone https://github.com/iversonianGremling/SampleSolution.git sample-solution
-msg_ok "Repository Cloned"
+msg_ok "Cloned Repository"
 
-msg_info "Setting up Environment"
+msg_info "Setting Up Environment"
 cd /opt/sample-solution
 CONTAINER_IP=$(hostname -I | awk '{print $1}')
 
 if [ -f .env.production.example ]; then
-  cp .env.production.example .env
-  sed -i "s/YOUR_VM_IP/$CONTAINER_IP/g" .env
+    cp .env.production.example .env
+    sed -i "s/YOUR_VM_IP/$CONTAINER_IP/g" .env
 else
-  cat > .env << EOF
+    cat > .env << EOF
 API_URL=http://$CONTAINER_IP:4000
 FRONTEND_URL=http://$CONTAINER_IP:3000
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
@@ -77,24 +86,31 @@ SESSION_SECRET=CHANGE-THIS-TO-A-LONG-RANDOM-STRING
 NODE_ENV=production
 EOF
 fi
-msg_ok "Environment Configured"
+msg_ok "Set Up Environment"
 
-msg_info "Building Application (this may take a few minutes)"
+msg_info "Building Application"
 $STD docker compose -f docker-compose.prod.yml build
-msg_ok "Application Built"
+msg_ok "Built Application"
 
 msg_info "Starting Services"
 $STD docker compose -f docker-compose.prod.yml up -d
-msg_ok "Services Started"
+msg_ok "Started Services"
 
-msg_info "Pulling AI Model"
-docker compose -f docker-compose.prod.yml exec -T ollama ollama pull llama3.2:3b 2>/dev/null || msg_warn "AI model pull failed - run manually later"
-msg_ok "Setup Complete"
+msg_info "Pulling AI Model (Background)"
+docker compose -f docker-compose.prod.yml exec -T ollama ollama pull llama3.2:3b 2>/dev/null &
+msg_ok "AI Model Pull Started"
+
+msg_info "Configuring Root Access"
+passwd -d root
+msg_ok "Configured Root Access"
 
 msg_ok "Completed Successfully!\n"
-echo -e "${CREATING}${GN}${APP} has been installed!${CL}"
-echo -e "${INFO}${YW} Access the application at:${CL}"
+echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
+echo -e "${INFO}${YW} Access it using the following URL:${CL}"
 echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}"
+echo -e ""
+echo -e "${INFO}${YW} Login via SSH:${CL}"
+echo -e "${TAB}${GATEWAY}${CL}ssh root@${IP} (no password required)"
 echo -e ""
 echo -e "${INFO}${YW} Configure credentials at:${CL}"
 echo -e "${TAB}${GATEWAY}${CL}/opt/sample-solution/.env"
