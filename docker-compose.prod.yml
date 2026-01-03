@@ -1,0 +1,57 @@
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=${API_URL:-http://localhost:4000}
+    depends_on:
+      - backend
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    ports:
+      - "4000:4000"
+    volumes:
+      - sample_data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - DATA_DIR=/app/data
+      - OLLAMA_HOST=http://ollama:11434
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - FRONTEND_URL=${FRONTEND_URL}
+    depends_on:
+      - ollama
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - app-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          memory: 4G
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  sample_data:
+  ollama_data:
