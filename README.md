@@ -86,7 +86,9 @@ A simple tool for downloading songs and cutting samples easily using youtube-dlp
 
 
 **How it works**: YouTube → yt-dlp downloads audio → FFmpeg processes it → You create slices → Python analyzes audio → AI generates tags → Saved to database
+
 OR
+
 YouTube → yt-dlp downloads audio → FFmpeg processes it → You create slices → Download → Profit
 
 ---
