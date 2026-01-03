@@ -1,6 +1,6 @@
 # Sample Solution
 
-A simple tool for downloading samples easily from youtube using youtube-dlp. It uses local AI to come up with tags.
+A simple tool for downloading songs and cutting samples easily using youtube-dlp and the youtube API. It uses local AI to come up with tags.
 
 <img width="1291" height="880" alt="image" src="https://github.com/user-attachments/assets/d22647c8-f048-4b95-afcc-c72b5ddec871" />
 
