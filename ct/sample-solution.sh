@@ -66,16 +66,16 @@ msg_ok "Dependencies Installed"
 msg_info "Installing Docker"
 $STD sh <(curl -sSL https://get.docker.com)
 $STD apt-get install -y docker-compose-plugin
-systemctl enable --now docker
+$STD systemctl enable --now docker
 msg_ok "Docker Installed"
 
 msg_info "Cloning Repository"
-cd /opt
-if [ -d "sample-solution" ]; then rm -rf sample-solution; fi
-$STD git clone https://github.com/iversonianGremling/SampleSolution.git sample-solution
+$STD bash -c "cd /opt && rm -rf sample-solution && git clone https://github.com/iversonianGremling/SampleSolution.git sample-solution"
 msg_ok "Repository Cloned"
 
 msg_info "Setting Up Environment"
+CONTAINER_IP=$($STD hostname -I | awk '{print $1}')
+$STD bash << 'ENVSCRIPT'
 cd /opt/sample-solution
 CONTAINER_IP=$(hostname -I | awk '{print $1}')
 
@@ -95,15 +95,16 @@ SESSION_SECRET=$SESSION_SECRET
 NODE_ENV=production
 EOF
 fi
+ENVSCRIPT
 msg_ok "Environment Configured"
 
 msg_info "Building & Starting Services (This takes a few minutes)"
-$STD docker compose -f docker-compose.prod.yml up -d --build
+$STD docker compose -f /opt/sample-solution/docker-compose.prod.yml up -d --build
 msg_ok "Services Started"
 
 msg_info "Pulling AI Model (Background)"
 sleep 5
-docker compose -f docker-compose.prod.yml exec -T ollama ollama pull llama3.2:3b >/dev/null 2>&1 &
+$STD docker compose -f /opt/sample-solution/docker-compose.prod.yml exec -T ollama ollama pull llama3.2:3b >/dev/null 2>&1 &
 msg_ok "AI Model Pulling"
 
 # --- New Health Check Block ---
@@ -114,13 +115,13 @@ SUCCESS=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
   # Check if port 3000 returns a valid HTTP status code
-  HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${IP}:3000 || echo "000")
-  
-  if [ "$HTTP_STATUS" == "200" ]; then
+  HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${IP}:3000 2>/dev/null || echo "000")
+
+  if [ "$HTTP_STATUS" == "200" ] || [ "$HTTP_STATUS" == "301" ] || [ "$HTTP_STATUS" == "302" ]; then
     SUCCESS=true
     break
   fi
-  
+
   RETRY_COUNT=$((RETRY_COUNT+1))
   sleep 5
 done
@@ -128,11 +129,11 @@ done
 if [ "$SUCCESS" = true ]; then
   msg_ok "Health Check Passed: Application is reachable at http://${IP}:3000"
 else
-  msg_warn "Health Check Timeout: The service might still be starting or check your firewall."
+  msg_warn "Health Check Timeout: The service might still be starting. Check with: docker compose -f /opt/sample-solution/docker-compose.prod.yml logs"
 fi
 
 msg_info "Finalizing"
-passwd -d root
+$STD passwd -d root
 msg_ok "Root Access Configured"
 
 msg_ok "Completed Successfully!\n"
