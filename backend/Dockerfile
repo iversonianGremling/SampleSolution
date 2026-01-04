@@ -4,14 +4,20 @@ FROM node:20-bookworm
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
+    python3-dev \
     ffmpeg \
     curl \
     build-essential \
     g++ \
     make \
+    pkg-config \
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \
+    libsndfile1-dev \
+    libfftw3-dev \
+    libsamplerate0-dev \
+    libyaml-dev \
     && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp \
     && apt-get clean \
