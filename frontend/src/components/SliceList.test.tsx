@@ -47,6 +47,7 @@ describe('SliceList', () => {
     render(
       <SliceList
         slices={[]}
+        trackId={1}
         onPlay={mockOnPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
@@ -62,6 +63,7 @@ describe('SliceList', () => {
     render(
       <SliceList
         slices={mockSlices}
+        trackId={1}
         onPlay={mockOnPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
@@ -76,6 +78,7 @@ describe('SliceList', () => {
     render(
       <SliceList
         slices={mockSlices}
+        trackId={1}
         onPlay={mockOnPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
@@ -89,6 +92,7 @@ describe('SliceList', () => {
     render(
       <SliceList
         slices={mockSlices}
+        trackId={1}
         onPlay={mockOnPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
@@ -105,6 +109,7 @@ describe('SliceList', () => {
     render(
       <SliceList
         slices={mockSlices}
+        trackId={1}
         onPlay={mockOnPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
@@ -119,6 +124,7 @@ describe('SliceList', () => {
     render(
       <SliceList
         slices={mockSlices}
+        trackId={1}
         onPlay={mockOnPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
@@ -136,6 +142,7 @@ describe('SliceList', () => {
     render(
       <SliceList
         slices={mockSlices}
+        trackId={1}
         onPlay={mockOnPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
@@ -152,6 +159,7 @@ describe('SliceList', () => {
     render(
       <SliceList
         slices={mockSlices}
+        trackId={1}
         onPlay={mockOnPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
@@ -167,6 +175,7 @@ describe('SliceList', () => {
     render(
       <SliceList
         slices={mockSlices}
+        trackId={1}
         onPlay={mockOnPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}

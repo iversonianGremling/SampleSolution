@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react'
+import { useRef } from 'react'
 
 interface WaveformMinimapProps {
   minimapRef: React.RefObject<HTMLDivElement>
@@ -18,25 +18,10 @@ export function WaveformMinimap({
   onSetViewport,
 }: WaveformMinimapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [inputStart, setInputStart] = useState(viewportStart.toFixed(2))
-  const [inputEnd, setInputEnd] = useState(viewportEnd.toFixed(2))
-
-  // Update inputs instantly when viewport changes
-  useEffect(() => {
-    setInputStart(viewportStart.toFixed(2))
-    setInputEnd(viewportEnd.toFixed(2))
-  }, [viewportStart, viewportEnd])
 
   // Calculate overlay position and width
   const overlayLeftPercent = (viewportStart / duration) * 100
   const overlayWidthPercent = ((viewportEnd - viewportStart) / duration) * 100
-
-  const handleApplyViewport = () => {
-    if (!onSetViewport) return
-    const start = parseFloat(inputStart) || 0
-    const end = parseFloat(inputEnd) || duration
-    onSetViewport(start, end)
-  }
 
   return (
     <div className="mb-2">
