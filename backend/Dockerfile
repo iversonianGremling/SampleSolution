@@ -27,7 +27,9 @@ WORKDIR /app
 
 # Install Python dependencies first (for better layer caching)
 COPY requirements.txt ./
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY package*.json ./
 # Install and build native modules from source inside container
