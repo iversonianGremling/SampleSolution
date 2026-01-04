@@ -10,6 +10,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@tensorflow/tfjs-node": "^4.11.0",
     "axios": "^1.6.5",
     "better-sqlite3": "^9.3.0",
     "cors": "^2.8.5",
