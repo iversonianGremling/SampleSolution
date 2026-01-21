@@ -12,9 +12,34 @@ interface WebGLScatterProps {
   height: number
 }
 
-const POINT_RADIUS = 6
-const POINT_RADIUS_HOVER = 10
+const POINT_RADIUS = 4
+const POINT_RADIUS_HOVER = 8
+const GLOW_RADIUS = 20
+const GLOW_RADIUS_HOVER = 32
 const PADDING = 40
+
+// Create a glowing star texture
+function createStarTexture(): PIXI.Texture {
+  const canvas = document.createElement('canvas')
+  canvas.width = 64
+  canvas.height = 64
+  const ctx = canvas.getContext('2d')!
+
+  // Draw radial gradient glow
+  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32)
+  gradient.addColorStop(0, 'rgba(255, 255, 255, 0.8)')
+  gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.4)')
+  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
+
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, 64, 64)
+
+  // Draw bright center point
+  ctx.fillStyle = 'rgba(255, 255, 255, 1)'
+  ctx.fillRect(30, 30, 4, 4)
+
+  return PIXI.Texture.from(canvas)
+}
 
 export function WebGLScatter({
   points,
@@ -27,8 +52,11 @@ export function WebGLScatter({
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<PIXI.Application | null>(null)
   const pointsContainerRef = useRef<PIXI.Container | null>(null)
+  const glowsContainerRef = useRef<PIXI.Container | null>(null)
   const [hoveredId, setHoveredId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const starTextureRef = useRef<PIXI.Texture | null>(null)
 
   // Transform coordinates from -1..1 to screen space
   const transformX = useCallback(
@@ -50,7 +78,7 @@ export function WebGLScatter({
       await app.init({
         width,
         height,
-        backgroundColor: 0x1f2937, // gray-800
+        backgroundColor: 0x0f1419, // Very dark navy/black
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
@@ -60,10 +88,18 @@ export function WebGLScatter({
         containerRef.current.appendChild(app.canvas as HTMLCanvasElement)
         appRef.current = app
 
-        // Create container for points
+        // Create container for glows (behind points)
+        const glowsContainer = new PIXI.Container()
+        app.stage.addChild(glowsContainer)
+        glowsContainerRef.current = glowsContainer
+
+        // Create container for points (on top)
         const pointsContainer = new PIXI.Container()
         app.stage.addChild(pointsContainer)
         pointsContainerRef.current = pointsContainer
+
+        // Create star texture once
+        starTextureRef.current = createStarTexture()
       }
     }
 
@@ -74,6 +110,11 @@ export function WebGLScatter({
         appRef.current.destroy(true, { children: true })
         appRef.current = null
         pointsContainerRef.current = null
+        glowsContainerRef.current = null
+      }
+      if (starTextureRef.current) {
+        starTextureRef.current.destroy()
+        starTextureRef.current = null
       }
     }
   }, []) // Only run once on mount
@@ -85,42 +126,74 @@ export function WebGLScatter({
     }
   }, [width, height])
 
-  // Render points
+  // Play audio on hover
+  const playAudio = useCallback((point: SamplePoint) => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+
+    const audio = new Audio(`/api/slices/${point.id}/download`)
+    audio.volume = 0.5
+    audio.play().catch(() => {
+      // Silently fail if audio can't play
+    })
+    audioRef.current = audio
+  }, [])
+
+  // Render points with glows
   useEffect(() => {
     const container = pointsContainerRef.current
-    if (!container) return
+    const glowsContainer = glowsContainerRef.current
+    if (!container || !glowsContainer || !starTextureRef.current) return
 
-    // Clear existing points
+    // Clear existing points and glows
     container.removeChildren()
+    glowsContainer.removeChildren()
 
     // Draw each point
     points.forEach((point) => {
-      const graphics = new PIXI.Graphics()
       const x = transformX(point.x)
       const y = transformY(point.y)
-      const color = getClusterColor(point.cluster)
+      const colorHex = getClusterColor(point.cluster)
+      const colorInt = parseInt(colorHex.slice(1), 16)
       const isHovered = hoveredId === point.id
       const isSelected = selectedIds.has(point.id)
+
+      // Draw glow layer (sprite with radial gradient)
+      const glowSprite = new PIXI.Sprite(starTextureRef.current!)
+      glowSprite.x = x - GLOW_RADIUS
+      glowSprite.y = y - GLOW_RADIUS
+      glowSprite.width = isHovered ? GLOW_RADIUS_HOVER * 2 : GLOW_RADIUS * 2
+      glowSprite.height = isHovered ? GLOW_RADIUS_HOVER * 2 : GLOW_RADIUS * 2
+      glowSprite.tint = colorInt
+      glowSprite.alpha = isHovered ? 0.6 : 0.3
+      glowsContainer.addChild(glowSprite)
+
+      // Draw bright center point
+      const graphics = new PIXI.Graphics()
       const radius = isHovered ? POINT_RADIUS_HOVER : POINT_RADIUS
 
-      // Draw outer ring if selected
+      // Outer ring if selected
       if (isSelected) {
-        graphics.circle(x, y, radius + 3)
-        graphics.fill({ color: 0xffffff, alpha: 0.8 })
+        graphics.circle(x, y, radius + 2)
+        graphics.fill({ color: 0xffffff, alpha: 1 })
       }
 
-      // Draw point
+      // Core bright point
       graphics.circle(x, y, radius)
-      graphics.fill({ color: parseInt(color.slice(1), 16), alpha: isHovered ? 1 : 0.8 })
+      graphics.fill({ color: colorInt, alpha: 1 })
 
       // Make interactive
       graphics.eventMode = 'static'
       graphics.cursor = 'pointer'
-      graphics.hitArea = new PIXI.Circle(x, y, POINT_RADIUS_HOVER)
+      graphics.hitArea = new PIXI.Circle(x, y, Math.max(POINT_RADIUS_HOVER, GLOW_RADIUS_HOVER / 2))
 
       graphics.on('pointerover', () => {
         setHoveredId(point.id)
         onPointHover(point)
+        // Play audio on hover
+        playAudio(point)
       })
 
       graphics.on('pointerout', () => {
@@ -144,12 +217,22 @@ export function WebGLScatter({
 
       container.addChild(graphics)
     })
-  }, [points, hoveredId, selectedIds, transformX, transformY, onPointHover, onPointClick])
+  }, [points, hoveredId, selectedIds, transformX, transformY, onPointHover, onPointClick, playAudio])
 
   // Notify parent of selection changes
   useEffect(() => {
     onSelectionChange?.(Array.from(selectedIds))
   }, [selectedIds, onSelectionChange])
+
+  // Cleanup audio on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+    }
+  }, [])
 
   return (
     <div
