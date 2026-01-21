@@ -12,6 +12,9 @@ export const tracks = sqliteTable('tracks', {
   status: text('status', { enum: ['pending', 'downloading', 'ready', 'error'] })
     .notNull()
     .default('pending'),
+  source: text('source', { enum: ['youtube', 'local'] })
+    .notNull()
+    .default('youtube'),
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -26,6 +29,7 @@ export const slices = sqliteTable('slices', {
   startTime: real('start_time').notNull(),
   endTime: real('end_time').notNull(),
   filePath: text('file_path'),
+  favorite: integer('favorite').notNull().default(0),
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -92,10 +96,33 @@ export const audioFeatures = sqliteTable('audio_features', {
   keyStrength: real('key_strength'),
   // Instrument classification
   instrumentPredictions: text('instrument_predictions'),
+  // Additional spectral features
+  attackTime: real('attack_time'),
+  spectralFlux: real('spectral_flux'),
+  spectralFlatness: real('spectral_flatness'),
+  kurtosis: real('kurtosis'),
   // Metadata
   analysisVersion: text('analysis_version').notNull().default('1.0'),
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
   analysisDurationMs: integer('analysis_duration_ms'),
+})
+
+export const collections = sqliteTable('collections', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  color: text('color').notNull().default('#6366f1'),
+  createdAt: text('created_at')
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+})
+
+export const collectionSlices = sqliteTable('collection_slices', {
+  collectionId: integer('collection_id')
+    .notNull()
+    .references(() => collections.id, { onDelete: 'cascade' }),
+  sliceId: integer('slice_id')
+    .notNull()
+    .references(() => slices.id, { onDelete: 'cascade' }),
 })

@@ -58,7 +58,7 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
         start: region.start,
         end: region.end,
       })
-      setSliceName(`Slice ${(slices?.length || 0) + 1}`)
+      setSliceName(`${track.title} - Slice ${(slices?.length || 0) + 1}`)
     },
     onRegionUpdated: (region: any) => {
       if (pendingRegion && region.id === pendingRegion.id) {

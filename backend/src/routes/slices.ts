@@ -86,6 +86,88 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
   }
 }
 
+// Get ALL slices (for Samples browser)
+router.get('/slices', async (_req, res) => {
+  try {
+    // Get all slices with their parent track info
+    const slices = await db
+      .select({
+        id: schema.slices.id,
+        trackId: schema.slices.trackId,
+        name: schema.slices.name,
+        startTime: schema.slices.startTime,
+        endTime: schema.slices.endTime,
+        filePath: schema.slices.filePath,
+        favorite: schema.slices.favorite,
+        createdAt: schema.slices.createdAt,
+        trackTitle: schema.tracks.title,
+        trackYoutubeId: schema.tracks.youtubeId,
+      })
+      .from(schema.slices)
+      .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .orderBy(schema.slices.createdAt)
+
+    // Get tags for all slices
+    const sliceIds = slices.map((s) => s.id)
+    const sliceTagsResult =
+      sliceIds.length > 0
+        ? await db
+            .select()
+            .from(schema.sliceTags)
+            .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
+            .where(inArray(schema.sliceTags.sliceId, sliceIds))
+        : []
+
+    const tagsBySlice = new Map<number, typeof schema.tags.$inferSelect[]>()
+    for (const row of sliceTagsResult) {
+      const sliceId = row.slice_tags.sliceId
+      if (!tagsBySlice.has(sliceId)) {
+        tagsBySlice.set(sliceId, [])
+      }
+      tagsBySlice.get(sliceId)!.push(row.tags)
+    }
+
+    // Get collection memberships for all slices
+    const collectionLinks =
+      sliceIds.length > 0
+        ? await db
+            .select()
+            .from(schema.collectionSlices)
+            .where(inArray(schema.collectionSlices.sliceId, sliceIds))
+        : []
+
+    const collectionsBySlice = new Map<number, number[]>()
+    for (const row of collectionLinks) {
+      if (!collectionsBySlice.has(row.sliceId)) {
+        collectionsBySlice.set(row.sliceId, [])
+      }
+      collectionsBySlice.get(row.sliceId)!.push(row.collectionId)
+    }
+
+    const result = slices.map((slice) => ({
+      id: slice.id,
+      trackId: slice.trackId,
+      name: slice.name,
+      startTime: slice.startTime,
+      endTime: slice.endTime,
+      filePath: slice.filePath,
+      favorite: slice.favorite === 1,
+      createdAt: slice.createdAt,
+      tags: tagsBySlice.get(slice.id) || [],
+      collectionIds: collectionsBySlice.get(slice.id) || [],
+      track: {
+        title: slice.trackTitle,
+        youtubeId: slice.trackYoutubeId,
+      },
+    }))
+
+    res.json(result)
+  } catch (error) {
+    console.error('Error fetching all slices:', error)
+    res.status(500).json({ error: 'Failed to fetch slices' })
+  }
+})
+
 // Get slices for a track
 router.get('/tracks/:trackId/slices', async (req, res) => {
   const trackId = parseInt(req.params.trackId)
@@ -322,6 +404,182 @@ router.get('/slices/:id/download', async (req, res) => {
   } catch (error) {
     console.error('Error downloading slice:', error)
     res.status(500).json({ error: 'Failed to download slice' })
+  }
+})
+
+// Batch generate AI tags for multiple slices
+router.post('/slices/batch-ai-tags', async (req, res) => {
+  const { sliceIds } = req.body as { sliceIds: number[] }
+
+  if (!sliceIds || !Array.isArray(sliceIds) || sliceIds.length === 0) {
+    return res.status(400).json({ error: 'sliceIds array required' })
+  }
+
+  try {
+    // Get all slices with file paths
+    const slices = await db
+      .select()
+      .from(schema.slices)
+      .where(inArray(schema.slices.id, sliceIds))
+
+    const results: { sliceId: number; success: boolean; error?: string }[] = []
+
+    // Process slices with concurrency limit
+    const CONCURRENCY = 3
+    for (let i = 0; i < slices.length; i += CONCURRENCY) {
+      const batch = slices.slice(i, i + CONCURRENCY)
+      const batchResults = await Promise.all(
+        batch.map(async (slice) => {
+          if (!slice.filePath) {
+            return { sliceId: slice.id, success: false, error: 'No audio file' }
+          }
+          try {
+            await autoTagSlice(slice.id, slice.filePath)
+            return { sliceId: slice.id, success: true }
+          } catch (error) {
+            return {
+              sliceId: slice.id,
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            }
+          }
+        })
+      )
+      results.push(...batchResults)
+    }
+
+    res.json({
+      total: sliceIds.length,
+      processed: results.length,
+      successful: results.filter((r) => r.success).length,
+      results,
+    })
+  } catch (error) {
+    console.error('Error batch generating AI tags:', error)
+    res.status(500).json({ error: 'Failed to batch generate AI tags' })
+  }
+})
+
+// Get all slices with audio features for Sample Space visualization
+router.get('/slices/features', async (_req, res) => {
+  try {
+    const results = await db
+      .select({
+        // Slice info
+        id: schema.slices.id,
+        name: schema.slices.name,
+        trackId: schema.slices.trackId,
+        filePath: schema.slices.filePath,
+        // Audio features
+        duration: schema.audioFeatures.duration,
+        bpm: schema.audioFeatures.bpm,
+        onsetCount: schema.audioFeatures.onsetCount,
+        spectralCentroid: schema.audioFeatures.spectralCentroid,
+        spectralRolloff: schema.audioFeatures.spectralRolloff,
+        spectralBandwidth: schema.audioFeatures.spectralBandwidth,
+        spectralContrast: schema.audioFeatures.spectralContrast,
+        zeroCrossingRate: schema.audioFeatures.zeroCrossingRate,
+        mfccMean: schema.audioFeatures.mfccMean,
+        rmsEnergy: schema.audioFeatures.rmsEnergy,
+        loudness: schema.audioFeatures.loudness,
+        dynamicRange: schema.audioFeatures.dynamicRange,
+        keyEstimate: schema.audioFeatures.keyEstimate,
+        keyStrength: schema.audioFeatures.keyStrength,
+        attackTime: schema.audioFeatures.attackTime,
+        spectralFlux: schema.audioFeatures.spectralFlux,
+        spectralFlatness: schema.audioFeatures.spectralFlatness,
+        kurtosis: schema.audioFeatures.kurtosis,
+      })
+      .from(schema.slices)
+      .innerJoin(schema.audioFeatures, eq(schema.slices.id, schema.audioFeatures.sliceId))
+
+    // Parse mfccMean JSON strings
+    const parsed = results.map((r) => ({
+      ...r,
+      mfccMean: r.mfccMean ? JSON.parse(r.mfccMean) : null,
+    }))
+
+    res.json(parsed)
+  } catch (error) {
+    console.error('Error fetching slice features:', error)
+    res.status(500).json({ error: 'Failed to fetch slice features' })
+  }
+})
+
+// Toggle favorite status
+router.post('/slices/:id/favorite', async (req, res) => {
+  const id = parseInt(req.params.id)
+
+  try {
+    const slice = await db
+      .select()
+      .from(schema.slices)
+      .where(eq(schema.slices.id, id))
+      .limit(1)
+
+    if (slice.length === 0) {
+      return res.status(404).json({ error: 'Slice not found' })
+    }
+
+    const newFavorite = slice[0].favorite === 1 ? 0 : 1
+
+    await db
+      .update(schema.slices)
+      .set({ favorite: newFavorite })
+      .where(eq(schema.slices.id, id))
+
+    res.json({ favorite: newFavorite === 1 })
+  } catch (error) {
+    console.error('Error toggling favorite:', error)
+    res.status(500).json({ error: 'Failed to toggle favorite' })
+  }
+})
+
+// Batch delete slices
+router.post('/slices/batch-delete', async (req, res) => {
+  const { sliceIds } = req.body as { sliceIds: number[] }
+
+  if (!sliceIds || !Array.isArray(sliceIds) || sliceIds.length === 0) {
+    return res.status(400).json({ error: 'sliceIds array required' })
+  }
+
+  try {
+    // Get all slices to delete (to get file paths)
+    const slices = await db
+      .select()
+      .from(schema.slices)
+      .where(inArray(schema.slices.id, sliceIds))
+
+    const results: { sliceId: number; success: boolean; error?: string }[] = []
+
+    // Delete each slice and its file
+    for (const slice of slices) {
+      try {
+        // Delete file if it exists
+        if (slice.filePath) {
+          await fs.unlink(slice.filePath).catch(() => {})
+        }
+
+        // Delete from database
+        await db.delete(schema.slices).where(eq(schema.slices.id, slice.id))
+        results.push({ sliceId: slice.id, success: true })
+      } catch (error) {
+        results.push({
+          sliceId: slice.id,
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        })
+      }
+    }
+
+    res.json({
+      total: sliceIds.length,
+      deleted: results.filter((r) => r.success).length,
+      results,
+    })
+  } catch (error) {
+    console.error('Error batch deleting slices:', error)
+    res.status(500).json({ error: 'Failed to batch delete slices' })
   }
 })
 

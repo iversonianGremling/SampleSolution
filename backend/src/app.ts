@@ -9,6 +9,8 @@ import slicesRouter from './routes/slices.js'
 import youtubeRouter from './routes/youtube.js'
 import authRouter from './routes/auth.js'
 import tagsRouter from './routes/tags.js'
+import collectionsRouter from './routes/collections.js'
+import importRouter from './routes/import.js'
 
 export function createApp(options: { dataDir?: string; frontendUrl?: string; sessionSecret?: string } = {}) {
   const app = express()
@@ -17,7 +19,7 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
   const SESSION_SECRET = options.sessionSecret || process.env.SESSION_SECRET || 'dev-secret-change-me'
 
   // Ensure data directories exist
-  const dirs = ['audio', 'slices', 'peaks']
+  const dirs = ['audio', 'slices', 'peaks', 'uploads']
   for (const dir of dirs) {
     const dirPath = path.join(DATA_DIR, dir)
     if (!fs.existsSync(dirPath)) {
@@ -49,6 +51,8 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
   app.use('/api/auth', authRouter)
   app.use('/api/tags', tagsRouter)
   app.use('/api', tagsRouter)
+  app.use('/api', collectionsRouter)
+  app.use('/api', importRouter)
 
   // Health check
   app.get('/api/health', (req, res) => {

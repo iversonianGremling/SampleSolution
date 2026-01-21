@@ -39,6 +39,7 @@ export const mockSlices: Slice[] = [
     startTime: 10,
     endTime: 25,
     filePath: '/data/slices/abc123_1.mp3',
+    favorite: false,
     createdAt: '2024-01-01T00:00:00Z',
     tags: [],
   },
@@ -113,6 +114,7 @@ export const handlers = [
       startTime: body.startTime,
       endTime: body.endTime,
       filePath: '/data/slices/new.mp3',
+      favorite: false,
       createdAt: new Date().toISOString(),
       tags: [],
     }

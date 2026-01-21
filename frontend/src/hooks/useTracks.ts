@@ -28,11 +28,54 @@ export function useDeleteTrack() {
   })
 }
 
+export function useUpdateTrack() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: { title?: string } }) =>
+      api.updateTrack(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tracks'] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+    },
+  })
+}
+
 export function useSlices(trackId: number) {
   return useQuery({
     queryKey: ['slices', trackId],
     queryFn: () => api.getSlices(trackId),
     enabled: trackId > 0,
+  })
+}
+
+export function useAllSlices() {
+  return useQuery({
+    queryKey: ['allSlices'],
+    queryFn: api.getAllSlices,
+  })
+}
+
+export function useAddTagToSlice() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ sliceId, tagId }: { sliceId: number; tagId: number }) =>
+      api.addTagToSlice(sliceId, tagId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
+    },
+  })
+}
+
+export function useRemoveTagFromSlice() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ sliceId, tagId }: { sliceId: number; tagId: number }) =>
+      api.removeTagFromSlice(sliceId, tagId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
+    },
   })
 }
 
@@ -43,6 +86,7 @@ export function useCreateSlice(trackId: number) {
       api.createSlice(trackId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
     },
   })
 }
@@ -59,6 +103,7 @@ export function useUpdateSlice(trackId: number) {
     }) => api.updateSlice(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
     },
   })
 }
@@ -69,6 +114,37 @@ export function useDeleteSlice(trackId: number) {
     mutationFn: api.deleteSlice,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+  })
+}
+
+export function useDeleteSliceGlobal() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.deleteSlice,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+  })
+}
+
+export function useUpdateSliceGlobal() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: number
+      data: { name?: string; startTime?: number; endTime?: number }
+    }) => api.updateSlice(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
     },
   })
 }
@@ -96,6 +172,31 @@ export function useGenerateAiTagsForSlice(trackId: number) {
     mutationFn: api.generateAiTagsForSlice,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+    },
+  })
+}
+
+export function useBatchGenerateAiTags() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.batchGenerateAiTags,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['tags'] })
+    },
+  })
+}
+
+export function useBatchDeleteSlices() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.batchDeleteSlices,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
     },
   })
 }
@@ -137,5 +238,137 @@ export function useImportLinks() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
     },
+  })
+}
+
+// Favorites
+export function useToggleFavorite() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.toggleFavorite,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
+    },
+  })
+}
+
+// Collections
+export function useCollections() {
+  return useQuery({
+    queryKey: ['collections'],
+    queryFn: api.getCollections,
+  })
+}
+
+export function useCreateCollection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.createCollection,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+  })
+}
+
+export function useUpdateCollection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: { name?: string; color?: string } }) =>
+      api.updateCollection(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+  })
+}
+
+export function useDeleteCollection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.deleteCollection,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+  })
+}
+
+export function useAddSliceToCollection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ collectionId, sliceId }: { collectionId: number; sliceId: number }) =>
+      api.addSliceToCollection(collectionId, sliceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+  })
+}
+
+export function useRemoveSliceFromCollection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ collectionId, sliceId }: { collectionId: number; sliceId: number }) =>
+      api.removeSliceFromCollection(collectionId, sliceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+  })
+}
+
+// Export
+export function useExportCollection() {
+  return useMutation({
+    mutationFn: ({ collectionId, exportPath }: { collectionId: number; exportPath?: string }) =>
+      api.exportCollection(collectionId, exportPath),
+  })
+}
+
+export function useExportSlices() {
+  return useMutation({
+    mutationFn: ({ favoritesOnly, exportPath }: { favoritesOnly?: boolean; exportPath?: string }) =>
+      api.exportSlices(favoritesOnly, exportPath),
+  })
+}
+
+// Local file import
+export function useImportLocalFile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.importLocalFile,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tracks'] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+    },
+  })
+}
+
+export function useImportLocalFiles() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.importLocalFiles,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tracks'] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+    },
+  })
+}
+
+export function useImportFolder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.importFolder,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tracks'] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+    },
+  })
+}
+
+// Folder browsing
+export function useBrowseDirectory(path?: string) {
+  return useQuery({
+    queryKey: ['browse', path],
+    queryFn: () => api.browseDirectory(path),
   })
 }

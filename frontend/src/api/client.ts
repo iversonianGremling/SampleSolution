@@ -2,11 +2,15 @@ import axios from 'axios'
 import type {
   Track,
   Slice,
+  SliceWithTrack,
   Tag,
   YouTubeSearchResult,
   YouTubePlaylist,
   AuthStatus,
   ImportResult,
+  Collection,
+  ExportResult,
+  AudioFeatures,
 } from '../types'
 
 const api = axios.create({
@@ -22,12 +26,18 @@ export const addTracks = (urls: string[]) =>
 
 export const deleteTrack = (id: number) => api.delete(`/tracks/${id}`)
 
+export const updateTrack = (id: number, data: { title?: string }) =>
+  api.put<Track>(`/tracks/${id}`, data).then((r) => r.data)
+
 export const getTrackAudioUrl = (id: number) => `/api/tracks/${id}/audio`
 
 export const getTrackPeaks = (id: number) =>
   api.get<number[]>(`/tracks/${id}/peaks`).then((r) => r.data)
 
 // Slices
+export const getAllSlices = () =>
+  api.get<SliceWithTrack[]>('/slices').then((r) => r.data)
+
 export const getSlices = (trackId: number) =>
   api.get<Slice[]>(`/tracks/${trackId}/slices`).then((r) => r.data)
 
@@ -92,3 +102,106 @@ export const removeTagFromSlice = (sliceId: number, tagId: number) =>
 
 export const generateAiTagsForSlice = (sliceId: number) =>
   api.post<{ tags: string[] }>(`/slices/${sliceId}/ai-tags`).then((r) => r.data)
+
+export interface BatchAiTagsResult {
+  total: number
+  processed: number
+  successful: number
+  results: { sliceId: number; success: boolean; error?: string }[]
+}
+
+export const batchGenerateAiTags = (sliceIds: number[]) =>
+  api.post<BatchAiTagsResult>('/slices/batch-ai-tags', { sliceIds }).then((r) => r.data)
+
+export interface BatchDeleteResult {
+  total: number
+  deleted: number
+  results: { sliceId: number; success: boolean; error?: string }[]
+}
+
+export const batchDeleteSlices = (sliceIds: number[]) =>
+  api.post<BatchDeleteResult>('/slices/batch-delete', { sliceIds }).then((r) => r.data)
+
+// Favorites
+export const toggleFavorite = (sliceId: number) =>
+  api.post<{ favorite: boolean }>(`/slices/${sliceId}/favorite`).then((r) => r.data)
+
+// Collections
+export const getCollections = () =>
+  api.get<Collection[]>('/collections').then((r) => r.data)
+
+export const createCollection = (data: { name: string; color?: string }) =>
+  api.post<Collection>('/collections', data).then((r) => r.data)
+
+export const updateCollection = (id: number, data: { name?: string; color?: string }) =>
+  api.put<Collection>(`/collections/${id}`, data).then((r) => r.data)
+
+export const deleteCollection = (id: number) =>
+  api.delete(`/collections/${id}`)
+
+export const addSliceToCollection = (collectionId: number, sliceId: number) =>
+  api.post(`/collections/${collectionId}/slices`, { sliceId })
+
+export const removeSliceFromCollection = (collectionId: number, sliceId: number) =>
+  api.delete(`/collections/${collectionId}/slices/${sliceId}`)
+
+// Export
+export const exportCollection = (collectionId: number, exportPath?: string) =>
+  api.post<ExportResult>(`/collections/${collectionId}/export`, { exportPath }).then((r) => r.data)
+
+export const exportSlices = (favoritesOnly?: boolean, exportPath?: string) =>
+  api.post<ExportResult>('/slices/export', { favoritesOnly, exportPath }).then((r) => r.data)
+
+// Local file import
+export interface LocalImportResult {
+  success: boolean
+  track?: { id: number; title: string; duration: number; source: string }
+  slice?: { id: number; name: string; duration: number }
+}
+
+export interface BatchImportResult {
+  total: number
+  successful: number
+  failed: number
+  results: { filename: string; success: boolean; sliceId?: number; error?: string }[]
+}
+
+export interface FolderImportResult extends BatchImportResult {
+  folderPath: string
+}
+
+export const importLocalFile = async (file: File): Promise<LocalImportResult> => {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await api.post<LocalImportResult>('/import/file', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return response.data
+}
+
+export const importLocalFiles = async (files: File[]): Promise<BatchImportResult> => {
+  const formData = new FormData()
+  files.forEach((file) => formData.append('files', file))
+  const response = await api.post<BatchImportResult>('/import/files', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return response.data
+}
+
+export const importFolder = (folderPath: string) =>
+  api.post<FolderImportResult>('/import/folder', { folderPath }).then((r) => r.data)
+
+// Folder browsing
+export interface BrowseResult {
+  currentPath: string
+  parentPath: string | null
+  directories: { name: string; path: string }[]
+  audioFileCount: number
+}
+
+export const browseDirectory = (path?: string) =>
+  api.get<BrowseResult>('/import/browse', { params: { path } }).then((r) => r.data)
+
+// Sample Space - Audio Features
+export const getSliceFeatures = () =>
+  api.get<AudioFeatures[]>('/slices/features').then((r) => r.data)

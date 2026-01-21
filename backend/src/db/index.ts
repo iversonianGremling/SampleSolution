@@ -87,7 +87,57 @@ function initDatabase() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_audio_features_slice_id ON audio_features(slice_id);
+
+    CREATE TABLE IF NOT EXISTS collections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#6366f1',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS collection_slices (
+      collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      slice_id INTEGER NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+      PRIMARY KEY (collection_id, slice_id)
+    );
   `)
+
+  // Migration: Add category column to tags if it doesn't exist
+  const tagsColumns = sqlite.prepare("PRAGMA table_info(tags)").all() as { name: string }[]
+  const hasCategory = tagsColumns.some(col => col.name === 'category')
+  if (!hasCategory) {
+    console.log('[DB] Migrating: Adding category column to tags table')
+    sqlite.exec("ALTER TABLE tags ADD COLUMN category TEXT NOT NULL DEFAULT 'general'")
+  }
+
+  // Migration: Add favorite column to slices if it doesn't exist
+  const slicesColumns = sqlite.prepare("PRAGMA table_info(slices)").all() as { name: string }[]
+  const hasFavorite = slicesColumns.some(col => col.name === 'favorite')
+  if (!hasFavorite) {
+    console.log('[DB] Migrating: Adding favorite column to slices table')
+    sqlite.exec("ALTER TABLE slices ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+  }
+
+  // Migration: Add source column to tracks if it doesn't exist
+  const tracksColumns = sqlite.prepare("PRAGMA table_info(tracks)").all() as { name: string }[]
+  const hasSource = tracksColumns.some(col => col.name === 'source')
+  if (!hasSource) {
+    console.log('[DB] Migrating: Adding source column to tracks table')
+    sqlite.exec("ALTER TABLE tracks ADD COLUMN source TEXT NOT NULL DEFAULT 'youtube'")
+  }
+
+  // Migration: Add new audio feature columns if they don't exist
+  const audioFeaturesColumns = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasAttackTime = audioFeaturesColumns.some(col => col.name === 'attack_time')
+  if (!hasAttackTime) {
+    console.log('[DB] Migrating: Adding new audio feature columns (attack_time, spectral_flux, spectral_flatness, kurtosis)')
+    sqlite.exec(`
+      ALTER TABLE audio_features ADD COLUMN attack_time REAL;
+      ALTER TABLE audio_features ADD COLUMN spectral_flux REAL;
+      ALTER TABLE audio_features ADD COLUMN spectral_flatness REAL;
+      ALTER TABLE audio_features ADD COLUMN kurtosis REAL;
+    `)
+  }
 
   return drizzleDb
 }

@@ -20,4 +20,8 @@ export default defineConfig({
     include: ['src/**/*.test.{ts,tsx}'],
     css: true,
   },
+  build: {
+    minify: false,
+    sourcemap: true
+  },
 })

@@ -105,6 +105,38 @@ router.post('/', async (req, res) => {
   res.json({ success, failed })
 })
 
+// Update track
+router.put('/:id', async (req, res) => {
+  const id = parseInt(req.params.id)
+  const { title } = req.body as { title?: string }
+
+  try {
+    const track = await db
+      .select()
+      .from(schema.tracks)
+      .where(eq(schema.tracks.id, id))
+      .limit(1)
+
+    if (track.length === 0) {
+      return res.status(404).json({ error: 'Track not found' })
+    }
+
+    const updates: Partial<typeof schema.tracks.$inferSelect> = {}
+    if (title !== undefined) updates.title = title
+
+    const [updated] = await db
+      .update(schema.tracks)
+      .set(updates)
+      .where(eq(schema.tracks.id, id))
+      .returning()
+
+    res.json(updated)
+  } catch (error) {
+    console.error('Error updating track:', error)
+    res.status(500).json({ error: 'Failed to update track' })
+  }
+})
+
 // Delete track
 router.delete('/:id', async (req, res) => {
   const id = parseInt(req.params.id)

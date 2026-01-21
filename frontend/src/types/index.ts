@@ -19,8 +19,32 @@ export interface Slice {
   startTime: number
   endTime: number
   filePath: string | null
+  favorite: boolean
   createdAt: string
   tags: Tag[]
+}
+
+export interface SliceWithTrack extends Slice {
+  collectionIds: number[]
+  track: {
+    title: string
+    youtubeId: string
+  }
+}
+
+export interface Collection {
+  id: number
+  name: string
+  color: string
+  sliceCount: number
+  createdAt: string
+}
+
+export interface ExportResult {
+  success: boolean
+  exportPath: string
+  exported: string[]
+  failed: { name: string; error: string }[]
 }
 
 export interface Tag {
@@ -58,4 +82,58 @@ export interface AuthStatus {
 export interface ImportResult {
   success: string[]
   failed: { url: string; error: string }[]
+}
+
+export interface AudioFeatures {
+  // Slice info
+  id: number
+  name: string
+  trackId: number
+  filePath: string | null
+  // Audio features
+  duration: number | null
+  bpm: number | null
+  onsetCount: number | null
+  spectralCentroid: number | null
+  spectralRolloff: number | null
+  spectralBandwidth: number | null
+  spectralContrast: number | null
+  zeroCrossingRate: number | null
+  mfccMean: number[] | null
+  rmsEnergy: number | null
+  loudness: number | null
+  dynamicRange: number | null
+  keyEstimate: string | null
+  keyStrength: number | null
+  attackTime: number | null
+  spectralFlux: number | null
+  spectralFlatness: number | null
+  kurtosis: number | null
+}
+
+export interface FeatureWeights {
+  spectralCentroid: number
+  spectralRolloff: number
+  spectralBandwidth: number
+  spectralContrast: number
+  spectralFlux: number
+  spectralFlatness: number
+  zeroCrossingRate: number
+  rmsEnergy: number
+  loudness: number
+  dynamicRange: number
+  attackTime: number
+  kurtosis: number
+  bpm: number
+  onsetCount: number
+  keyStrength: number
+}
+
+export interface SamplePoint {
+  id: number
+  name: string
+  x: number
+  y: number
+  cluster: number
+  features: AudioFeatures
 }

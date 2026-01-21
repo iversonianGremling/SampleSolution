@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Loader2, CheckCircle, AlertCircle, Clock } from 'lucide-react'
-import { useTracks, useDeleteTrack, useAddTracks } from '../hooks/useTracks'
+import { useTracks, useDeleteTrack, useAddTracks, useUpdateTrack } from '../hooks/useTracks'
 import { TrackItem } from './TrackItem'
 import type { Track } from '../types'
 
@@ -12,8 +12,12 @@ interface TrackListProps {
 export function TrackList({ onSelectTrack, selectedTrackId }: TrackListProps) {
   const [quickUrl, setQuickUrl] = useState('')
   const { data: tracks, isLoading } = useTracks()
+
+  // DEBUG
+  console.log('[TrackList] tracks:', tracks, 'isArray:', Array.isArray(tracks))
   const deleteTrack = useDeleteTrack()
   const addTracks = useAddTracks()
+  const updateTrack = useUpdateTrack()
 
   const handleQuickAdd = (e: React.FormEvent) => {
     e.preventDefault()
@@ -86,6 +90,7 @@ export function TrackList({ onSelectTrack, selectedTrackId }: TrackListProps) {
                 isSelected={track.id === selectedTrackId}
                 onSelect={() => onSelectTrack(track)}
                 onDelete={() => deleteTrack.mutate(track.id)}
+                onUpdateTitle={(title) => updateTrack.mutate({ id: track.id, data: { title } })}
                 statusIcon={statusIcon(track.status)}
               />
             ))}
