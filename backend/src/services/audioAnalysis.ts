@@ -83,10 +83,12 @@ export async function analyzeAudioFeatures(
   return new Promise((resolve, reject) => {
     const proc = spawn(PYTHON_EXECUTABLE, [PYTHON_SCRIPT, audioPath], {
       timeout: 60000, // 60 second timeout
+      stdio: ['ignore', 'pipe', 'pipe'], // Explicitly pipe stdout/stderr
     })
 
     let stdout = ''
     let stderr = ''
+    let pythonError = ''
 
     const timeoutHandle = setTimeout(() => {
       proc.kill()
@@ -94,19 +96,85 @@ export async function analyzeAudioFeatures(
     }, 60000)
 
     proc.stdout.on('data', (data) => {
-      stdout += data.toString()
+      const chunk = data.toString()
+      stdout += chunk
+      // Filter out TensorFlow warnings in real-time
+      const lines = chunk.split('\n')
+      for (const line of lines) {
+        if (
+          !line.includes('tensorflow') &&
+          !line.includes('libcudart') &&
+          !line.includes('libcuda.so') &&
+          !line.includes('cuInit') &&
+          !line.includes('MusicExtractorSVM') &&
+          !line.includes('oneDNN') &&
+          !line.includes('cpu_feature_guard') &&
+          !line.includes('kernel driver')
+        ) {
+          if (line.trim()) {
+            console.log(`[audio-analysis] ${line}`)
+          }
+        }
+      }
     })
 
     proc.stderr.on('data', (data) => {
-      stderr += data.toString()
+      const chunk = data.toString()
+      stderr += chunk
+      // Filter TensorFlow warnings from stderr - only capture real errors
+      const lines = chunk.split('\n')
+      for (const line of lines) {
+        // Skip all TensorFlow-related output
+        if (
+          !line.includes('tensorflow') &&
+          !line.includes('libcudart') &&
+          !line.includes('libcuda.so') &&
+          !line.includes('cuInit') &&
+          !line.includes('MusicExtractorSVM') &&
+          !line.includes('oneDNN') &&
+          !line.includes('cpu_feature_guard') &&
+          !line.includes('kernel driver') &&
+          !line.includes('dso_loader') &&
+          !line.includes('deep neural network') &&
+          !line.includes('rebuild TensorFlow') &&
+          !line.includes('stream_executor') &&
+          !line.includes('cuda')
+        ) {
+          if (line.trim()) {
+            pythonError += line + '\n'
+          }
+        }
+      }
     })
 
     proc.on('close', (code) => {
       clearTimeout(timeoutHandle)
 
       if (code !== 0) {
-        console.error('Python analysis failed:', stderr)
-        reject(new Error(`Audio analysis failed: ${stderr.substring(0, 500)}`))
+        // Try to extract actual error from stdout (JSON error format)
+        try {
+          // Find JSON object in stdout (might be after warnings)
+          const jsonMatch = stdout.match(/\{[\s\S]*\}/)
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0])
+            if (parsed.error) {
+              console.error(`Audio analysis failed for ${audioPath}:`, parsed.error)
+              reject(new Error(`Audio analysis failed: ${parsed.error}`))
+              return
+            }
+          }
+        } catch {}
+
+        // Fall back to stderr if we have filtered errors
+        if (pythonError.trim()) {
+          console.error(`Audio analysis failed for ${audioPath}:`, pythonError)
+          reject(new Error(`Audio analysis failed: ${pythonError.substring(0, 300)}`))
+          return
+        }
+
+        // Last resort: generic error
+        console.error(`Audio analysis failed with code ${code} for ${audioPath}`)
+        reject(new Error(`Audio analysis failed: unknown error (exit code ${code})`))
         return
       }
 

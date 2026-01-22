@@ -380,6 +380,16 @@ def main():
 
     audio_path = sys.argv[1]
 
+    # Validate file exists and is readable
+    import os
+    if not os.path.exists(audio_path):
+        print(json.dumps({"error": f"File not found: {audio_path}"}))
+        sys.exit(1)
+
+    if not os.path.isfile(audio_path):
+        print(json.dumps({"error": f"Path is not a file: {audio_path}"}))
+        sys.exit(1)
+
     try:
         results = analyze_audio(audio_path)
         print(json.dumps(results, indent=2))
