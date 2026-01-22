@@ -18,6 +18,15 @@ const api = axios.create({
   withCredentials: true,
 })
 
+// Interceptor to handle FormData properly
+api.interceptors.request.use((config) => {
+  if (config.data instanceof FormData) {
+    // Let the browser set the Content-Type with boundary for FormData
+    delete config.headers['Content-Type']
+  }
+  return config
+})
+
 // Tracks
 export const getTracks = () => api.get<Track[]>('/tracks').then((r) => r.data)
 
@@ -170,26 +179,24 @@ export interface FolderImportResult extends BatchImportResult {
   folderPath: string
 }
 
-export const importLocalFile = async (file: File): Promise<LocalImportResult> => {
+export const importLocalFile = async (file: File, importType?: 'sample' | 'track'): Promise<LocalImportResult> => {
   const formData = new FormData()
   formData.append('file', file)
-  const response = await api.post<LocalImportResult>('/import/file', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
+  const url = `/import/file${importType ? `?importType=${importType}` : ''}`
+  const response = await api.post<LocalImportResult>(url, formData)
   return response.data
 }
 
-export const importLocalFiles = async (files: File[]): Promise<BatchImportResult> => {
+export const importLocalFiles = async (files: File[], importType?: 'sample' | 'track'): Promise<BatchImportResult> => {
   const formData = new FormData()
   files.forEach((file) => formData.append('files', file))
-  const response = await api.post<BatchImportResult>('/import/files', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
+  const url = `/import/files${importType ? `?importType=${importType}` : ''}`
+  const response = await api.post<BatchImportResult>(url, formData)
   return response.data
 }
 
-export const importFolder = (folderPath: string) =>
-  api.post<FolderImportResult>('/import/folder', { folderPath }).then((r) => r.data)
+export const importFolder = (folderPath: string, importType?: 'sample' | 'track') =>
+  api.post<FolderImportResult>('/import/folder', { folderPath, importType }).then((r) => r.data)
 
 // Folder browsing
 export interface BrowseResult {

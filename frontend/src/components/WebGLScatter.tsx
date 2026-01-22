@@ -2,12 +2,14 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import * as PIXI from 'pixi.js'
 import type { SamplePoint } from '../types'
 import { getClusterColor } from '../hooks/useClustering'
+import AudioManager from '../services/AudioManager'
 
 interface WebGLScatterProps {
   points: SamplePoint[]
   onPointHover: (point: SamplePoint | null) => void
   onPointClick: (point: SamplePoint) => void
   onSelectionChange?: (selectedIds: number[]) => void
+  onPointSelect?: (point: SamplePoint | null) => void
   width: number
   height: number
 }
@@ -17,6 +19,55 @@ const POINT_RADIUS_HOVER = 8
 const GLOW_RADIUS = 20
 const GLOW_RADIUS_HOVER = 32
 const PADDING = 40
+const MIN_POINT_DISTANCE = 25 // Minimum pixel distance between points
+
+// Apply minimum distance spreading to prevent point clustering
+function applyMinimumDistance(points: SamplePoint[], minDistance: number): SamplePoint[] {
+  if (points.length === 0) return points
+
+  // Create a map of screen positions to point groups
+  const positionMap = new Map<string, SamplePoint[]>()
+
+  points.forEach((point) => {
+    const key = `${Math.round(point.x * 100)},${Math.round(point.y * 100)}`
+    if (!positionMap.has(key)) {
+      positionMap.set(key, [])
+    }
+    positionMap.get(key)!.push(point)
+  })
+
+  // Spread out points that are too close together
+  const spreadPoints: SamplePoint[] = []
+
+  positionMap.forEach((group) => {
+    if (group.length === 1) {
+      spreadPoints.push(group[0])
+      return
+    }
+
+    // Calculate mean position
+    const meanX = group.reduce((sum, p) => sum + p.x, 0) / group.length
+    const meanY = group.reduce((sum, p) => sum + p.y, 0) / group.length
+
+    // Arrange points in a circle around the mean position
+    const angleStep = (Math.PI * 2) / group.length
+    const radius = minDistance / 2
+
+    group.forEach((point, index) => {
+      const angle = angleStep * index
+      const offsetX = Math.cos(angle) * radius
+      const offsetY = Math.sin(angle) * radius
+
+      spreadPoints.push({
+        ...point,
+        x: meanX + offsetX,
+        y: meanY + offsetY,
+      })
+    })
+  })
+
+  return spreadPoints
+}
 
 // Create a glowing star texture
 function createStarTexture(): PIXI.Texture {
@@ -46,6 +97,7 @@ export function WebGLScatter({
   onPointHover,
   onPointClick,
   onSelectionChange,
+  onPointSelect,
   width,
   height,
 }: WebGLScatterProps) {
@@ -55,7 +107,7 @@ export function WebGLScatter({
   const glowsContainerRef = useRef<PIXI.Container | null>(null)
   const [hoveredId, setHoveredId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
-  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audioManagerRef = useRef<AudioManager>(AudioManager.getInstance())
   const starTextureRef = useRef<PIXI.Texture | null>(null)
 
   // Transform coordinates from -1..1 to screen space
@@ -72,34 +124,45 @@ export function WebGLScatter({
   useEffect(() => {
     if (!containerRef.current || width <= 0 || height <= 0) return
 
-    const app = new PIXI.Application()
-
     const initApp = async () => {
-      await app.init({
-        width,
-        height,
-        backgroundColor: 0x0f1419, // Very dark navy/black
-        antialias: true,
-        resolution: window.devicePixelRatio || 1,
-        autoDensity: true,
-      })
+      try {
+        const app = new PIXI.Application()
 
-      if (containerRef.current && !appRef.current) {
-        containerRef.current.appendChild(app.canvas as HTMLCanvasElement)
-        appRef.current = app
+        await app.init({
+          width,
+          height,
+          backgroundColor: 0x0f1419, // Very dark navy/black
+          antialias: true,
+          resolution: window.devicePixelRatio || 1,
+          autoDensity: true,
+        })
 
-        // Create container for glows (behind points)
-        const glowsContainer = new PIXI.Container()
-        app.stage.addChild(glowsContainer)
-        glowsContainerRef.current = glowsContainer
+        if (containerRef.current && !appRef.current) {
+          const canvas = app.canvas as HTMLCanvasElement
+          canvas.style.display = 'block'
+          canvas.style.width = '100%'
+          canvas.style.height = '100%'
+          containerRef.current.appendChild(canvas)
+          appRef.current = app
 
-        // Create container for points (on top)
-        const pointsContainer = new PIXI.Container()
-        app.stage.addChild(pointsContainer)
-        pointsContainerRef.current = pointsContainer
+          // Create container for glows (behind points)
+          const glowsContainer = new PIXI.Container()
+          app.stage.addChild(glowsContainer)
+          glowsContainerRef.current = glowsContainer
 
-        // Create star texture once
-        starTextureRef.current = createStarTexture()
+          // Create container for points (on top)
+          const pointsContainer = new PIXI.Container()
+          app.stage.addChild(pointsContainer)
+          pointsContainerRef.current = pointsContainer
+
+          // Create star texture once
+          starTextureRef.current = createStarTexture()
+        }
+      } catch (error) {
+        console.error('Failed to initialize PixiJS:', error)
+        if (containerRef.current) {
+          containerRef.current.innerHTML = '<div style="padding: 20px; color: #ef4444; text-align: center;">WebGL not supported. Please update your browser or enable hardware acceleration.</div>'
+        }
       }
     }
 
@@ -126,19 +189,16 @@ export function WebGLScatter({
     }
   }, [width, height])
 
-  // Play audio on hover
+  // Play audio on hover only (conservative - one audio at a time)
   const playAudio = useCallback((point: SamplePoint) => {
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current = null
+    const audioManager = audioManagerRef.current
+
+    // If already playing audio for this point, don't retrigger
+    if (audioManager.isPlayingId(point.id)) {
+      return
     }
 
-    const audio = new Audio(`/api/slices/${point.id}/download`)
-    audio.volume = 0.5
-    audio.play().catch(() => {
-      // Silently fail if audio can't play
-    })
-    audioRef.current = audio
+    audioManager.play(point.id, `/api/slices/${point.id}/download`, { volume: 1 })
   }, [])
 
   // Render points with glows
@@ -151,8 +211,11 @@ export function WebGLScatter({
     container.removeChildren()
     glowsContainer.removeChildren()
 
+    // Apply minimum distance spacing to prevent overlapping points
+    const spreadPoints = applyMinimumDistance(points, MIN_POINT_DISTANCE)
+
     // Draw each point
-    points.forEach((point) => {
+    spreadPoints.forEach((point) => {
       const x = transformX(point.x)
       const y = transformY(point.y)
       const colorHex = getClusterColor(point.cluster)
@@ -162,10 +225,11 @@ export function WebGLScatter({
 
       // Draw glow layer (sprite with radial gradient)
       const glowSprite = new PIXI.Sprite(starTextureRef.current!)
-      glowSprite.x = x - GLOW_RADIUS
-      glowSprite.y = y - GLOW_RADIUS
-      glowSprite.width = isHovered ? GLOW_RADIUS_HOVER * 2 : GLOW_RADIUS * 2
-      glowSprite.height = isHovered ? GLOW_RADIUS_HOVER * 2 : GLOW_RADIUS * 2
+      const currentGlowRadius = isHovered ? GLOW_RADIUS_HOVER : GLOW_RADIUS
+      glowSprite.x = x - currentGlowRadius
+      glowSprite.y = y - currentGlowRadius
+      glowSprite.width = currentGlowRadius * 2
+      glowSprite.height = currentGlowRadius * 2
       glowSprite.tint = colorInt
       glowSprite.alpha = isHovered ? 0.6 : 0.3
       glowsContainer.addChild(glowSprite)
@@ -202,22 +266,22 @@ export function WebGLScatter({
       })
 
       graphics.on('pointertap', () => {
+        // Stop any audio playback on click
+        audioManagerRef.current.stopAll()
+
+        // Clear hovered state to prevent hover audio from restarting
+        setHoveredId(null)
+        onPointHover(null)
+
+        onPointSelect?.(point)
         onPointClick(point)
-        // Toggle selection
-        setSelectedIds((prev) => {
-          const next = new Set(prev)
-          if (next.has(point.id)) {
-            next.delete(point.id)
-          } else {
-            next.add(point.id)
-          }
-          return next
-        })
+        // Select only this point, deselect all others
+        setSelectedIds(new Set([point.id]))
       })
 
       container.addChild(graphics)
     })
-  }, [points, hoveredId, selectedIds, transformX, transformY, onPointHover, onPointClick, playAudio])
+  }, [points, hoveredId, selectedIds, transformX, transformY, onPointHover, onPointClick, onPointSelect, playAudio])
 
   // Notify parent of selection changes
   useEffect(() => {
@@ -227,10 +291,7 @@ export function WebGLScatter({
   // Cleanup audio on unmount
   useEffect(() => {
     return () => {
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current = null
-      }
+      audioManagerRef.current.stopAll()
     }
   }, [])
 

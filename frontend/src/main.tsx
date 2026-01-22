@@ -4,6 +4,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
 import './index.css'
 
+// Handle unhandled promise rejections from PixiJS
+window.addEventListener('unhandledrejection', (event) => {
+  if (event.reason?.message?.includes('CanvasRenderer is not yet implemented')) {
+    // This is expected in some browsers - PixiJS will fall back to WebGL
+    event.preventDefault()
+    console.warn('CanvasRenderer fallback attempted - WebGL will be used instead')
+  }
+})
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

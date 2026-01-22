@@ -32,7 +32,6 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
     origin: FRONTEND_URL,
     credentials: true,
   }))
-  app.use(express.json())
   app.use(session({
     secret: SESSION_SECRET,
     resave: false,
@@ -44,6 +43,12 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
     },
   }))
 
+  // Mount file upload routes BEFORE json middleware
+  app.use('/api', importRouter)
+
+  // JSON middleware (after file upload routes)
+  app.use(express.json())
+
   // Routes
   app.use('/api/tracks', tracksRouter)
   app.use('/api', slicesRouter)
@@ -52,7 +57,6 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
   app.use('/api/tags', tagsRouter)
   app.use('/api', tagsRouter)
   app.use('/api', collectionsRouter)
-  app.use('/api', importRouter)
 
   // Health check
   app.get('/api/health', (req, res) => {

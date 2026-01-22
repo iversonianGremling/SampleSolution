@@ -7,6 +7,7 @@ import { FeatureWeightsPanel } from './FeatureWeightsPanel'
 import { buildFeatureMatrix, DEFAULT_WEIGHTS } from '../utils/featureMatrix'
 import { useDimensionReduction, type ReductionMethod } from '../hooks/useDimensionReduction'
 import { useClustering, getClusterColor, type ClusterMethod } from '../hooks/useClustering'
+import AudioManager from '../services/AudioManager'
 import type { FeatureWeights, SamplePoint } from '../types'
 
 export function SampleSpaceView() {
@@ -21,13 +22,14 @@ export function SampleSpaceView() {
   const [clusterCount, setClusterCount] = useState(5)
   const [dbscanEpsilon, setDbscanEpsilon] = useState(0.15)
 
-  // Hover/selection state
-  const [hoveredPoint, setHoveredPoint] = useState<SamplePoint | null>(null)
+  // Selection state
+  const [selectedPoint, setSelectedPoint] = useState<SamplePoint | null>(null)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
 
   // Audio playback
   const [playingId, setPlayingId] = useState<number | null>(null)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [isPaused, setIsPaused] = useState(false)
+  const audioManagerRef = useRef<AudioManager>(AudioManager.getInstance())
 
   // Container sizing
   const containerRef = useRef<HTMLDivElement>(null)
@@ -104,30 +106,39 @@ export function SampleSpaceView() {
 
   // Play sample
   const playPoint = useCallback((point: SamplePoint) => {
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current = null
-    }
+    const audioManager = audioManagerRef.current
 
-    if (playingId === point.id) {
-      setPlayingId(null)
+    // If already playing this audio, pause it
+    if (audioManager.isPlayingId(point.id)) {
+      audioManager.pause()
+      setIsPaused(true)
       return
     }
 
-    const audio = new Audio(getSliceDownloadUrl(point.id))
-    audio.onended = () => setPlayingId(null)
-    audio.onerror = () => setPlayingId(null)
-    audio.play().catch(() => setPlayingId(null))
-    audioRef.current = audio
-    setPlayingId(point.id)
-  }, [playingId])
+    // If this audio is paused, resume it
+    if (audioManager.getCurrentAudioId() === point.id && audioManager.isPaused()) {
+      audioManager.resume()
+      setIsPaused(false)
+      return
+    }
+
+    // Play the audio
+    const success = audioManager.play(point.id, getSliceDownloadUrl(point.id), {
+      onEnd: () => {
+        setPlayingId(null)
+        setIsPaused(false)
+      },
+    })
+    if (success) {
+      setPlayingId(point.id)
+      setIsPaused(false)
+    }
+  }, [])
 
   // Cleanup audio
   useEffect(() => {
     return () => {
-      if (audioRef.current) {
-        audioRef.current.pause()
-      }
+      audioManagerRef.current.stopAll()
     }
   }, [])
 
@@ -220,54 +231,55 @@ export function SampleSpaceView() {
           )}
           <WebGLScatter
             points={samplePoints}
-            onPointHover={setHoveredPoint}
+            onPointHover={() => {}}
             onPointClick={playPoint}
+            onPointSelect={setSelectedPoint}
             onSelectionChange={setSelectedIds}
             width={dimensions.width}
             height={dimensions.height}
           />
         </div>
 
-        {/* Hover Info Panel */}
-        {hoveredPoint && (
+        {/* Selected Info Panel */}
+        {selectedPoint && (
           <div className="bg-gray-800 rounded-lg p-4 flex items-center gap-4">
             <button
-              onClick={() => playPoint(hoveredPoint)}
+              onClick={() => playPoint(selectedPoint)}
               className={`p-3 rounded-full transition-colors ${
-                playingId === hoveredPoint.id
+                playingId === selectedPoint.id && !isPaused
                   ? 'bg-green-600 text-white'
                   : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
               }`}
             >
-              {playingId === hoveredPoint.id ? <Pause size={20} /> : <Play size={20} />}
+              {playingId === selectedPoint.id && !isPaused ? <Pause size={20} /> : <Play size={20} />}
             </button>
             <div className="flex-1">
-              <div className="font-medium text-white">{hoveredPoint.name}</div>
+              <div className="font-medium text-white">{selectedPoint.name}</div>
               <div className="text-sm text-gray-400 flex items-center gap-2">
                 <span
                   className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: getClusterColor(hoveredPoint.cluster) }}
+                  style={{ backgroundColor: getClusterColor(selectedPoint.cluster) }}
                 />
-                Cluster {hoveredPoint.cluster + 1}
-                {hoveredPoint.features.bpm && (
-                  <span className="ml-4">{Math.round(hoveredPoint.features.bpm)} BPM</span>
+                Cluster {selectedPoint.cluster + 1}
+                {selectedPoint.features.bpm && (
+                  <span className="ml-4">{Math.round(selectedPoint.features.bpm)} BPM</span>
                 )}
-                {hoveredPoint.features.duration && (
-                  <span className="ml-4">{hoveredPoint.features.duration.toFixed(2)}s</span>
+                {selectedPoint.features.duration && (
+                  <span className="ml-4">{selectedPoint.features.duration.toFixed(2)}s</span>
                 )}
               </div>
             </div>
             <div className="text-xs text-gray-500 grid grid-cols-2 gap-x-4 gap-y-1">
-              {hoveredPoint.features.spectralCentroid && (
+              {selectedPoint.features.spectralCentroid && (
                 <>
                   <span>Brightness:</span>
-                  <span>{Math.round(hoveredPoint.features.spectralCentroid)} Hz</span>
+                  <span>{Math.round(selectedPoint.features.spectralCentroid)} Hz</span>
                 </>
               )}
-              {hoveredPoint.features.rmsEnergy && (
+              {selectedPoint.features.rmsEnergy && (
                 <>
                   <span>Energy:</span>
-                  <span>{hoveredPoint.features.rmsEnergy.toFixed(3)}</span>
+                  <span>{selectedPoint.features.rmsEnergy.toFixed(3)}</span>
                 </>
               )}
             </div>

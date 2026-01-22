@@ -335,7 +335,8 @@ export function useExportSlices() {
 export function useImportLocalFile() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: api.importLocalFile,
+    mutationFn: ({ file, importType }: { file: File; importType?: 'sample' | 'track' }) =>
+      api.importLocalFile(file, importType),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
@@ -346,7 +347,8 @@ export function useImportLocalFile() {
 export function useImportLocalFiles() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: api.importLocalFiles,
+    mutationFn: ({ files, importType }: { files: File[]; importType?: 'sample' | 'track' }) =>
+      api.importLocalFiles(files, importType),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
@@ -357,7 +359,8 @@ export function useImportLocalFiles() {
 export function useImportFolder() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: api.importFolder,
+    mutationFn: ({ folderPath, importType }: { folderPath: string; importType?: 'sample' | 'track' }) =>
+      api.importFolder(folderPath, importType),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })

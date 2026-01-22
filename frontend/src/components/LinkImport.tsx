@@ -18,6 +18,8 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
   const [folderResult, setFolderResult] = useState<BatchImportResult | null>(null)
   const [selectedFolderName, setSelectedFolderName] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [localImportType, setLocalImportType] = useState<'sample' | 'track'>('sample')
+  const [folderImportType, setFolderImportType] = useState<'sample' | 'track'>('sample')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
 
@@ -35,7 +37,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
 
   const handleLocalFilesImport = async (files: File[]) => {
     if (files.length === 0) return
-    const res = await importLocalFiles.mutateAsync(files)
+    const res = await importLocalFiles.mutateAsync({ files, importType: localImportType })
     setLocalResult(res)
     if (res.successful > 0) {
       onTracksAdded()
@@ -64,7 +66,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
     const pathParts = firstFile.webkitRelativePath.split('/')
     setSelectedFolderName(pathParts[0] || 'Selected folder')
 
-    const res = await importLocalFiles.mutateAsync(audioFiles)
+    const res = await importLocalFiles.mutateAsync({ files: audioFiles, importType: folderImportType })
     setFolderResult(res)
     if (res.successful > 0) {
       onTracksAdded()
@@ -240,6 +242,40 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
           {/* Local Files Mode */}
           {mode === 'local' && (
             <>
+              <div className="bg-gray-700/30 rounded-lg p-3 space-y-3">
+                <div className="text-sm font-semibold text-white">Import as:</div>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-gray-700/50 p-2 rounded transition-colors">
+                    <input
+                      type="radio"
+                      name="localImportType"
+                      value="sample"
+                      checked={localImportType === 'sample'}
+                      onChange={(e) => setLocalImportType(e.target.value as 'sample' | 'track')}
+                      className="w-5 h-5 cursor-pointer"
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-white">Sample (auto-analyze)</div>
+                      <div className="text-xs text-gray-400">Audio features analyzed immediately</div>
+                    </div>
+                  </label>
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-gray-700/50 p-2 rounded transition-colors">
+                    <input
+                      type="radio"
+                      name="localImportType"
+                      value="track"
+                      checked={localImportType === 'track'}
+                      onChange={(e) => setLocalImportType(e.target.value as 'sample' | 'track')}
+                      className="w-5 h-5 cursor-pointer"
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-white">Track (no analysis)</div>
+                      <div className="text-xs text-gray-400">Import without analysis</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
               <div
                 onClick={() => fileInputRef.current?.click()}
                 onDrop={handleDrop}
@@ -315,6 +351,40 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
           {/* Local Folder Mode */}
           {mode === 'folder' && (
             <>
+              <div className="bg-gray-700/30 rounded-lg p-3 space-y-3">
+                <div className="text-sm font-semibold text-white">Import as:</div>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-gray-700/50 p-2 rounded transition-colors">
+                    <input
+                      type="radio"
+                      name="folderImportType"
+                      value="sample"
+                      checked={folderImportType === 'sample'}
+                      onChange={(e) => setFolderImportType(e.target.value as 'sample' | 'track')}
+                      className="w-5 h-5 cursor-pointer"
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-white">Sample (auto-analyze)</div>
+                      <div className="text-xs text-gray-400">Audio features analyzed immediately</div>
+                    </div>
+                  </label>
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-gray-700/50 p-2 rounded transition-colors">
+                    <input
+                      type="radio"
+                      name="folderImportType"
+                      value="track"
+                      checked={folderImportType === 'track'}
+                      onChange={(e) => setFolderImportType(e.target.value as 'sample' | 'track')}
+                      className="w-5 h-5 cursor-pointer"
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-white">Track (no analysis)</div>
+                      <div className="text-xs text-gray-400">Import without analysis</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
               <div
                 onClick={() => folderInputRef.current?.click()}
                 className="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors border-gray-600 hover:border-gray-500 hover:bg-gray-700/30"
