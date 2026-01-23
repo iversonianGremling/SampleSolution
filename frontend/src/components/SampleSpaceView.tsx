@@ -4,6 +4,7 @@ import { Loader2, Info, AlertCircle } from 'lucide-react'
 import { getSliceFeatures, getSliceDownloadUrl } from '../api/client'
 import { WebGLScatter } from './WebGLScatter'
 import { FeatureWeightsPanel } from './FeatureWeightsPanel'
+import { SliceFilterPanel } from './SliceFilterPanel'
 import { SliceDetailPanel } from './SliceDetailPanel'
 import { buildFeatureMatrix, DEFAULT_WEIGHTS } from '../utils/featureMatrix'
 import { useDimensionReduction, type ReductionMethod } from '../hooks/useDimensionReduction'
@@ -56,6 +57,9 @@ export function SampleSpaceView() {
 
   // Filter controls
   const {
+    filterState,
+    setSearchQuery,
+    setShowFavoritesOnly,
     filteredItems: filteredFeatures,
   } = useFilteredSlices(enrichedFeatures)
 
@@ -207,6 +211,13 @@ export function SampleSpaceView() {
           onClusterCountChange={setClusterCount}
           dbscanEpsilon={dbscanEpsilon}
           onDbscanEpsilonChange={setDbscanEpsilon}
+        />
+
+        {/* Filters */}
+        <SliceFilterPanel
+          filterState={filterState}
+          onSearchChange={setSearchQuery}
+          onFavoritesChange={setShowFavoritesOnly}
         />
 
         {/* Stats */}
