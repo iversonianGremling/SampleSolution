@@ -218,6 +218,7 @@ export function SampleSpaceView() {
           filterState={filterState}
           onSearchChange={setSearchQuery}
           onFavoritesChange={setShowFavoritesOnly}
+          maxDuration={100}
         />
 
         {/* Stats */}
