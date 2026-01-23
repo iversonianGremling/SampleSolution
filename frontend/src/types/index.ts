@@ -137,3 +137,35 @@ export interface SamplePoint {
   cluster: number
   features: AudioFeatures
 }
+
+export interface SliceFilterState {
+  searchQuery: string
+  selectedTags: number[]
+  minDuration: number
+  maxDuration: number
+  showFavoritesOnly: boolean
+  selectedCollectionId: number | null
+  selectedTrackId: number | null
+}
+
+export interface FilterableSlice {
+  id: number
+  name: string
+  trackId: number
+  favorite?: boolean
+  tags?: { id: number }[]
+  collectionIds?: number[]
+  track?: { title: string }
+  startTime?: number
+  endTime?: number
+  duration?: number | null
+}
+
+export interface AudioFeaturesWithMetadata extends AudioFeatures {
+  favorite: boolean
+  tags: { id: number; name: string; color: string }[]
+  collectionIds: number[]
+  track: { title: string; youtubeId: string }
+  startTime: number
+  endTime: number
+}

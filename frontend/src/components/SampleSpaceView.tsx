@@ -1,12 +1,16 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Play, Pause, Info, AlertCircle } from 'lucide-react'
+import { Loader2, Info, AlertCircle } from 'lucide-react'
 import { getSliceFeatures, getSliceDownloadUrl } from '../api/client'
 import { WebGLScatter } from './WebGLScatter'
 import { FeatureWeightsPanel } from './FeatureWeightsPanel'
+import { SliceDetailPanel } from './SliceDetailPanel'
 import { buildFeatureMatrix, DEFAULT_WEIGHTS } from '../utils/featureMatrix'
 import { useDimensionReduction, type ReductionMethod } from '../hooks/useDimensionReduction'
 import { useClustering, getClusterColor, type ClusterMethod } from '../hooks/useClustering'
+import { useAllSlices } from '../hooks/useTracks'
+import { useFilteredSlices } from '../hooks/useSliceFilters'
+import { enrichAudioFeatures } from '../utils/enrichAudioFeatures'
 import AudioManager from '../services/AudioManager'
 import type { FeatureWeights, SamplePoint } from '../types'
 
@@ -41,13 +45,28 @@ export function SampleSpaceView() {
     queryFn: getSliceFeatures,
   })
 
-  // Build feature matrix from data
+  // Fetch all slices for detail panel
+  const { data: allSlices } = useAllSlices()
+
+  // Enrich features with slice metadata for filtering
+  const enrichedFeatures = useMemo(() => {
+    if (!features || !allSlices) return []
+    return enrichAudioFeatures(features, allSlices)
+  }, [features, allSlices])
+
+  // Filter controls
+  const {
+    filteredItems: filteredFeatures,
+  } = useFilteredSlices(enrichedFeatures)
+
+  // Build feature matrix from filtered data
   const { matrix, validIndices } = useMemo(() => {
-    if (!features || features.length === 0) {
+    if (!filteredFeatures || filteredFeatures.length === 0) {
       return { matrix: [], validIndices: [] }
     }
-    return buildFeatureMatrix(features, weights)
-  }, [features, weights])
+    // Cast back to AudioFeatures for buildFeatureMatrix
+    return buildFeatureMatrix(filteredFeatures as any, weights)
+  }, [filteredFeatures, weights])
 
   // Run dimensionality reduction
   const { points: reducedPoints, isComputing: isReducing, error: reduceError } = useDimensionReduction(
@@ -67,21 +86,21 @@ export function SampleSpaceView() {
 
   // Combine all data into SamplePoints
   const samplePoints: SamplePoint[] = useMemo(() => {
-    if (!features || reducedPoints.length === 0) return []
+    if (!filteredFeatures || reducedPoints.length === 0) return []
 
     return reducedPoints.map((point, idx) => {
       const originalIdx = validIndices[idx]
-      const feature = features[originalIdx]
+      const feature = filteredFeatures[originalIdx]
       return {
         id: feature.id,
         name: feature.name,
         x: point[0],
         y: point[1],
         cluster: clusters[idx] ?? 0,
-        features: feature,
+        features: feature as any, // Cast to AudioFeatures for compatibility
       }
     })
-  }, [features, reducedPoints, validIndices, clusters])
+  }, [filteredFeatures, reducedPoints, validIndices, clusters])
 
   // Handle container resize
   useEffect(() => {
@@ -211,12 +230,12 @@ export function SampleSpaceView() {
       </div>
 
       {/* Right Panel - Visualization */}
-      <div className="lg:col-span-3 space-y-4">
+      <div className="lg:col-span-3 flex flex-col gap-4">
         {/* Scatter Plot */}
         <div
           ref={containerRef}
-          className="bg-gray-800 rounded-lg overflow-hidden relative"
-          style={{ minHeight: 500 }}
+          className="bg-gray-800 rounded-lg overflow-hidden relative flex-1"
+          style={{ minHeight: 400 }}
         >
           {isReducing && (
             <div className="absolute inset-0 bg-gray-900/50 flex items-center justify-center z-10">
@@ -240,51 +259,27 @@ export function SampleSpaceView() {
           />
         </div>
 
-        {/* Selected Info Panel */}
-        {selectedPoint && (
-          <div className="bg-gray-800 rounded-lg p-4 flex items-center gap-4">
-            <button
-              onClick={() => playPoint(selectedPoint)}
-              className={`p-3 rounded-full transition-colors ${
-                playingId === selectedPoint.id && !isPaused
-                  ? 'bg-green-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              {playingId === selectedPoint.id && !isPaused ? <Pause size={20} /> : <Play size={20} />}
-            </button>
-            <div className="flex-1">
-              <div className="font-medium text-white">{selectedPoint.name}</div>
-              <div className="text-sm text-gray-400 flex items-center gap-2">
-                <span
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: getClusterColor(selectedPoint.cluster) }}
-                />
-                Cluster {selectedPoint.cluster + 1}
-                {selectedPoint.features.bpm && (
-                  <span className="ml-4">{Math.round(selectedPoint.features.bpm)} BPM</span>
-                )}
-                {selectedPoint.features.duration && (
-                  <span className="ml-4">{selectedPoint.features.duration.toFixed(2)}s</span>
-                )}
+        {/* Selected Detail Panel */}
+        {selectedPoint && (() => {
+          const sliceData = allSlices?.find(s => s.id === selectedPoint.id)
+          if (!sliceData) {
+            return (
+              <div className="bg-gray-800 rounded-lg p-4 text-gray-400 text-sm">
+                Loading slice details...
               </div>
-            </div>
-            <div className="text-xs text-gray-500 grid grid-cols-2 gap-x-4 gap-y-1">
-              {selectedPoint.features.spectralCentroid && (
-                <>
-                  <span>Brightness:</span>
-                  <span>{Math.round(selectedPoint.features.spectralCentroid)} Hz</span>
-                </>
-              )}
-              {selectedPoint.features.rmsEnergy && (
-                <>
-                  <span>Energy:</span>
-                  <span>{selectedPoint.features.rmsEnergy.toFixed(3)}</span>
-                </>
-              )}
-            </div>
-          </div>
-        )}
+            )
+          }
+          return (
+            <SliceDetailPanel
+              selectedPoint={selectedPoint}
+              sliceData={sliceData}
+              onPlay={() => playPoint(selectedPoint)}
+              isPlaying={playingId === selectedPoint.id && !isPaused}
+              isPaused={isPaused}
+              onClose={() => setSelectedPoint(null)}
+            />
+          )
+        })()}
 
         {/* Legend */}
         <div className="bg-gray-800 rounded-lg p-4">

@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   Search,
   Play,
@@ -33,19 +33,30 @@ import {
   useUpdateSliceGlobal,
   useUpdateTrack,
 } from '../hooks/useTracks'
+import { useFilteredSlices } from '../hooks/useSliceFilters'
 import { getSliceDownloadUrl } from '../api/client'
 import { TagSearchInput } from './TagSearchInput'
 import type { SliceWithTrack, Tag, Collection } from '../types'
 
 export function SliceBrowser() {
-  // Filters
-  const [searchQuery, setSearchQuery] = useState('')
-  const [selectedTags, setSelectedTags] = useState<number[]>([])
-  const [minDuration, setMinDuration] = useState(0)
-  const [maxDuration, setMaxDuration] = useState(60)
-  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
-  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null)
-  const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null)
+  // Data fetching
+  const { data: slices, isLoading: slicesLoading } = useAllSlices()
+
+  // Filter controls
+  const {
+    filterState,
+    setSearchQuery,
+    setSelectedTags,
+    setMinDuration,
+    setMaxDuration,
+    setShowFavoritesOnly,
+    setSelectedCollectionId,
+    setSelectedTrackId,
+    filteredItems: filteredSlices,
+    maxSliceDuration,
+  } = useFilteredSlices(slices)
+
+  const { searchQuery, selectedTags, showFavoritesOnly, selectedCollectionId, selectedTrackId, minDuration, maxDuration } = filterState
 
   // Audio playback
   const [playingSliceId, setPlayingSliceId] = useState<number | null>(null)
@@ -64,7 +75,6 @@ export function SliceBrowser() {
   const [selectedSliceIds, setSelectedSliceIds] = useState<Set<number>>(new Set())
 
   // Data fetching
-  const { data: slices, isLoading: slicesLoading } = useAllSlices()
   const { data: allTags } = useTags()
   const { data: collections } = useCollections()
   const addTagToSlice = useAddTagToSlice()
@@ -88,47 +98,6 @@ export function SliceBrowser() {
       }
     }
   }, [])
-
-  // Filter slices
-  const filteredSlices = useMemo(() => {
-    if (!slices) return []
-
-    return slices.filter((slice) => {
-      // Favorites filter
-      if (showFavoritesOnly && !slice.favorite) return false
-
-      // Collection filter
-      if (selectedCollectionId !== null && !slice.collectionIds.includes(selectedCollectionId)) {
-        return false
-      }
-
-      // Track filter
-      if (selectedTrackId !== null && slice.trackId !== selectedTrackId) {
-        return false
-      }
-
-      // Text search (name or track title)
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase()
-        const matchesName = slice.name.toLowerCase().includes(query)
-        const matchesTrack = slice.track.title.toLowerCase().includes(query)
-        if (!matchesName && !matchesTrack) return false
-      }
-
-      // Tag filter (AND logic - must have ALL selected tags)
-      if (selectedTags.length > 0) {
-        const sliceTagIds = slice.tags.map((t) => t.id)
-        const hasAllTags = selectedTags.every((tagId) => sliceTagIds.includes(tagId))
-        if (!hasAllTags) return false
-      }
-
-      // Duration filter
-      const duration = slice.endTime - slice.startTime
-      if (duration < minDuration || duration > maxDuration) return false
-
-      return true
-    })
-  }, [slices, searchQuery, selectedTags, minDuration, maxDuration, showFavoritesOnly, selectedCollectionId, selectedTrackId])
 
   // Format time as mm:ss.cc
   const formatTime = (seconds: number) => {
@@ -160,9 +129,10 @@ export function SliceBrowser() {
 
   // Toggle tag in filter
   const toggleTagFilter = (tagId: number) => {
-    setSelectedTags((prev) =>
-      prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId]
-    )
+    const newTags = selectedTags.includes(tagId)
+      ? selectedTags.filter((id) => id !== tagId)
+      : [...selectedTags, tagId]
+    setSelectedTags(newTags)
   }
 
   // Add tag to slice
@@ -192,13 +162,6 @@ export function SliceBrowser() {
       setShowNewCollection(false)
     }
   }
-
-
-  // Calculate max duration for slider
-  const maxSliceDuration = useMemo(() => {
-    if (!slices || slices.length === 0) return 60
-    return Math.ceil(Math.max(...slices.map((s) => s.endTime - s.startTime)))
-  }, [slices])
 
   const favoritesCount = slices?.filter((s) => s.favorite).length || 0
 
