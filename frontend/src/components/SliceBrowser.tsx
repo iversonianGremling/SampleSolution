@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
 import {
-  Search,
   Play,
   Pause,
   Download,
@@ -36,6 +35,7 @@ import {
 import { useFilteredSlices } from '../hooks/useSliceFilters'
 import { getSliceDownloadUrl } from '../api/client'
 import { TagSearchInput } from './TagSearchInput'
+import { SliceFilterPanel } from './SliceFilterPanel'
 import type { SliceWithTrack, Tag, Collection } from '../types'
 
 export function SliceBrowser() {
@@ -56,7 +56,7 @@ export function SliceBrowser() {
     maxSliceDuration,
   } = useFilteredSlices(slices)
 
-  const { searchQuery, selectedTags, showFavoritesOnly, selectedCollectionId, selectedTrackId, minDuration, maxDuration } = filterState
+  const { selectedTags, showFavoritesOnly, selectedCollectionId, selectedTrackId } = filterState
 
   // Audio playback
   const [playingSliceId, setPlayingSliceId] = useState<number | null>(null)
@@ -254,98 +254,23 @@ export function SliceBrowser() {
         </div>
       </div>
 
-
-      {/* Filters Section */}
-      <div className="bg-gray-800 rounded-lg p-4 space-y-4">
-        <h2 className="font-semibold text-white">Filters</h2>
-
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by name or track..."
-            className="w-full pl-10 pr-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
-          />
-        </div>
-
-        {/* Track Filter */}
-        {selectedTrackId !== null && (
-          <div className="flex items-center gap-2 px-3 py-2 bg-indigo-900/40 border border-indigo-700/50 rounded-lg">
-            <span className="text-sm text-indigo-300">
-              Filtering by track: <span className="font-medium text-white">{slices?.find(s => s.trackId === selectedTrackId)?.track.title}</span>
-            </span>
-            <button
-              onClick={() => setSelectedTrackId(null)}
-              className="p-1 text-indigo-400 hover:text-white hover:bg-indigo-700/50 rounded transition-colors"
-              title="Clear track filter"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
-
-        {/* Tag Filter */}
-        <div>
-          <label className="text-sm text-gray-400 block mb-2">Filter by tags (must match ALL)</label>
-          <div className="flex flex-wrap gap-2">
-            {(allTags || []).map((tag) => (
-              <button
-                key={tag.id}
-                onClick={() => toggleTagFilter(tag.id)}
-                className={`px-2 py-1 rounded text-sm transition-all ${
-                  selectedTags.includes(tag.id)
-                    ? 'ring-2 ring-white'
-                    : 'opacity-60 hover:opacity-100'
-                }`}
-                style={{
-                  backgroundColor: tag.color + '40',
-                  color: tag.color,
-                }}
-              >
-                {tag.name}
-              </button>
-            ))}
-            {selectedTags.length > 0 && (
-              <button
-                onClick={() => setSelectedTags([])}
-                className="px-2 py-1 text-sm text-gray-400 hover:text-white"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Duration Filter */}
-        <div>
-          <label className="text-sm text-gray-400 block mb-2">
-            Duration: {formatTime(minDuration)} - {formatTime(maxDuration)}
-          </label>
-          <div className="flex gap-4 items-center">
-            <input
-              type="range"
-              min={0}
-              max={maxSliceDuration}
-              step={0.1}
-              value={minDuration}
-              onChange={(e) => setMinDuration(parseFloat(e.target.value))}
-              className="flex-1"
-            />
-            <input
-              type="range"
-              min={0}
-              max={maxSliceDuration}
-              step={0.1}
-              value={maxDuration}
-              onChange={(e) => setMaxDuration(parseFloat(e.target.value))}
-              className="flex-1"
-            />
-          </div>
-        </div>
-      </div>
+      {/* Filters */}
+      <SliceFilterPanel
+        filterState={filterState}
+        onSearchChange={setSearchQuery}
+        onFavoritesChange={setShowFavoritesOnly}
+        onTrackFilterChange={setSelectedTrackId}
+        onTagFilterChange={toggleTagFilter}
+        onTagFilterClear={() => setSelectedTags([])}
+        onDurationChange={(min, max) => {
+          setMinDuration(min)
+          setMaxDuration(max)
+        }}
+        allTags={allTags}
+        maxDuration={maxSliceDuration}
+        sliceTrackTitle={slices?.find(s => s.trackId === selectedTrackId)?.track.title}
+        formatTime={formatTime}
+      />
 
       {/* Results */}
       <div className="bg-gray-800 rounded-lg overflow-hidden">
