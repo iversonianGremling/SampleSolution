@@ -192,11 +192,16 @@ export function useWavesurfer({
     viewportRegion.on('update', handleViewportUpdate)
     viewportRegion.on('update-end', handleViewportUpdate)
 
+    // Calculate time duration that corresponds to 2px on the minimap
+    // Formula: (2px / minimapWidth) * duration gives us the time needed for 2px
+    const minimapWidth = minimapWavesurferRef.current?.getWidth() || 1
+    const indicatorDuration = Math.max((2 / minimapWidth) * duration, 0.001)
+
     // Create playback position indicator on minimap
     const playbackPositionRegion = minimapRegionsRef.current.addRegion({
       id: 'playback-position',
       start: 0,
-      end: 0.5, // Wider indicator for better visibility
+      end: indicatorDuration,
       drag: false,
       resize: false,
       color: 'rgba(239, 68, 68, 0.8)', // Brighter red for playback position
@@ -210,7 +215,7 @@ export function useWavesurfer({
         const currentTime = wavesurferRef.current.getCurrentTime()
         playbackPositionRegionRef.current.setOptions({
           start: currentTime,
-          end: Math.min(currentTime + 0.5, duration),
+          end: Math.min(currentTime + indicatorDuration, duration),
         })
       }
     }

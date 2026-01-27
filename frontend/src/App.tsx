@@ -1,24 +1,17 @@
 import { useState } from 'react'
-import { Music, Search, ListMusic, Upload, Layers, Sparkles, LogIn, LogOut } from 'lucide-react'
-import { TrackList } from './components/TrackList'
-import { WaveformEditor } from './components/WaveformEditor'
-import { YouTubeSearch } from './components/YouTubeSearch'
-import { PlaylistImport } from './components/PlaylistImport'
-import { LinkImport } from './components/LinkImport'
-import { SliceBrowser } from './components/SliceBrowser'
-import { SampleSpaceView } from './components/SampleSpaceView'
-import { SetupInstructions } from './components/SetupInstructions'
+import { Music, FileUp, Layers, LogIn, LogOut, Mic2 } from 'lucide-react'
+import { YouTubeHub } from './components/YouTubeHub'
+import { UnifiedSamplesView } from './components/UnifiedSamplesView'
+import { SourcesView } from './components/SourcesView'
+import { EditingView } from './components/EditingView'
 import { useAuthStatus } from './hooks/useTracks'
 import { getGoogleAuthUrl, logout } from './api/client'
-import type { Track } from './types'
 
-type Tab = 'tracks' | 'samples' | 'space' | 'search' | 'playlists' | 'import'
+type Tab = 'sources' | 'samples' | 'editing' | 'youtube'
 
 function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('tracks')
-  const [selectedTrack, setSelectedTrack] = useState<Track | null>(null)
+  const [activeTab, setActiveTab] = useState<Tab>('sources')
   const { data: authStatus } = useAuthStatus()
-  console.log("AAAAAAA")
 
   const handleLogin = () => {
     window.location.href = getGoogleAuthUrl()
@@ -30,19 +23,14 @@ function App() {
   }
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: 'tracks', label: 'Tracks', icon: <Music size={18} /> },
+    { id: 'sources', label: 'Sources', icon: <Music size={18} /> },
     { id: 'samples', label: 'Samples', icon: <Layers size={18} /> },
-    { id: 'space', label: 'Sample Space', icon: <Sparkles size={18} /> },
-    { id: 'search', label: 'Search', icon: <Search size={18} /> },
-    { id: 'playlists', label: 'Playlists', icon: <ListMusic size={18} /> },
-    { id: 'import', label: 'Import', icon: <Upload size={18} /> },
+    { id: 'editing', label: 'Editing', icon: <Mic2 size={18} /> },
+    { id: 'youtube', label: 'Import', icon: <FileUp size={18} /> },
   ]
 
   return (
     <div className="min-h-screen bg-gray-900">
-      {/* Setup Instructions Overlay */}
-      <SetupInstructions />
-
       {/* Header */}
       <header className="bg-gray-800 border-b border-gray-700">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
@@ -103,55 +91,13 @@ function App() {
       </nav>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 py-6">
-        <div className={`grid gap-6 ${activeTab === 'tracks' ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
-          {/* Left Panel */}
-          <div className="space-y-6">
-            {activeTab === 'tracks' && (
-              <TrackList
-                onSelectTrack={setSelectedTrack}
-                selectedTrackId={selectedTrack?.id}
-              />
-            )}
-            {activeTab === 'samples' && <SliceBrowser />}
-            {activeTab === 'space' && <SampleSpaceView />}
-            {activeTab === 'search' && (
-              <YouTubeSearch onTrackAdded={() => setActiveTab('tracks')} />
-            )}
-            {activeTab === 'playlists' && (
-              <PlaylistImport
-                isAuthenticated={authStatus?.authenticated || false}
-                onTracksAdded={() => setActiveTab('tracks')}
-              />
-            )}
-            {activeTab === 'import' && (
-              <LinkImport onTracksAdded={() => setActiveTab('tracks')} />
-            )}
-          </div>
-
-          {/* Right Panel - Waveform Editor (only on tracks tab) */}
-          {activeTab === 'tracks' && (
-            <div>
-              {selectedTrack && selectedTrack.status === 'ready' ? (
-                <WaveformEditor track={selectedTrack} />
-              ) : selectedTrack ? (
-                <div className="bg-gray-800 rounded-lg p-8 text-center">
-                  <div className="animate-pulse text-gray-400">
-                    {selectedTrack.status === 'downloading'
-                      ? 'Downloading audio...'
-                      : selectedTrack.status === 'pending'
-                      ? 'Waiting to process...'
-                      : 'Error processing track'}
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-gray-800 rounded-lg p-8 text-center text-gray-500">
-                  Select a track to edit samples
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+      <main className={activeTab === 'sources' || activeTab === 'editing' ? 'h-[calc(100vh-120px)]' : activeTab === 'youtube' ? 'h-[calc(100vh-120px)]' : 'max-w-7xl mx-auto px-4 py-6'}>
+        {activeTab === 'sources' && <SourcesView />}
+        {activeTab === 'samples' && <UnifiedSamplesView />}
+        {activeTab === 'editing' && <EditingView />}
+        {activeTab === 'youtube' && (
+          <YouTubeHub onTracksAdded={() => setActiveTab('sources')} />
+        )}
       </main>
     </div>
   )

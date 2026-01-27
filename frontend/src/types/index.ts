@@ -8,6 +8,9 @@ export interface Track {
   audioPath: string | null
   peaksPath: string | null
   status: 'pending' | 'downloading' | 'ready' | 'error'
+  source?: 'youtube' | 'local'
+  originalPath?: string | null
+  folderPath?: string | null
   createdAt: string
   tags: Tag[]
 }
@@ -36,6 +39,7 @@ export interface Collection {
   id: number
   name: string
   color: string
+  parentId: number | null
   sliceCount: number
   createdAt: string
 }
@@ -144,7 +148,7 @@ export interface SliceFilterState {
   minDuration: number
   maxDuration: number
   showFavoritesOnly: boolean
-  selectedCollectionId: number | null
+  selectedCollectionIds: number[]
   selectedTrackId: number | null
 }
 
@@ -168,4 +172,49 @@ export interface AudioFeaturesWithMetadata extends AudioFeatures {
   track: { title: string; youtubeId: string }
   startTime: number
   endTime: number
+}
+
+// Sources feature types
+export interface YouTubeSourceNode {
+  id: number
+  title: string
+  thumbnailUrl: string
+  sliceCount: number
+}
+
+export interface FolderNode {
+  path: string
+  name: string
+  children: FolderNode[]
+  sampleCount: number
+}
+
+export interface SourceTree {
+  youtube: YouTubeSourceNode[]
+  local: { count: number }
+  folders: FolderNode[]
+}
+
+export type SourceScope =
+  | { type: 'all' }
+  | { type: 'youtube' }
+  | { type: 'youtube-video'; trackId: number }
+  | { type: 'local' }
+  | { type: 'folder'; path: string }
+  | { type: 'my-folder'; collectionId: number }
+
+export interface SliceWithTrackExtended extends Slice {
+  collectionIds: number[]
+  track: {
+    title: string
+    youtubeId: string
+    source?: 'youtube' | 'local'
+    folderPath?: string | null
+    originalPath?: string | null
+  }
+}
+
+export interface SourcesSamplesResponse {
+  samples: SliceWithTrackExtended[]
+  total: number
 }

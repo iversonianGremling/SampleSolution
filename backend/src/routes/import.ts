@@ -214,6 +214,8 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
         audioPath: uploadedPath,
         status: 'ready',
         source: 'local',
+        originalPath: originalName, // Store original filename for individual imports
+        folderPath: null, // No folder for individual file imports
       })
       .returning()
 
@@ -330,6 +332,8 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
           audioPath: uploadedPath,
           status: 'ready',
           source: 'local',
+          originalPath: originalName, // Store original filename for individual imports
+          folderPath: null, // No folder for batch file imports
         })
         .returning()
 
@@ -456,6 +460,8 @@ router.post('/import/folder', async (req, res) => {
             audioPath: filePath, // Keep original path
             status: 'ready',
             source: 'local',
+            originalPath: filePath, // Store full original file path
+            folderPath: folderPath, // Store the folder used for import
           })
           .returning()
 

@@ -6,7 +6,7 @@ export const DEFAULT_FILTER_STATE: SliceFilterState = {
   minDuration: 0,
   maxDuration: 60,
   showFavoritesOnly: false,
-  selectedCollectionId: null,
+  selectedCollectionIds: [],
   selectedTrackId: null,
 }
 
@@ -18,8 +18,9 @@ export const filterPredicates = {
   },
 
   collection: (item: FilterableSlice, state: SliceFilterState) => {
-    if (state.selectedCollectionId === null) return true
-    return item.collectionIds?.includes(state.selectedCollectionId) ?? false
+    if (state.selectedCollectionIds.length === 0) return true
+    const itemCollectionIds = item.collectionIds ?? []
+    return state.selectedCollectionIds.every(collectionId => itemCollectionIds.includes(collectionId)) // AND logic
   },
 
   track: (item: FilterableSlice, state: SliceFilterState) => {

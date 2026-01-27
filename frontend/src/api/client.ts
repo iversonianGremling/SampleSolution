@@ -11,6 +11,8 @@ import type {
   Collection,
   ExportResult,
   AudioFeatures,
+  SourceTree,
+  SourcesSamplesResponse,
 } from '../types'
 
 const api = axios.create({
@@ -139,11 +141,14 @@ export const toggleFavorite = (sliceId: number) =>
 export const getCollections = () =>
   api.get<Collection[]>('/collections').then((r) => r.data)
 
-export const createCollection = (data: { name: string; color?: string }) =>
+export const createCollection = (data: { name: string; color?: string; parentId?: number }) =>
   api.post<Collection>('/collections', data).then((r) => r.data)
 
-export const updateCollection = (id: number, data: { name?: string; color?: string }) =>
+export const updateCollection = (id: number, data: { name?: string; color?: string; parentId?: number | null }) =>
   api.put<Collection>(`/collections/${id}`, data).then((r) => r.data)
+
+export const createCollectionFromTag = (data: { tagId: number; name?: string; color?: string }) =>
+  api.post<Collection>('/collections/from-tag', data).then((r) => r.data)
 
 export const deleteCollection = (id: number) =>
   api.delete(`/collections/${id}`)
@@ -212,3 +217,24 @@ export const browseDirectory = (path?: string) =>
 // Sample Space - Audio Features
 export const getSliceFeatures = () =>
   api.get<AudioFeatures[]>('/slices/features').then((r) => r.data)
+
+// Sources feature
+export const getSourceTree = () =>
+  api.get<SourceTree>('/sources/tree').then((r) => r.data)
+
+export interface SourcesSamplesParams {
+  scope?: string  // 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'collection:{id}' | 'all'
+  tags?: number[]
+  search?: string
+  favorites?: boolean
+}
+
+export const getSourcesSamples = (params: SourcesSamplesParams) => {
+  const queryParams: Record<string, string> = {}
+  if (params.scope) queryParams.scope = params.scope
+  if (params.tags && params.tags.length > 0) queryParams.tags = params.tags.join(',')
+  if (params.search) queryParams.search = params.search
+  if (params.favorites) queryParams.favorites = 'true'
+
+  return api.get<SourcesSamplesResponse>('/sources/samples', { params: queryParams }).then((r) => r.data)
+}

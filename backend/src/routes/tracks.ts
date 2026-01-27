@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, isNull, isNotNull, and, sql } from 'drizzle-orm'
 import fs from 'fs/promises'
 import path from 'path'
 import { db, schema } from '../db/index.js'
@@ -8,6 +8,147 @@ import { processTrack } from '../services/processor.js'
 
 const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
+
+// Types for source tree
+interface YouTubeSourceNode {
+  id: number
+  title: string
+  thumbnailUrl: string
+  sliceCount: number
+}
+
+interface FolderNode {
+  path: string
+  name: string
+  children: FolderNode[]
+  sampleCount: number
+}
+
+interface SourceTree {
+  youtube: YouTubeSourceNode[]
+  local: { count: number }
+  folders: FolderNode[]
+}
+
+// Helper function to build folder tree from flat list of paths
+function buildFolderTree(
+  folderCounts: Map<string, number>
+): FolderNode[] {
+  const rootFolders: FolderNode[] = []
+  const folderMap = new Map<string, FolderNode>()
+
+  // Sort paths by length to process parents before children
+  const sortedPaths = Array.from(folderCounts.keys()).sort((a, b) => a.length - b.length)
+
+  for (const folderPath of sortedPaths) {
+    const count = folderCounts.get(folderPath) || 0
+    const node: FolderNode = {
+      path: folderPath,
+      name: path.basename(folderPath) || folderPath,
+      children: [],
+      sampleCount: count,
+    }
+    folderMap.set(folderPath, node)
+
+    // Find parent folder
+    const parentPath = path.dirname(folderPath)
+    const parent = folderMap.get(parentPath)
+
+    if (parent) {
+      parent.children.push(node)
+      // Add this folder's count to parent's total
+      parent.sampleCount += count
+    } else {
+      rootFolders.push(node)
+    }
+  }
+
+  return rootFolders
+}
+
+// GET /api/sources/tree - Returns hierarchical source tree
+router.get('/sources/tree', async (_req, res) => {
+  try {
+    // Get YouTube tracks with slice counts
+    const youtubeTracks = await db
+      .select({
+        id: schema.tracks.id,
+        title: schema.tracks.title,
+        thumbnailUrl: schema.tracks.thumbnailUrl,
+      })
+      .from(schema.tracks)
+      .where(eq(schema.tracks.source, 'youtube'))
+      .orderBy(schema.tracks.createdAt)
+
+    // Get slice counts for each YouTube track
+    const youtubeTrackIds = youtubeTracks.map(t => t.id)
+    const sliceCounts = youtubeTrackIds.length > 0
+      ? await db
+          .select({
+            trackId: schema.slices.trackId,
+            count: sql<number>`count(*)`.as('count'),
+          })
+          .from(schema.slices)
+          .where(inArray(schema.slices.trackId, youtubeTrackIds))
+          .groupBy(schema.slices.trackId)
+      : []
+
+    const sliceCountMap = new Map(sliceCounts.map(s => [s.trackId, Number(s.count)]))
+
+    const youtube: YouTubeSourceNode[] = youtubeTracks.map(t => ({
+      id: t.id,
+      title: t.title,
+      thumbnailUrl: t.thumbnailUrl,
+      sliceCount: sliceCountMap.get(t.id) || 0,
+    }))
+
+    // Get local samples count (individual imports without folderPath)
+    const localCountResult = await db
+      .select({ count: sql<number>`count(*)`.as('count') })
+      .from(schema.slices)
+      .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .where(and(
+        eq(schema.tracks.source, 'local'),
+        isNull(schema.tracks.folderPath)
+      ))
+
+    const localCount = Number(localCountResult[0]?.count || 0)
+
+    // Get folder paths with sample counts
+    const folderResults = await db
+      .select({
+        folderPath: schema.tracks.folderPath,
+        count: sql<number>`count(*)`.as('count'),
+      })
+      .from(schema.slices)
+      .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .where(and(
+        eq(schema.tracks.source, 'local'),
+        isNotNull(schema.tracks.folderPath)
+      ))
+      .groupBy(schema.tracks.folderPath)
+
+    const folderCounts = new Map<string, number>()
+    for (const row of folderResults) {
+      if (row.folderPath) {
+        folderCounts.set(row.folderPath, Number(row.count))
+      }
+    }
+
+    const folders = buildFolderTree(folderCounts)
+
+    const tree: SourceTree = {
+      youtube,
+      local: { count: localCount },
+      folders,
+    }
+
+    res.json(tree)
+  } catch (error) {
+    console.error('Error fetching sources tree:', error)
+    res.status(500).json({ error: 'Failed to fetch sources tree' })
+  }
+})
 
 // Get all tracks with their tags
 router.get('/', async (req, res) => {

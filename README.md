@@ -1,50 +1,61 @@
 # Sample Solution
 
-A simple tool for downloading songs and cutting samples easily using youtube-dlp and the youtube API. It uses local AI to come up with tags.
+A comprehensive audio sample management and analysis platform for music producers and sound designers. Import your audio library, extract and organize samples, and discover patterns through advanced audio feature analysis and interactive visualization.
 
 <img width="1291" height="880" alt="image" src="https://github.com/user-attachments/assets/d22647c8-f048-4b95-afcc-c72b5ddec871" />
 
 
-> ⚠️ **Legal Disclaimer**: This tool downloads audio from YouTube videos. You are responsible for ensuring you have the right to use any downloaded content. **Use at your own risk and only with content you have permission to use.**
+> **Legal Note**: Ensure you have appropriate rights to any content in your library. Use this tool responsibly and in accordance with copyright and intellectual property laws.
 
 ---
 
 ## What It Does
 
-### YouTube Integration
-- Paste YouTube URLs to download audio
-- Search YouTube directly in the app
-- Import playlists (with Google OAuth)
+### Audio Library Management
+- **Import Local Files**: Upload individual audio files directly to your library
+- **Batch Folder Import**: Import entire folder structures to organize your samples
+- **Flexible Organization**: Create hierarchical collections and organize by source
+- **Track Metadata**: Manage and edit information for all your audio tracks
 
-### Sample Creation & Editing
-- Visual waveform editor
-- Drag to select regions and create slices
-- Zoom and navigate with minimap
-- Download individual slices as MP3
+### Sample Creation & Professional Analysis
+- **Waveform Editor**: Precision visual interface for sample extraction
+  - Drag-to-select regions and create slices
+  - Zoom and navigate with minimap overview
+  - Real-time audio playback
+- **Automatic Audio Analysis**: Industry-standard feature extraction
+  - 15+ audio features computed per sample (spectral, temporal, perceptual)
+  - Features include: spectral centroid, RMS energy, tempo detection, attack time, and more
+  - Runs automatically when samples are created
+  - Enables intelligent search and discovery
+- **Slice Export**: Download processed samples in multiple formats
 
-### AI Auto-Tagging (Locally deployed)
+### Smart Organization & Discovery
+- **AI-Assisted Tagging**: Intelligent sample categorization
+- **Advanced Filtering**: Find samples by duration, tags, collections, source, and more
+- **Full-Text Search**: Search across sample metadata
+- **Collections**: Organize samples into nested collections with custom colors
 
-**Audio Analysis** - Runs automatically when you create a slice:
-- Analyzes several features of the sample (like if it's a one-shot or a loop)
-- Uses Essentia + Librosa Python libraries
-- Metadata extraction + Ollama analysis
+### Interactive Visualization
+- **Sample Space View**: Explore your sample library in an interactive 2D space
+  - Dimensionality reduction algorithms visualize sample relationships
+  - Visual cluster identification
+  - Custom feature weighting for exploration
 
 ---
 
 ## Setup
 
-### What You Need
+### Requirements
 - Docker & Docker Compose
-- Google Cloud account (for YouTube API - see [SETUP.md](SETUP.md))
+- Optional: Google account (for OAuth features)
 
 ### Getting Started
 
 1. **Configure environment variables**
-   [SETUP.md](SETUP.md)
    ```bash
    cd backend
-   # Edit .env.example with your Google API credentials
-   # See SETUP.md for how to get these and extra details
+   # Copy and edit .env.example with your settings
+   # See SETUP.md for detailed configuration options
    ```
 
 2. **Start everything**
@@ -67,29 +78,32 @@ A simple tool for downloading songs and cutting samples easily using youtube-dlp
 
 ## How to Use
 
-### Adding Videos
-1. Paste a YouTube URL and hit "Add"
-2. Or use the search bar to find videos
-3. Or authenticate with Google to import your playlists
+### Importing Audio
+1. Navigate to the **Sources** tab
+2. Upload individual files or import entire folders
+3. Files are automatically organized and indexed
 
 ### Creating Samples
-1. Click a track to open the waveform editor
-2. Drag across the waveform to select a region
-3. Name your slice and save
-4. AI automatically analyzes and tags it
-5. Download the slice as MP3
+1. Select a track from your library
+2. Open the **Editing** tab to access the waveform editor
+3. Drag across the waveform to select a region
+4. Name your slice and save
+5. Audio analysis runs automatically
+6. Organize with tags and collections
+7. Download the slice as needed
 
-### Tags
-- They technically work but it's still a work in progress
+### Discovering Samples
+1. Visit the **Samples** tab to view your library
+2. Use filters to find samples by duration, tags, or collection
+3. Search by name or metadata
+4. View the **Sample Space** visualization to explore relationships
+5. Adjust feature weights to focus on specific characteristics
 
----
-
-
-**How it works**: YouTube → yt-dlp downloads audio → FFmpeg processes it → You create slices → Python analyzes audio → AI generates tags → Saved to database
-
-OR
-
-YouTube → yt-dlp downloads audio → FFmpeg processes it → You create slices → Download → Profit
+### Building Collections
+1. Create custom collections from the Collections menu
+2. Assign samples to multiple collections
+3. Organize hierarchically with parent/child relationships
+4. Use color coding for visual organization
 
 ---
 
@@ -120,53 +134,47 @@ docker-compose build
 
 ## Troubleshooting
 
-**Port 4000 already in use:**
+**Port issues:**
 ```bash
-fuser -k 4000/tcp
+fuser -k 4000/tcp  # Free port 4000
+fuser -k 3000/tcp  # Free port 3000
 ```
 
-**OAuth errors:** Check your credentials in `.env` and make sure YouTube Data API is enabled in Google Cloud
+**OAuth errors:** Verify your credentials in `.env` and check that required APIs are properly configured
 
-**TensorFlow warnings on startup:** These are just informational messages about CPU optimizations, ignore them
+**TensorFlow warnings on startup:** These are informational messages about CPU optimizations and can be safely ignored
 
-See [SETUP.md](SETUP.md) for more help.
+See [SETUP.md](SETUP.md) for detailed troubleshooting and configuration help.
 
 ---
 
-**This tool is not intended for:**
-- Commercial sample production
-- Distributing copyrighted material
-- Violating YouTube's TOS
-- Creating sample packs for sale without proper licensing
+### Using This Tool Responsibly
 
-### Your Responsibility
+- **Verify Ownership**: Ensure you have the rights to any content you import into this system
+- **Respect Copyright**: Do not use this tool to infringe on intellectual property rights
+- **Follow Terms of Service**: Comply with all applicable laws and terms of service for any content sources
+- **Proper Licensing**: Use only content you own, have licensed, or that is properly licensed for your intended use
 
-**By using this tool, you agree that:**
-- You are solely responsible for ensuring you have rights to any content you download
-- You will comply with all applicable laws and YouTube's Terms of Service
-- The developers/contributors are not liable for any misuse
-- You will not use this to infringe on anyone's copyright
-
-**When in doubt, don't download it.** Get proper licenses or use royalty-free content.
+The developers are not responsible for misuse of this tool.
 
 ---
 
 ## Tech Stack
 
-- **Frontend**: React + TypeScript, Vite, Tailwind CSS, WaveSurfer.js
+- **Frontend**: React 18 + TypeScript, Vite, Tailwind CSS, WaveSurfer.js, Pixi.js
 - **Backend**: Node.js + Express, TypeScript, SQLite (Drizzle ORM)
-- **AI/Audio**: TensorFlow.js, Python (Essentia + Librosa), Ollama (optional)
-- **Tools**: yt-dlp, FFmpeg, YouTube Data API v3
+- **Audio Analysis**: TensorFlow.js, Python (Essentia + Librosa), Meyda
+- **Visualization**: UMAP/t-SNE for dimensionality reduction, K-means clustering
 - **Deployment**: Docker Compose
 
 ---
 
-## Credits
+## Libraries & Tools
 
-Built with:
-- **yt-dlp** - YouTube download tool
+This project uses:
 - **FFmpeg** - Audio processing
-- **Essentia** & **Librosa** - Audio analysis
+- **Essentia** & **Librosa** - Audio feature extraction
 - **WaveSurfer.js** - Waveform visualization
-- **Ollama** - Local LLM
-- **TensorFlow.js** - ML models
+- **TensorFlow.js** - Machine learning models
+- **Ollama** - Optional local LLM for advanced tagging
+- **Google APIs** - OAuth and data integration (optional)

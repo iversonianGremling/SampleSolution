@@ -26,23 +26,23 @@ const DEFAULT_OPTIONS: UseClusteringOptions = {
   k: 5,
 }
 
-// Color palette for clusters
+// Vibrant cluster color palette - saturated, visually distinct colors
 export const CLUSTER_COLORS = [
-  '#6366f1', // indigo
-  '#22c55e', // green
-  '#f59e0b', // amber
-  '#ef4444', // red
-  '#8b5cf6', // violet
-  '#06b6d4', // cyan
-  '#ec4899', // pink
+  '#3b82f6', // bright blue
+  '#10b981', // vibrant green
+  '#f59e0b', // golden amber
+  '#ef4444', // vivid red
+  '#8b5cf6', // purple
+  '#06b6d4', // bright cyan
+  '#ec4899', // hot pink
   '#84cc16', // lime
-  '#f97316', // orange
-  '#14b8a6', // teal
-  '#a855f7', // purple
-  '#eab308', // yellow
+  '#f97316', // bright orange
+  '#14b8a6', // turquoise
+  '#d946ef', // magenta
+  '#eab308', // bright yellow
 ]
 
-export const NOISE_COLOR = '#4b5563' // gray-600
+export const NOISE_COLOR = '#475569' // slate gray
 
 export function getClusterColor(clusterIndex: number): string {
   if (clusterIndex < 0) return NOISE_COLOR

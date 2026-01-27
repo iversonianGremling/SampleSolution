@@ -14,7 +14,7 @@ export interface UseSliceFiltersResult<T extends FilterableSlice> {
   setMinDuration: (duration: number) => void
   setMaxDuration: (duration: number) => void
   setShowFavoritesOnly: (show: boolean) => void
-  setSelectedCollectionId: (id: number | null) => void
+  setSelectedCollectionIds: (ids: number[]) => void
   setSelectedTrackId: (id: number | null) => void
   setFilterState: (state: Partial<SliceFilterState>) => void
   resetFilters: () => void
@@ -62,8 +62,8 @@ export function useSliceFilters<T extends FilterableSlice>(
   const setShowFavoritesOnly = (showFavoritesOnly: boolean) =>
     setFilterStateInternal(prev => ({ ...prev, showFavoritesOnly }))
 
-  const setSelectedCollectionId = (selectedCollectionId: number | null) =>
-    setFilterStateInternal(prev => ({ ...prev, selectedCollectionId }))
+  const setSelectedCollectionIds = (selectedCollectionIds: number[]) =>
+    setFilterStateInternal(prev => ({ ...prev, selectedCollectionIds }))
 
   const setSelectedTrackId = (selectedTrackId: number | null) =>
     setFilterStateInternal(prev => ({ ...prev, selectedTrackId }))
@@ -85,7 +85,7 @@ export function useSliceFilters<T extends FilterableSlice>(
     setMinDuration,
     setMaxDuration,
     setShowFavoritesOnly,
-    setSelectedCollectionId,
+    setSelectedCollectionIds,
     setSelectedTrackId,
     setFilterState,
     resetFilters,

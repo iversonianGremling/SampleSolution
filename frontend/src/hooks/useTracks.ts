@@ -246,9 +246,64 @@ export function useToggleFavorite() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: api.toggleFavorite,
+    onMutate: async (sliceId: number) => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['allSlices'] })
+      await queryClient.cancelQueries({ queryKey: ['slices'] })
+      await queryClient.cancelQueries({ queryKey: ['scopedSamples'] })
+
+      // Snapshot the previous data
+      const previousAllSlices = queryClient.getQueryData(['allSlices'])
+      const previousSlices = queryClient.getQueryData(['slices'])
+      const previousScopedSamples = queryClient.getQueriesData({ queryKey: ['scopedSamples'] })
+
+      // Optimistically update allSlices
+      queryClient.setQueryData(['allSlices'], (old: any) => {
+        if (!old) return old
+        return old.map((slice: any) =>
+          slice.id === sliceId ? { ...slice, favorite: !slice.favorite } : slice
+        )
+      })
+
+      // Optimistically update slices for all track keys
+      queryClient.setQueriesData({ queryKey: ['slices'] }, (old: any) => {
+        if (!old) return old
+        return old.map((slice: any) =>
+          slice.id === sliceId ? { ...slice, favorite: !slice.favorite } : slice
+        )
+      })
+
+      // Optimistically update scopedSamples (for Sources section)
+      queryClient.setQueriesData({ queryKey: ['scopedSamples'] }, (old: any) => {
+        if (!old || !old.samples) return old
+        return {
+          ...old,
+          samples: old.samples.map((sample: any) =>
+            sample.id === sliceId ? { ...sample, favorite: !sample.favorite } : sample
+          ),
+        }
+      })
+
+      return { previousAllSlices, previousSlices, previousScopedSamples }
+    },
+    onError: (_err, _sliceId, context) => {
+      // Rollback on error
+      if (context?.previousAllSlices) {
+        queryClient.setQueryData(['allSlices'], context.previousAllSlices)
+      }
+      if (context?.previousSlices) {
+        queryClient.setQueryData(['slices'], context.previousSlices)
+      }
+      if (context?.previousScopedSamples && context.previousScopedSamples.length > 0) {
+        context.previousScopedSamples.forEach(([key, data]) => {
+          queryClient.setQueryData(key, data)
+        })
+      }
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
     },
   })
 }
@@ -271,10 +326,20 @@ export function useCreateCollection() {
   })
 }
 
+export function useCreateCollectionFromTag() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.createCollectionFromTag,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+  })
+}
+
 export function useUpdateCollection() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: { name?: string; color?: string } }) =>
+    mutationFn: ({ id, data }: { id: number; data: { name?: string; color?: string; parentId?: number | null } }) =>
       api.updateCollection(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['collections'] })

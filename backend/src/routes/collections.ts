@@ -46,22 +46,24 @@ router.get('/collections', async (_req, res) => {
 
 // Create collection
 router.post('/collections', async (req, res) => {
-  const { name, color } = req.body as { name: string; color?: string }
+  const { name, color, parentId } = req.body as { name: string; color?: string; parentId?: number }
 
   if (!name?.trim()) {
     return res.status(400).json({ error: 'Name is required' })
   }
 
   try {
-    const [collection] = await db
+    const result = await db
       .insert(schema.collections)
       .values({
         name: name.trim(),
         color: color || '#6366f1',
+        parentId: parentId || null,
         createdAt: new Date().toISOString(),
       })
       .returning()
 
+    const collection = Array.isArray(result) ? result[0] : result
     res.json({ ...collection, sliceCount: 0 })
   } catch (error) {
     console.error('Error creating collection:', error)
@@ -72,12 +74,13 @@ router.post('/collections', async (req, res) => {
 // Update collection
 router.put('/collections/:id', async (req, res) => {
   const id = parseInt(req.params.id)
-  const { name, color } = req.body as { name?: string; color?: string }
+  const { name, color, parentId } = req.body as { name?: string; color?: string; parentId?: number | null }
 
   try {
-    const updates: Partial<{ name: string; color: string }> = {}
+    const updates: Partial<{ name: string; color: string; parentId: number | null }> = {}
     if (name !== undefined) updates.name = name.trim()
     if (color !== undefined) updates.color = color
+    if (parentId !== undefined) updates.parentId = parentId
 
     const [updated] = await db
       .update(schema.collections)
@@ -236,6 +239,60 @@ router.post('/collections/:id/export', async (req, res) => {
   } catch (error) {
     console.error('Error exporting collection:', error)
     res.status(500).json({ error: 'Failed to export collection' })
+  }
+})
+
+// Create collection from tag (add all slices with a specific tag)
+router.post('/collections/from-tag', async (req, res) => {
+  const { tagId, name, color } = req.body as { tagId: number; name?: string; color?: string }
+
+  if (!tagId) {
+    return res.status(400).json({ error: 'tagId is required' })
+  }
+
+  try {
+    // Get tag info
+    const tag = await db
+      .select()
+      .from(schema.tags)
+      .where(eq(schema.tags.id, tagId))
+      .limit(1)
+
+    if (tag.length === 0) {
+      return res.status(404).json({ error: 'Tag not found' })
+    }
+
+    // Create collection
+    const [collection] = await db
+      .insert(schema.collections)
+      .values({
+        name: name || `${tag[0].name} samples`,
+        color: color || tag[0].color,
+        createdAt: new Date().toISOString(),
+      })
+      .returning()
+
+    // Get all slices with this tag
+    const sliceIds = await db
+      .select({ sliceId: schema.sliceTags.sliceId })
+      .from(schema.sliceTags)
+      .where(eq(schema.sliceTags.tagId, tagId))
+
+    // Add slices to collection
+    if (sliceIds.length > 0) {
+      await db
+        .insert(schema.collectionSlices)
+        .values(sliceIds.map(s => ({
+          collectionId: collection.id,
+          sliceId: s.sliceId,
+        })))
+        .onConflictDoNothing()
+    }
+
+    res.json({ ...collection, sliceCount: sliceIds.length })
+  } catch (error) {
+    console.error('Error creating collection from tag:', error)
+    res.status(500).json({ error: 'Failed to create collection from tag' })
   }
 })
 

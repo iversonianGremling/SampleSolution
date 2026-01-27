@@ -115,6 +115,15 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
     setSliceName('')
   }
 
+  const handleWaveformDoubleClick = () => {
+    // Clear pending selection on double-click
+    if (pendingRegion) {
+      removeRegion(pendingRegion.id)
+      setPendingRegion(null)
+      setSliceName('')
+    }
+  }
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
     const secs = Math.floor(seconds % 60)
@@ -123,14 +132,14 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
   }
 
   return (
-    <div className="bg-gray-800 rounded-lg overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-700">
+      <div className="px-4 py-3 border-b border-gray-700 flex-shrink-0 bg-gray-800">
         <h2 className="font-semibold text-white truncate">{track.title}</h2>
       </div>
 
-      {/* Waveform */}
-      <div className="p-4">
+      {/* Waveform Area */}
+      <div className="p-4 flex-shrink-0 bg-gray-800">
         {/* Minimap for zoom control */}
         <WaveformMinimap
           minimapRef={minimapRef}
@@ -145,6 +154,7 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
         <div
           ref={containerRef}
           className="bg-gray-900 rounded-lg overflow-x-auto overflow-y-hidden"
+          onDoubleClick={handleWaveformDoubleClick}
         />
 
         {/* Playback Controls */}
@@ -169,7 +179,7 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
 
       {/* Pending Slice Form */}
       {pendingRegion && (
-        <div className="px-4 pb-4">
+        <div className="px-4 pb-4 bg-gray-800 border-t border-gray-700 flex-shrink-0">
           <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-lg p-4">
             <div className="flex items-center gap-2 mb-3">
               <Plus className="text-yellow-500" size={18} />
@@ -212,13 +222,15 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
       )}
 
       {/* Slices List */}
-      <SliceList
-        slices={slices || []}
-        trackId={track.id}
-        onPlay={(slice) => playRegion(slice.startTime, slice.endTime)}
-        onDelete={(slice) => deleteSlice.mutate(slice.id)}
-        formatTime={formatTime}
-      />
+      <div className="flex-1 overflow-y-auto bg-gray-800 border-t border-gray-700">
+        <SliceList
+          slices={slices || []}
+          trackId={track.id}
+          onPlay={(slice) => playRegion(slice.startTime, slice.endTime)}
+          onDelete={(slice) => deleteSlice.mutate(slice.id)}
+          formatTime={formatTime}
+        />
+      </div>
     </div>
   )
 }

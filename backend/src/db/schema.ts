@@ -15,6 +15,8 @@ export const tracks = sqliteTable('tracks', {
   source: text('source', { enum: ['youtube', 'local'] })
     .notNull()
     .default('youtube'),
+  originalPath: text('original_path'),  // Full path of imported file (for local sources)
+  folderPath: text('folder_path'),      // Folder used for import (null for individual files/YouTube)
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -113,6 +115,7 @@ export const collections = sqliteTable('collections', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull(),
   color: text('color').notNull().default('#6366f1'),
+  parentId: integer('parent_id'),
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

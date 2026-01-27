@@ -51,6 +51,7 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
 
   // Routes
   app.use('/api/tracks', tracksRouter)
+  app.use('/api', tracksRouter) // Also mount at /api for /sources/* routes
   app.use('/api', slicesRouter)
   app.use('/api/youtube', youtubeRouter)
   app.use('/api/auth', authRouter)

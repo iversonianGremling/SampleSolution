@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, and, isNull, like, or, sql } from 'drizzle-orm'
 import fs from 'fs/promises'
 import path from 'path'
 import { db, schema } from '../db/index.js'
@@ -13,6 +13,188 @@ import {
 
 const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
+
+// GET /api/sources/samples - Returns samples filtered by scope
+// Query params:
+//   scope: 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'collection:{id}' | 'all'
+//   tags: comma-separated tag IDs (optional)
+//   search: search term (optional)
+//   favorites: 'true' to show only favorites (optional)
+router.get('/sources/samples', async (req, res) => {
+  try {
+    const { scope = 'all', tags, search, favorites } = req.query as {
+      scope?: string
+      tags?: string
+      search?: string
+      favorites?: string
+    }
+
+    // Build base query conditions
+    const conditions: any[] = []
+
+    // Parse scope
+    if (scope === 'youtube') {
+      // All YouTube slices
+      conditions.push(eq(schema.tracks.source, 'youtube'))
+    } else if (scope.startsWith('youtube:')) {
+      // Specific YouTube video
+      const trackId = parseInt(scope.split(':')[1])
+      conditions.push(eq(schema.slices.trackId, trackId))
+    } else if (scope === 'local') {
+      // Individual local samples (no folderPath)
+      conditions.push(
+        and(
+          eq(schema.tracks.source, 'local'),
+          isNull(schema.tracks.folderPath)
+        )
+      )
+    } else if (scope.startsWith('folder:')) {
+      // Samples from a specific folder (and subfolders)
+      const folderPath = scope.slice(7) // Remove 'folder:' prefix
+      conditions.push(
+        and(
+          eq(schema.tracks.source, 'local'),
+          or(
+            eq(schema.tracks.folderPath, folderPath),
+            like(schema.tracks.folderPath, `${folderPath}/%`)
+          )
+        )
+      )
+    } else if (scope.startsWith('collection:')) {
+      // Samples in a specific collection - handled separately below
+    }
+    // 'all' has no additional conditions
+
+    // Favorites filter
+    if (favorites === 'true') {
+      conditions.push(eq(schema.slices.favorite, 1))
+    }
+
+    // Search filter (case-insensitive using SQL)
+    if (search && search.trim()) {
+      const searchTerm = `%${search.trim().toLowerCase()}%`
+      conditions.push(
+        sql`(lower(${schema.slices.name}) LIKE ${searchTerm} OR lower(${schema.tracks.title}) LIKE ${searchTerm})`
+      )
+    }
+
+    // Build query
+    let slicesQuery = db
+      .select({
+        id: schema.slices.id,
+        trackId: schema.slices.trackId,
+        name: schema.slices.name,
+        startTime: schema.slices.startTime,
+        endTime: schema.slices.endTime,
+        filePath: schema.slices.filePath,
+        favorite: schema.slices.favorite,
+        createdAt: schema.slices.createdAt,
+        trackTitle: schema.tracks.title,
+        trackYoutubeId: schema.tracks.youtubeId,
+        trackSource: schema.tracks.source,
+        trackFolderPath: schema.tracks.folderPath,
+        trackOriginalPath: schema.tracks.originalPath,
+      })
+      .from(schema.slices)
+      .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+
+    // Apply conditions
+    if (conditions.length > 0) {
+      slicesQuery = slicesQuery.where(and(...conditions)) as typeof slicesQuery
+    }
+
+    let slices = await slicesQuery.orderBy(schema.slices.createdAt)
+
+    // Handle collection scope (post-filter since it requires join)
+    if (scope.startsWith('collection:')) {
+      const collectionId = parseInt(scope.split(':')[1])
+      const collectionSliceIds = await db
+        .select({ sliceId: schema.collectionSlices.sliceId })
+        .from(schema.collectionSlices)
+        .where(eq(schema.collectionSlices.collectionId, collectionId))
+
+      const sliceIdSet = new Set(collectionSliceIds.map(c => c.sliceId))
+      slices = slices.filter(s => sliceIdSet.has(s.id))
+    }
+
+    // Get tags for all slices
+    const sliceIds = slices.map(s => s.id)
+    const sliceTagsResult = sliceIds.length > 0
+      ? await db
+          .select()
+          .from(schema.sliceTags)
+          .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
+          .where(inArray(schema.sliceTags.sliceId, sliceIds))
+      : []
+
+    const tagsBySlice = new Map<number, typeof schema.tags.$inferSelect[]>()
+    for (const row of sliceTagsResult) {
+      const sliceId = row.slice_tags.sliceId
+      if (!tagsBySlice.has(sliceId)) {
+        tagsBySlice.set(sliceId, [])
+      }
+      tagsBySlice.get(sliceId)!.push(row.tags)
+    }
+
+    // Tag filter (post-filter since it requires multiple tags match)
+    let filteredSlices = slices
+    if (tags && tags.trim()) {
+      const tagIds = tags.split(',').map(t => parseInt(t.trim())).filter(t => !isNaN(t))
+      if (tagIds.length > 0) {
+        filteredSlices = slices.filter(slice => {
+          const sliceTags = tagsBySlice.get(slice.id) || []
+          const sliceTagIds = sliceTags.map(t => t.id)
+          return tagIds.every(tagId => sliceTagIds.includes(tagId))
+        })
+      }
+    }
+
+    // Get collection memberships for filtered slices
+    const filteredSliceIds = filteredSlices.map(s => s.id)
+    const collectionLinks = filteredSliceIds.length > 0
+      ? await db
+          .select()
+          .from(schema.collectionSlices)
+          .where(inArray(schema.collectionSlices.sliceId, filteredSliceIds))
+      : []
+
+    const collectionsBySlice = new Map<number, number[]>()
+    for (const row of collectionLinks) {
+      if (!collectionsBySlice.has(row.sliceId)) {
+        collectionsBySlice.set(row.sliceId, [])
+      }
+      collectionsBySlice.get(row.sliceId)!.push(row.collectionId)
+    }
+
+    const result = filteredSlices.map(slice => ({
+      id: slice.id,
+      trackId: slice.trackId,
+      name: slice.name,
+      startTime: slice.startTime,
+      endTime: slice.endTime,
+      filePath: slice.filePath,
+      favorite: slice.favorite === 1,
+      createdAt: slice.createdAt,
+      tags: tagsBySlice.get(slice.id) || [],
+      collectionIds: collectionsBySlice.get(slice.id) || [],
+      track: {
+        title: slice.trackTitle,
+        youtubeId: slice.trackYoutubeId,
+        source: slice.trackSource,
+        folderPath: slice.trackFolderPath,
+        originalPath: slice.trackOriginalPath,
+      },
+    }))
+
+    res.json({
+      samples: result,
+      total: result.length,
+    })
+  } catch (error) {
+    console.error('Error fetching sources samples:', error)
+    res.status(500).json({ error: 'Failed to fetch samples' })
+  }
+})
 
 // Helper function to auto-tag a slice using audio analysis
 async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
@@ -385,7 +567,7 @@ router.delete('/slices/:id', async (req, res) => {
   }
 })
 
-// Download slice
+// Stream slice audio (for playback)
 router.get('/slices/:id/download', async (req, res) => {
   const id = parseInt(req.params.id)
 
@@ -400,10 +582,12 @@ router.get('/slices/:id/download', async (req, res) => {
       return res.status(404).json({ error: 'Slice file not found' })
     }
 
-    res.download(slice[0].filePath, `${slice[0].name}.mp3`)
+    // Stream audio inline for playback (not as attachment download)
+    res.type('audio/mpeg')
+    res.sendFile(path.resolve(slice[0].filePath), { acceptRanges: true })
   } catch (error) {
-    console.error('Error downloading slice:', error)
-    res.status(500).json({ error: 'Failed to download slice' })
+    console.error('Error streaming slice:', error)
+    res.status(500).json({ error: 'Failed to stream slice' })
   }
 })
 

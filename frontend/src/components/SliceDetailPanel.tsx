@@ -1,7 +1,8 @@
 import { useRef, useState, useEffect } from 'react'
-import { Play, Pause, X, Star, Pencil, Loader2 } from 'lucide-react'
+import { Play, Pause, X, Star, Pencil, Loader2, Download, ChevronDown } from 'lucide-react'
 import type { SamplePoint, SliceWithTrack } from '../types'
-import { useWavesurfer } from '../hooks/useWavesurfer'
+import { useCompactWaveform } from '../hooks/useCompactWaveform'
+import { useAudioFileDragDrop } from '../hooks/useAudioFileDragDrop'
 import { getSliceDownloadUrl } from '../api/client'
 import {
   useUpdateSliceGlobal,
@@ -17,10 +18,7 @@ import { TagSearchInput } from './TagSearchInput'
 
 interface SliceDetailPanelProps {
   selectedPoint: SamplePoint
-  sliceData: SliceWithTrack
-  onPlay: () => void
-  isPlaying: boolean
-  isPaused: boolean
+  sliceData: SliceWithTrack & { id: number } // Enforce id is always a number
   onClose?: () => void
 }
 
@@ -33,26 +31,36 @@ function formatTime(seconds: number): string {
 export function SliceDetailPanel({
   selectedPoint,
   sliceData,
-  onPlay,
-  isPlaying,
-  isPaused,
   onClose,
 }: SliceDetailPanelProps) {
-  // Waveform hook
+  const [showFeatures, setShowFeatures] = useState(false)
+
+  const audioUrl = getSliceDownloadUrl(sliceData.id)
+
+  // Compact waveform - simple audio playback with visual feedback
   const {
     containerRef,
-    minimapRef,
     isReady,
+    isPlaying,
     currentTime,
     duration,
-  } = useWavesurfer({
-    audioUrl: getSliceDownloadUrl(selectedPoint.id),
+    error,
+    play: waveformPlay,
+    pause: waveformPause,
+  } = useCompactWaveform({
+    audioUrl,
   })
 
   // State for metadata editing
   const [isEditingName, setIsEditingName] = useState(false)
   const [editingName, setEditingName] = useState(sliceData.name)
   const nameInputRef = useRef<HTMLInputElement>(null)
+
+  // Drag source for exporting audio
+  const { isDragging, handlers: dragHandlers } = useAudioFileDragDrop({
+    fileUrl: audioUrl,
+    fileName: `${sliceData.name}.mp3`,
+  })
 
   // Mutations
   const updateSliceMutation = useUpdateSliceGlobal()
@@ -74,9 +82,10 @@ export function SliceDetailPanel({
     }
   }, [isEditingName])
 
-  // Note: The waveform visualization is independent of AudioManager playback.
-  // AudioManager plays the audio, and useWavesurfer displays the visualization.
-  // They are kept in sync via the parent component's playback state management.
+  // Reset editing name when slice changes
+  useEffect(() => {
+    setEditingName(sliceData.name)
+  }, [sliceData.name])
 
   const saveSliceName = () => {
     if (editingName.trim() && editingName !== sliceData.name) {
@@ -120,6 +129,10 @@ export function SliceDetailPanel({
     })
   }
 
+  const handleDownload = () => {
+    window.open(getSliceDownloadUrl(sliceData.id), '_blank')
+  }
+
   const sliceTagIds = new Set(sliceData.tags.map((t) => t.id))
   const sliceCollectionIds = new Set(sliceData.collectionIds)
   const availableTags = allTags?.filter((t) => !sliceTagIds.has(t.id)) || []
@@ -127,10 +140,29 @@ export function SliceDetailPanel({
   const sliceCollections = allCollections?.filter((c) => sliceCollectionIds.has(c.id)) || []
 
   return (
-    <div className="bg-gray-800 rounded-lg p-4 space-y-4 max-h-[600px] overflow-y-auto">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
+    <div className="bg-surface-overlay border-t border-surface-border">
+      {/* Compact Header Row */}
+      <div className="flex items-center gap-3 px-3 py-2">
+        {/* Play Button */}
+        <button
+          onClick={() => {
+            if (isPlaying) {
+              waveformPause()
+            } else {
+              waveformPlay()
+            }
+          }}
+          className={`p-2 rounded-full transition-colors flex-shrink-0 ${
+            isPlaying
+              ? 'bg-emerald-500 text-white'
+              : 'bg-surface-raised text-slate-300 hover:bg-surface-base hover:text-white'
+          }`}
+        >
+          {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+        </button>
+
+        {/* Name and Track */}
+        <div className="flex-1 min-w-0">
           {isEditingName ? (
             <div className="flex items-center gap-2">
               <input
@@ -143,75 +175,50 @@ export function SliceDetailPanel({
                   if (e.key === 'Escape') setIsEditingName(false)
                 }}
                 onBlur={saveSliceName}
-                className="flex-1 px-2 py-1 bg-gray-900 border border-indigo-500 rounded text-white text-sm focus:outline-none"
+                className="flex-1 px-2 py-0.5 bg-surface-base border border-accent-primary rounded text-white text-sm focus:outline-none"
               />
-              {updateSliceMutation.isPending && <Loader2 size={16} className="animate-spin text-indigo-400" />}
+              {updateSliceMutation.isPending && (
+                <Loader2 size={14} className="animate-spin text-accent-primary" />
+              )}
             </div>
           ) : (
             <div
-              className="group flex items-center gap-2 cursor-pointer"
+              className="group flex items-center gap-1.5 cursor-pointer"
               onClick={() => {
                 setEditingName(sliceData.name)
                 setIsEditingName(true)
               }}
             >
-              <h3 className="font-semibold text-white text-lg">{sliceData.name}</h3>
-              <Pencil size={14} className="text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <span className="font-medium text-white text-sm truncate">
+                {sliceData.name}
+              </span>
+              <Pencil
+                size={12}
+                className="text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+              />
             </div>
           )}
-          <div className="text-xs text-gray-400 mt-1">{sliceData.track.title}</div>
-        </div>
-        {onClose && (
-          <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-300">
-            <X size={18} />
-          </button>
-        )}
-      </div>
-
-      {/* Waveform */}
-      <div className="space-y-2">
-        {!isReady ? (
-          <div className="h-32 bg-gray-700 rounded flex items-center justify-center">
-            <Loader2 size={20} className="animate-spin text-gray-400" />
+          <div className="text-[11px] text-slate-500 truncate">
+            {sliceData.track.title}
           </div>
-        ) : (
-          <>
-            <div ref={containerRef} className="rounded" />
-            <div ref={minimapRef} className="rounded mt-2" />
-          </>
-        )}
-      </div>
-
-      {/* Playback Controls */}
-      <div className="flex items-center gap-3 bg-gray-700/50 rounded p-3">
-        <button
-          onClick={onPlay}
-          className={`p-2 rounded-full transition-colors ${
-            isPlaying && !isPaused
-              ? 'bg-green-600 text-white hover:bg-green-700'
-              : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-          }`}
-        >
-          {isPlaying && !isPaused ? <Pause size={18} /> : <Play size={18} />}
-        </button>
-        <div className="flex-1 flex items-center gap-2">
-          <span className="text-xs text-gray-400">{formatTime(currentTime)}</span>
-          <div className="flex-1 h-1 bg-gray-600 rounded" />
-          <span className="text-xs text-gray-400">{formatTime(duration)}</span>
         </div>
-      </div>
 
-      {/* Metadata Section */}
-      <div className="space-y-3">
-        {/* Favorite */}
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-gray-400 font-medium">Favorite</label>
+        {/* Time Display */}
+        <div className="text-xs text-slate-500 font-mono flex-shrink-0">
+          {formatTime(currentTime)}/{formatTime(duration)}
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-0.5 flex-shrink-0">
           <button
             onClick={handleToggleFavorite}
             disabled={toggleFavoriteMutation.isPending}
-            className={`p-1 transition-colors ${
-              sliceData.favorite ? 'text-yellow-400' : 'text-gray-500 hover:text-yellow-400'
+            className={`p-1.5 rounded transition-colors ${
+              sliceData.favorite
+                ? 'text-amber-400'
+                : 'text-slate-500 hover:text-amber-400'
             }`}
+            title="Favorite"
           >
             {toggleFavoriteMutation.isPending ? (
               <Loader2 size={16} className="animate-spin" />
@@ -219,132 +226,193 @@ export function SliceDetailPanel({
               <Star size={16} className={sliceData.favorite ? 'fill-current' : ''} />
             )}
           </button>
-        </div>
-
-        {/* Tags */}
-        <div className="space-y-1">
-          <label className="text-xs text-gray-400 font-medium">Tags</label>
-          <div className="flex flex-wrap gap-2 mb-2">
-            {sliceData.tags.map((tag) => (
-              <div
-                key={tag.id}
-                className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-white"
-                style={{ backgroundColor: tag.color || '#6366f1' }}
-              >
-                <span>{tag.name}</span>
-                <button
-                  onClick={() => handleRemoveTag(tag.id)}
-                  disabled={removeTagMutation.isPending}
-                  className="hover:opacity-70 transition-opacity"
-                >
-                  {removeTagMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-                </button>
-              </div>
-            ))}
-          </div>
-          {availableTags.length > 0 && (
-            <TagSearchInput
-              availableTags={availableTags}
-              onAddTag={handleAddTag}
-              onCreateTag={async () => {
-                // Tag creation not supported in detail panel
-              }}
-              placeholder="Add tag..."
-              className="w-full"
-            />
-          )}
-        </div>
-
-        {/* Collections */}
-        <div className="space-y-1">
-          <label className="text-xs text-gray-400 font-medium">Collections</label>
-          <div className="flex flex-wrap gap-2 mb-2">
-            {sliceCollections.map((collection) => (
-              <div
-                key={collection.id}
-                className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-white"
-                style={{ backgroundColor: collection.color || '#6366f1' }}
-              >
-                <span>{collection.name}</span>
-                <button
-                  onClick={() => handleRemoveCollection(collection.id)}
-                  disabled={removeCollectionMutation.isPending}
-                  className="hover:opacity-70 transition-opacity"
-                >
-                  {removeCollectionMutation.isPending ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <X size={12} />
-                  )}
-                </button>
-              </div>
-            ))}
-          </div>
-          {availableCollections.length > 0 && (
-            <select
-              onChange={(e) => {
-                const collectionId = parseInt(e.target.value)
-                if (collectionId) {
-                  handleAddCollection(collectionId)
-                  e.target.value = ''
-                }
-              }}
-              className="w-full px-2 py-1 bg-gray-900 border border-gray-600 rounded text-xs text-white focus:outline-none focus:border-indigo-500"
+          <button
+            onClick={handleDownload}
+            className="p-1.5 rounded text-slate-500 hover:text-white transition-colors"
+            title="Download"
+          >
+            <Download size={16} />
+          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded text-slate-500 hover:text-white transition-colors"
+              title="Close"
             >
-              <option value="">Add to collection...</option>
-              {availableCollections.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+              <X size={16} />
+            </button>
           )}
         </div>
       </div>
 
-      {/* Audio Features */}
-      {selectedPoint.features && (
-        <div className="border-t border-gray-700 pt-3 space-y-2">
-          <h4 className="text-xs font-medium text-gray-400">Audio Features</h4>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            {selectedPoint.features.duration && (
-              <>
-                <span className="text-gray-400">Duration</span>
-                <span className="text-gray-300">{selectedPoint.features.duration.toFixed(2)}s</span>
-              </>
-            )}
-            {selectedPoint.features.bpm && (
-              <>
-                <span className="text-gray-400">BPM</span>
-                <span className="text-gray-300">{Math.round(selectedPoint.features.bpm)}</span>
-              </>
-            )}
-            {selectedPoint.features.spectralCentroid && (
-              <>
-                <span className="text-gray-400">Brightness</span>
-                <span className="text-gray-300">{Math.round(selectedPoint.features.spectralCentroid)} Hz</span>
-              </>
-            )}
-            {selectedPoint.features.rmsEnergy && (
-              <>
-                <span className="text-gray-400">Energy</span>
-                <span className="text-gray-300">{selectedPoint.features.rmsEnergy.toFixed(3)}</span>
-              </>
-            )}
-            {selectedPoint.features.spectralRolloff && (
-              <>
-                <span className="text-gray-400">Rolloff</span>
-                <span className="text-gray-300">{Math.round(selectedPoint.features.spectralRolloff)} Hz</span>
-              </>
-            )}
-            {selectedPoint.features.zeroCrossingRate && (
-              <>
-                <span className="text-gray-400">ZCR</span>
-                <span className="text-gray-300">{selectedPoint.features.zeroCrossingRate.toFixed(3)}</span>
-              </>
-            )}
-          </div>
+      {/* Compact Waveform - Draggable */}
+      <div className="px-3 pb-2">
+        <div
+          {...dragHandlers}
+          className={`relative rounded overflow-hidden h-12 w-full bg-surface-raised transition-opacity ${
+            isDragging ? 'opacity-50 cursor-grabbing' : 'cursor-grab hover:opacity-90'
+          }`}
+          title="Drag to save audio file"
+        >
+          {/* WaveSurfer renders into this container */}
+          <div
+            ref={containerRef}
+            className="w-full h-full pointer-events-none"
+          />
+
+          {/* Overlay loading/error states */}
+          {error && (
+            <div className="absolute inset-0 h-12 bg-red-950 rounded flex items-center justify-center text-xs text-red-300">
+              {error}
+            </div>
+          )}
+          {!error && !isReady && (
+            <div className="absolute inset-0 h-12 bg-surface-raised rounded flex items-center justify-center">
+              <Loader2 size={16} className="animate-spin text-slate-500" />
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* Tags and Collections Row - Compact */}
+      <div className="px-3 pb-2 flex items-center gap-2 flex-wrap">
+        {sliceData.tags.map((tag) => (
+          <span
+            key={tag.id}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium"
+            style={{
+              backgroundColor: (tag.color || '#6366f1') + '25',
+              color: tag.color || '#6366f1',
+            }}
+          >
+            {tag.name}
+            <button
+              onClick={() => handleRemoveTag(tag.id)}
+              disabled={removeTagMutation.isPending}
+              className="hover:opacity-70 transition-opacity"
+            >
+              <X size={10} />
+            </button>
+          </span>
+        ))}
+        {sliceCollections.map((collection) => (
+          <span
+            key={collection.id}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium border border-dashed"
+            style={{
+              borderColor: (collection.color || '#6366f1') + '50',
+              color: collection.color || '#6366f1',
+            }}
+          >
+            {collection.name}
+            <button
+              onClick={() => handleRemoveCollection(collection.id)}
+              disabled={removeCollectionMutation.isPending}
+              className="hover:opacity-70 transition-opacity"
+            >
+              <X size={10} />
+            </button>
+          </span>
+        ))}
+        {availableTags.length > 0 && (
+          <TagSearchInput
+            availableTags={availableTags}
+            onAddTag={handleAddTag}
+            onCreateTag={async () => {}}
+            placeholder="+ Tag"
+            className="text-[11px]"
+          />
+        )}
+        {availableCollections.length > 0 && (
+          <select
+            onChange={(e) => {
+              const collectionId = parseInt(e.target.value)
+              if (collectionId) {
+                handleAddCollection(collectionId)
+                e.target.value = ''
+              }
+            }}
+            className="px-1.5 py-0.5 bg-surface-raised border border-surface-border rounded text-[11px] text-slate-400 focus:outline-none focus:border-accent-primary"
+          >
+            <option value="">+ Collection</option>
+            {availableCollections.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {/* Audio Features - Collapsed by Default */}
+      {selectedPoint.features && (
+        <>
+          <button
+            onClick={() => setShowFeatures(!showFeatures)}
+            className="w-full flex items-center justify-between px-3 py-1.5 border-t border-surface-border text-[11px] text-slate-500 hover:text-slate-400 transition-colors"
+          >
+            <span>Audio Features</span>
+            <ChevronDown
+              size={12}
+              className={`transition-transform duration-200 ${
+                showFeatures ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+
+          {showFeatures && (
+            <div className="px-3 pb-2 grid grid-cols-3 gap-x-4 gap-y-1 text-[11px] animate-slide-down">
+              {selectedPoint.features.duration != null && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Duration</span>
+                  <span className="text-slate-300 font-mono">
+                    {selectedPoint.features.duration.toFixed(2)}s
+                  </span>
+                </div>
+              )}
+              {selectedPoint.features.bpm != null && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">BPM</span>
+                  <span className="text-slate-300 font-mono">
+                    {Math.round(selectedPoint.features.bpm)}
+                  </span>
+                </div>
+              )}
+              {selectedPoint.features.spectralCentroid != null && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Brightness</span>
+                  <span className="text-slate-300 font-mono">
+                    {Math.round(selectedPoint.features.spectralCentroid)}Hz
+                  </span>
+                </div>
+              )}
+              {selectedPoint.features.rmsEnergy != null && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Energy</span>
+                  <span className="text-slate-300 font-mono">
+                    {selectedPoint.features.rmsEnergy.toFixed(3)}
+                  </span>
+                </div>
+              )}
+              {selectedPoint.features.spectralRolloff != null && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Rolloff</span>
+                  <span className="text-slate-300 font-mono">
+                    {Math.round(selectedPoint.features.spectralRolloff)}Hz
+                  </span>
+                </div>
+              )}
+              {selectedPoint.features.zeroCrossingRate != null && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">ZCR</span>
+                  <span className="text-slate-300 font-mono">
+                    {selectedPoint.features.zeroCrossingRate.toFixed(3)}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   )

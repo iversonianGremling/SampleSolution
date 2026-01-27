@@ -126,6 +126,17 @@ function initDatabase() {
     sqlite.exec("ALTER TABLE tracks ADD COLUMN source TEXT NOT NULL DEFAULT 'youtube'")
   }
 
+  // Migration: Add original_path and folder_path columns to tracks if they don't exist
+  const tracksColumnsUpdated = sqlite.prepare("PRAGMA table_info(tracks)").all() as { name: string }[]
+  const hasOriginalPath = tracksColumnsUpdated.some(col => col.name === 'original_path')
+  if (!hasOriginalPath) {
+    console.log('[DB] Migrating: Adding original_path and folder_path columns to tracks table')
+    sqlite.exec(`
+      ALTER TABLE tracks ADD COLUMN original_path TEXT;
+      ALTER TABLE tracks ADD COLUMN folder_path TEXT;
+    `)
+  }
+
   // Migration: Add new audio feature columns if they don't exist
   const audioFeaturesColumns = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
   const hasAttackTime = audioFeaturesColumns.some(col => col.name === 'attack_time')
@@ -136,6 +147,16 @@ function initDatabase() {
       ALTER TABLE audio_features ADD COLUMN spectral_flux REAL;
       ALTER TABLE audio_features ADD COLUMN spectral_flatness REAL;
       ALTER TABLE audio_features ADD COLUMN kurtosis REAL;
+    `)
+  }
+
+  // Migration: Add parent_id column to collections if it doesn't exist
+  const collectionsColumns = sqlite.prepare("PRAGMA table_info(collections)").all() as { name: string }[]
+  const hasParentId = collectionsColumns.some(col => col.name === 'parent_id')
+  if (!hasParentId) {
+    console.log('[DB] Migrating: Adding parent_id column to collections table for nested folders')
+    sqlite.exec(`
+      ALTER TABLE collections ADD COLUMN parent_id INTEGER REFERENCES collections(id) ON DELETE CASCADE;
     `)
   }
 

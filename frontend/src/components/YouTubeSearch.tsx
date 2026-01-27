@@ -26,7 +26,7 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
   return (
     <div className="space-y-4">
       {/* Search Form */}
-      <form onSubmit={handleSearch} className="flex gap-2">
+      <form onSubmit={handleSearch} className="flex gap-2 items-center">
         <div className="relative flex-1">
           <Search
             className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"
@@ -47,6 +47,16 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
         >
           {isLoading ? <Loader2 className="animate-spin" size={20} /> : 'Search'}
         </button>
+        <a
+          href="https://console.cloud.google.com/apis/api/youtube.googleapis.com/quotas"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1 px-3 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors whitespace-nowrap"
+          title="View your YouTube API quota usage in Google Cloud Console"
+        >
+          <ExternalLink size={14} />
+          View Quota
+        </a>
       </form>
 
       {/* Results */}
