@@ -2,7 +2,8 @@
 
 A comprehensive audio sample management and analysis platform for music producers and sound designers. Import your audio library, extract and organize samples, and discover patterns through advanced audio feature analysis and interactive visualization.
 
-<img width="1291" height="880" alt="image" src="https://github.com/user-attachments/assets/d22647c8-f048-4b95-afcc-c72b5ddec871" />
+<img width="1895" height="899" alt="image" src="https://github.com/user-attachments/assets/d5ca1454-722f-4e65-be19-2a8afe1cae42" />
+
 
 
 > **Legal Note**: Ensure you have appropriate rights to any content in your library. Use this tool responsibly and in accordance with copyright and intellectual property laws.
