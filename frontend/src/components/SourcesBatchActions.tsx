@@ -1,14 +1,12 @@
-import { Download, Trash2, Sparkles, X, Loader2 } from 'lucide-react'
+import { Download, Trash2, X, Loader2 } from 'lucide-react'
 
 interface SourcesBatchActionsProps {
   selectedCount: number
   selectedIds: Set<number>
   onBatchDelete: (ids: number[]) => void
   onBatchDownload: (ids: number[]) => void
-  onBatchGenerateTags: (ids: number[]) => void
   onClearSelection: () => void
   isDeleting?: boolean
-  isGeneratingTags?: boolean
 }
 
 export function SourcesBatchActions({
@@ -16,10 +14,8 @@ export function SourcesBatchActions({
   selectedIds,
   onBatchDelete,
   onBatchDownload,
-  onBatchGenerateTags,
   onClearSelection,
   isDeleting = false,
-  isGeneratingTags = false,
 }: SourcesBatchActionsProps) {
   return (
     <div className="px-4 py-2 border-b border-accent-primary/30 bg-accent-primary/10 flex items-center gap-3 flex-shrink-0">
@@ -30,21 +26,6 @@ export function SourcesBatchActions({
 
       {/* Divider */}
       <div className="w-px h-5 bg-surface-border"></div>
-
-      {/* Generate AI Tags button */}
-      <button
-        onClick={() => onBatchGenerateTags(Array.from(selectedIds))}
-        disabled={isGeneratingTags}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 disabled:bg-surface-base text-amber-400 disabled:text-slate-400 text-xs font-medium rounded transition-colors"
-        title="Generate AI tags for selected samples"
-      >
-        {isGeneratingTags ? (
-          <Loader2 className="animate-spin" size={14} />
-        ) : (
-          <Sparkles size={14} />
-        )}
-        Tag
-      </button>
 
       {/* Download button */}
       <button

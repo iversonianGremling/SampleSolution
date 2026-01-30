@@ -56,13 +56,7 @@ function App() {
                 </button>
               </div>
             ) : (
-              <button
-                onClick={handleLogin}
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
-              >
-                <LogIn size={16} />
-                Sign in with Google
-              </button>
+              ''
             )}
           </div>
         </div>

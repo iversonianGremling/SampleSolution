@@ -62,9 +62,6 @@ export function WaveformMinimap({
             showContent ? 'opacity-100' : 'opacity-0'
           }`}
           style={{ pointerEvents: onSetViewport ? 'auto' : 'none' }}
-          onDoubleClick={() => {
-            onSetViewport?.(0, duration)
-          }}
         >
           {/* Left draggable area - pans viewport while maintaining width */}
           <div
@@ -131,11 +128,11 @@ export function WaveformMinimap({
                 return
               }
 
+              console.log('[CENTER PAN] MouseDown - start:', viewportStart, 'end:', viewportEnd, 'duration:', duration)
               e.preventDefault()
               const startX = e.clientX
               const startViewportStart = viewportStart
               const startViewportEnd = viewportEnd
-              const viewportWidth = viewportEnd - viewportStart
 
               const handleMouseMove = (moveEvent: MouseEvent) => {
                 if (!containerRef.current) return
@@ -147,19 +144,16 @@ export function WaveformMinimap({
                 let newStart = startViewportStart + deltaTime
                 let newEnd = startViewportEnd + deltaTime
 
-                // Clamp to boundaries while maintaining constant width
-                if (newStart < 0) {
-                  newStart = 0
-                  newEnd = viewportWidth
-                } else if (newEnd > duration) {
-                  newEnd = duration
-                  newStart = duration - viewportWidth
+                console.log('[CENTER PAN] Move - deltaTime:', deltaTime, 'newStart:', newStart, 'newEnd:', newEnd)
+
+                // Only allow panning if both edges stay within boundaries
+                // This keeps the viewport width constant during center panning
+                if (newStart < 0 || newEnd > duration) {
+                  console.log('[CENTER PAN] BLOCKED - out of bounds')
+                  return
                 }
 
-                // Ensure bounds are respected (edge case protection)
-                newStart = Math.max(0, newStart)
-                newEnd = Math.min(duration, newEnd)
-
+                console.log('[CENTER PAN] Calling onSetViewport(', newStart, ',', newEnd, ')')
                 onSetViewport?.(newStart, newEnd)
               }
 

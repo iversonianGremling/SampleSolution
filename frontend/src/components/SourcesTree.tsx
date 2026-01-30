@@ -12,8 +12,7 @@ import {
   Trash2,
   Search,
   FolderPlus,
-  Palette,
-  Tag
+  Palette
 } from 'lucide-react'
 import type { SourceTree, SourceScope, FolderNode, Collection } from '../types'
 
@@ -26,6 +25,7 @@ interface SourcesTreeProps {
   onRenameCollection?: (id: number, name: string) => void
   onDeleteCollection?: (id: number) => void
   onUpdateCollection?: (id: number, data: { parentId?: number | null; color?: string }) => void
+  onBatchAddToCollection?: (collectionId: number, sampleIds: number[]) => void
   isLoading?: boolean
 }
 
@@ -42,6 +42,7 @@ export function SourcesTree({
   onRenameCollection,
   onDeleteCollection,
   onUpdateCollection,
+  onBatchAddToCollection,
   isLoading = false,
 }: SourcesTreeProps) {
   // Expanded state for tree nodes
@@ -167,16 +168,50 @@ export function SourcesTree({
 
   const handleDragOver = (e: React.DragEvent, targetId: number | null) => {
     e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    setDropTargetId(targetId)
+    e.stopPropagation()
+
+    // Check if we're dragging samples or collections
+    const data = e.dataTransfer.types.includes('application/json')
+    if (data) {
+      e.dataTransfer.dropEffect = draggedCollectionId !== null ? 'move' : 'copy'
+      setDropTargetId(targetId)
+    }
   }
 
-  const handleDragLeave = () => {
-    setDropTargetId(null)
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    // Only clear if we're actually leaving the element (not moving to a child)
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const x = e.clientX
+    const y = e.clientY
+
+    if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
+      setDropTargetId(null)
+    }
   }
 
   const handleDrop = (e: React.DragEvent, targetId: number | null) => {
     e.preventDefault()
+
+    try {
+      const jsonData = e.dataTransfer.getData('application/json')
+      if (jsonData) {
+        const data = JSON.parse(jsonData)
+
+        // Handle dropping samples onto a collection
+        if (data.type === 'samples' && data.sampleIds && targetId !== null && onBatchAddToCollection) {
+          onBatchAddToCollection(targetId, data.sampleIds)
+          setDropTargetId(null)
+          return
+        }
+      }
+    } catch (err) {
+      console.error('Error parsing drag data:', err)
+    }
+
+    // Handle moving collections (existing logic)
     if (draggedCollectionId !== null && draggedCollectionId !== targetId && onUpdateCollection) {
       // Prevent moving a folder into itself or its descendants
       const isDescendant = (parentId: number, childId: number): boolean => {
@@ -344,12 +379,12 @@ export function SourcesTree({
               onScopeChange(scope)
               if (hasChildren) toggleCollection(node.id)
             }}
-            className={`w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors ${
+            className={`group/folder w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-all relative ${
               active
                 ? 'bg-accent-primary/20 text-accent-primary'
                 : isDragOver
-                ? 'bg-blue-500/20 border border-blue-500/50'
-                : 'text-slate-300 hover:bg-surface-base'
+                ? 'bg-indigo-500/30 border-2 border-indigo-400 text-white shadow-lg shadow-indigo-500/50 scale-105'
+                : 'text-slate-300 hover:bg-surface-base hover:ring-1 hover:ring-indigo-400/30'
             } ${isDragging ? 'opacity-50' : ''}`}
             style={{ paddingLeft: `${depth * 16 + 8}px` }}
           >
@@ -360,6 +395,12 @@ export function SourcesTree({
             )}
             <Folder size={14} style={{ color: node.color }} />
             <span className="flex-1 text-left truncate">{node.name}</span>
+            {/* Drop hint on hover */}
+            {!active && !isDragOver && (
+              <span className="text-[10px] text-indigo-400/0 group-hover/folder:text-indigo-400/70 transition-colors mr-1">
+                drop here
+              </span>
+            )}
             <span className="text-xs text-slate-500">{Number(node.sliceCount || 0)}</span>
           </button>
 

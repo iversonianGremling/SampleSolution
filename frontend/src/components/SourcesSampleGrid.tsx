@@ -1,12 +1,20 @@
-import { useState, useRef, useEffect } from 'react'
-import { Play, Pause, Heart, GripVertical } from 'lucide-react'
+import { useState, useRef, useEffect, useMemo } from 'react'
+import { Play, Pause, Heart, GripVertical, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { CustomCheckbox } from './CustomCheckbox'
+import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
+
+type SortField = 'name' | 'duration'
+type SortOrder = 'asc' | 'desc'
 
 interface SourcesSampleGridProps {
   samples: SliceWithTrackExtended[]
   selectedId: number | null
+  selectedIds?: Set<number>
   onSelect: (id: number) => void
+  onToggleSelect?: (id: number) => void
+  onToggleSelectAll?: () => void
   onToggleFavorite?: (id: number) => void
   isLoading?: boolean
 }
@@ -14,13 +22,19 @@ interface SourcesSampleGridProps {
 export function SourcesSampleGrid({
   samples,
   selectedId,
+  selectedIds = new Set(),
   onSelect,
+  onToggleSelect,
+  onToggleSelectAll,
   onToggleFavorite,
   isLoading = false,
 }: SourcesSampleGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [draggedId, setDraggedId] = useState<number | null>(null)
+  const [sortField, setSortField] = useState<SortField | null>(null)
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
+  const dragPreviewRef = useRef<HTMLElement | null>(null)
 
   // Stop audio when unmounting
   useEffect(() => {
@@ -41,6 +55,35 @@ export function SourcesSampleGrid({
     const secs = Math.floor(duration % 60)
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
+
+  const handleSortClick = (field: SortField) => {
+    if (sortField === field) {
+      // Toggle order if same field
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
+    } else {
+      // Set new field with ascending order
+      setSortField(field)
+      setSortOrder('asc')
+    }
+  }
+
+  const sortedSamples = useMemo(() => {
+    if (!sortField) return samples
+
+    return [...samples].sort((a, b) => {
+      let compareValue = 0
+
+      if (sortField === 'name') {
+        compareValue = a.name.localeCompare(b.name)
+      } else if (sortField === 'duration') {
+        const durationA = a.endTime - a.startTime
+        const durationB = b.endTime - b.startTime
+        compareValue = durationA - durationB
+      }
+
+      return sortOrder === 'asc' ? compareValue : -compareValue
+    })
+  }, [samples, sortField, sortOrder])
 
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -71,17 +114,44 @@ export function SourcesSampleGrid({
 
   const handleDragStart = (e: React.DragEvent, sample: SliceWithTrackExtended) => {
     setDraggedId(sample.id)
-    e.dataTransfer.setData('text/plain', getSliceDownloadUrl(sample.id))
+
+    // Determine which samples to drag
+    let samplesToDrag: number[]
+    if (selectedIds.has(sample.id)) {
+      // If the dragged sample is selected, drag all selected samples
+      samplesToDrag = Array.from(selectedIds)
+    } else {
+      // Otherwise, just drag this one sample
+      samplesToDrag = [sample.id]
+    }
+
+    // Set drag data
     e.dataTransfer.setData('application/json', JSON.stringify({
-      type: 'sample',
-      id: sample.id,
-      name: sample.name,
+      type: 'samples',
+      sampleIds: samplesToDrag,
     }))
-    e.dataTransfer.effectAllowed = 'copyMove'
+    e.dataTransfer.effectAllowed = 'copy'
+
+    // Create and set custom drag preview
+    const preview = createDragPreview(samplesToDrag.length)
+    dragPreviewRef.current = preview
+
+    // Set the drag image synchronously
+    try {
+      e.dataTransfer.setDragImage(preview, 35, 20)
+    } catch (err) {
+      console.error('Failed to set drag image:', err)
+    }
   }
 
   const handleDragEnd = () => {
     setDraggedId(null)
+
+    // Clean up preview element
+    if (dragPreviewRef.current && dragPreviewRef.current.parentNode) {
+      document.body.removeChild(dragPreviewRef.current)
+      dragPreviewRef.current = null
+    }
   }
 
   if (isLoading) {
@@ -101,10 +171,63 @@ export function SourcesSampleGrid({
     )
   }
 
+  const getSortIcon = (field: SortField) => {
+    if (sortField !== field) {
+      return <ArrowUpDown size={14} className="ml-1" />
+    }
+    return sortOrder === 'asc' ? <ArrowUp size={14} className="ml-1" /> : <ArrowDown size={14} className="ml-1" />
+  }
+
+  // Determine if select-all checkbox should be indeterminate
+  const selectAllIndeterminate = selectedIds.size > 0 && selectedIds.size < sortedSamples.length
+  const selectAllChecked = selectedIds.size === sortedSamples.length && sortedSamples.length > 0
+
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 p-4">
-      {samples.map(sample => {
+    <div className="flex flex-col">
+      {/* Sort controls */}
+      <div className="flex items-center gap-2 px-4 pt-4 pb-2">
+        {onToggleSelect && onToggleSelectAll && (
+          <>
+            <CustomCheckbox
+              checked={selectAllChecked}
+              indeterminate={selectAllIndeterminate}
+              onChange={onToggleSelectAll}
+              className="flex-shrink-0"
+              title="Select all samples"
+            />
+            <div className="w-px h-5 bg-surface-border" />
+          </>
+        )}
+        <span className="text-sm text-slate-400">Sort by:</span>
+        <button
+          onClick={() => handleSortClick('name')}
+          className={`flex items-center px-3 py-1.5 text-sm rounded transition-colors ${
+            sortField === 'name'
+              ? 'bg-accent-primary text-white'
+              : 'bg-surface-raised text-slate-300 hover:bg-surface-base'
+          }`}
+        >
+          Name
+          {getSortIcon('name')}
+        </button>
+        <button
+          onClick={() => handleSortClick('duration')}
+          className={`flex items-center px-3 py-1.5 text-sm rounded transition-colors ${
+            sortField === 'duration'
+              ? 'bg-accent-primary text-white'
+              : 'bg-surface-raised text-slate-300 hover:bg-surface-base'
+          }`}
+        >
+          Duration
+          {getSortIcon('duration')}
+        </button>
+      </div>
+
+      {/* Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 p-4">
+        {sortedSamples.map(sample => {
         const isSelected = selectedId === sample.id
+        const isChecked = selectedIds.has(sample.id)
         const isPlaying = playingId === sample.id
         const isDragging = draggedId === sample.id
 
@@ -118,6 +241,8 @@ export function SourcesSampleGrid({
             className={`group relative bg-surface-raised rounded-lg overflow-hidden cursor-pointer transition-all ${
               isSelected
                 ? 'ring-2 ring-accent-primary shadow-lg shadow-accent-primary/20'
+                : isChecked
+                ? 'ring-2 ring-indigo-400/60 shadow-md shadow-indigo-400/10'
                 : 'hover:bg-surface-base hover:shadow-md'
             } ${isDragging ? 'opacity-50' : ''}`}
           >
@@ -161,6 +286,28 @@ export function SourcesSampleGrid({
                 </div>
               </button>
 
+              {/* Checkbox for selection */}
+              {onToggleSelect && (
+                <div
+                  className={`absolute top-1.5 left-1.5 transition-opacity ${
+                    isChecked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                  }`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onToggleSelect(sample.id)
+                  }}
+                >
+                  <CustomCheckbox
+                    checked={isChecked}
+                    onChange={() => {}}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onToggleSelect(sample.id)
+                    }}
+                  />
+                </div>
+              )}
+
               {/* Favorite button */}
               {onToggleFavorite && (
                 <button
@@ -179,9 +326,11 @@ export function SourcesSampleGrid({
               )}
 
               {/* Drag handle */}
-              <div className="absolute top-1.5 left-1.5 p-1 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab">
-                <GripVertical size={14} />
-              </div>
+              {!onToggleSelect && (
+                <div className="absolute top-1.5 left-1.5 p-1 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab">
+                  <GripVertical size={14} />
+                </div>
+              )}
 
               {/* Duration badge */}
               <span className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 text-[10px] font-medium bg-black/60 rounded text-white">
@@ -193,9 +342,6 @@ export function SourcesSampleGrid({
             <div className="p-2">
               <p className="text-sm font-medium text-white truncate" title={sample.name}>
                 {sample.name}
-              </p>
-              <p className="text-xs text-slate-500 truncate" title={sample.track.title}>
-                {sample.track.title}
               </p>
 
               {/* Tags preview */}
@@ -224,6 +370,7 @@ export function SourcesSampleGrid({
           </div>
         )
       })}
+      </div>
     </div>
   )
 }

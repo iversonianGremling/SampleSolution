@@ -187,15 +187,118 @@ export function useWavesurfer({
     setViewportStart(viewportRegion.start)
     setViewportEnd(viewportRegion.end)
 
+    // Track previous values to detect boundary hits and operation type
+    let previousStart = viewportRegion.start
+    let previousEnd = viewportRegion.end
+    let lockedEnd: number | null = null
+    let lockedStart: number | null = null
+    let isUpdatingProgrammatically = false
+    let dragOperationType: 'center' | 'left' | 'right' | null = null
+
     // Listen to region updates - both during drag/resize and after
     const handleViewportUpdate = () => {
+      // Skip handling if this update was triggered by our own setOptions call
+      if (isUpdatingProgrammatically) {
+        return
+      }
+      let finalStart = viewportRegion.start
+      let finalEnd = viewportRegion.end
+
+      const epsilon = 0.005 // Small threshold for boundary detection
+      const deltaThreshold = 0.001 // Threshold for detecting operation type
+
+      // Calculate how much each edge changed
+      const startDelta = Math.abs(finalStart - previousStart)
+      const endDelta = Math.abs(finalEnd - previousEnd)
+
+      // Detect if we're at boundaries
+      const hasHitLeftLimit = Math.abs(finalStart) < epsilon
+      const hasHitRightLimit = Math.abs(finalEnd - duration) < epsilon
+
+      // Detect operation type on first update of this drag operation
+      if (dragOperationType === null) {
+        // Panning: Both edges move by approximately the same amount
+        // Resizing: Only one edge moves significantly
+        const bothEdgesMoving = startDelta > deltaThreshold && endDelta > deltaThreshold
+        const movingTogether = Math.abs(startDelta - endDelta) < deltaThreshold
+
+        if (bothEdgesMoving && movingTogether) {
+          dragOperationType = 'center'
+        } else if (startDelta > endDelta) {
+          dragOperationType = 'left'
+        } else if (endDelta > startDelta) {
+          dragOperationType = 'right'
+        }
+      }
+
+      const isDraggingFromCenter = dragOperationType === 'center'
+      const isDraggingFromEdges = dragOperationType === 'left' || dragOperationType === 'right'
+
+      console.log('[VIEWPORT UPDATE] start:', finalStart, 'end:', finalEnd, 'startDelta:', startDelta, 'endDelta:', endDelta, 'dragOperationType:', dragOperationType, 'isDraggingFromCenter:', isDraggingFromCenter, 'isDraggingFromEdges:', isDraggingFromEdges, 'hasHitLeftLimit:', hasHitLeftLimit, 'hasHitRightLimit:', hasHitRightLimit)
+
+      // Apply boundary locking only during panning, not resizing
+      if (isDraggingFromCenter) {
+        if (hasHitLeftLimit) {
+          // At left boundary - lock the end to prevent changes
+          if (lockedEnd === null) {
+            lockedEnd = previousEnd
+            console.log('[VIEWPORT UPDATE] LOCKED END at:', lockedEnd)
+          }
+          finalEnd = lockedEnd
+          console.log('[VIEWPORT UPDATE] At left boundary, setting finalEnd to:', finalEnd)
+        } else if (hasHitRightLimit) {
+          // At right boundary - lock the start to prevent changes
+          if (lockedStart === null) {
+            lockedStart = previousStart
+            console.log('[VIEWPORT UPDATE] LOCKED START at:', lockedStart)
+          }
+          finalStart = lockedStart
+          console.log('[VIEWPORT UPDATE] At right boundary, setting finalStart to:', finalStart)
+        } else {
+          // Not at boundaries, unlock
+          lockedEnd = null
+          lockedStart = null
+        }
+      } else {
+        // During resize, don't apply boundary locking - clear locks
+        lockedEnd = null
+        lockedStart = null
+      }
+
+      // Update the region if we modified values
+      if (Math.abs(finalStart - viewportRegion.start) > 0.0001 || Math.abs(finalEnd - viewportRegion.end) > 0.0001) {
+        isUpdatingProgrammatically = true
+        viewportRegion.setOptions({ start: finalStart, end: finalEnd })
+        isUpdatingProgrammatically = false
+      }
+
+      previousStart = finalStart
+      previousEnd = finalEnd
+
+      updateMainWaveform()
+      setViewportStart(finalStart)
+      setViewportEnd(finalEnd)
+    }
+
+    // Handler for when drag/resize ends - clear locks
+    const handleViewportUpdateEnd = () => {
+      // Clear all locks when drag ends
+      lockedEnd = null
+      lockedStart = null
+      dragOperationType = null
+
+      // Update previous values to current position
+      previousStart = viewportRegion.start
+      previousEnd = viewportRegion.end
+
+      // Update the main waveform
       updateMainWaveform()
       setViewportStart(viewportRegion.start)
       setViewportEnd(viewportRegion.end)
     }
 
     viewportRegion.on('update', handleViewportUpdate)
-    viewportRegion.on('update-end', handleViewportUpdate)
+    viewportRegion.on('update-end', handleViewportUpdateEnd)
 
     // Calculate time duration that corresponds to 2px on the minimap
     // Formula: (2px / minimapWidth) * duration gives us the time needed for 2px

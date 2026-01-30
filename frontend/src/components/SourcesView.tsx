@@ -24,7 +24,6 @@ import {
   useCreateTag,
   useDeleteSliceGlobal,
   useBatchDeleteSlices,
-  useBatchGenerateAiTags,
 } from '../hooks/useTracks'
 import type { SourceScope, SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
@@ -64,7 +63,6 @@ export function SourcesView() {
   const createTag = useCreateTag()
   const deleteSlice = useDeleteSliceGlobal()
   const batchDeleteSlices = useBatchDeleteSlices()
-  const batchGenerateAiTags = useBatchGenerateAiTags()
 
   // Derived data
   const samples = samplesData?.samples || []
@@ -136,10 +134,6 @@ export function SourcesView() {
 
   const handleViewModeChange = (mode: 'grid' | 'list') => {
     setViewMode(mode)
-    // Clear multi-selection when switching to grid view
-    if (mode === 'grid') {
-      setSelectedSampleIds(new Set())
-    }
   }
 
   const handleToggleSelect = (id: number) => {
@@ -182,12 +176,6 @@ export function SourcesView() {
     })
   }
 
-  const handleBatchGenerateTags = (ids: number[]) => {
-    batchGenerateAiTags.mutate(ids, {
-      onSuccess: () => setSelectedSampleIds(new Set())
-    })
-  }
-
   const handleDeleteSingle = (id: number) => {
     const sample = samples.find(s => s.id === id)
     if (sample && confirm(`Delete "${sample.name}"?`)) {
@@ -196,6 +184,16 @@ export function SourcesView() {
         setSelectedSampleId(null)
       }
     }
+  }
+
+  const handleBatchAddToCollection = (collectionId: number, sampleIds: number[]) => {
+    // Add each sample to the collection
+    sampleIds.forEach(sliceId => {
+      addSliceToCollection.mutate({ collectionId, sliceId })
+    })
+
+    // Clear selection after adding
+    setSelectedSampleIds(new Set())
   }
 
   // Get scope label for display
@@ -233,6 +231,7 @@ export function SourcesView() {
           onRenameCollection={handleRenameCollection}
           onDeleteCollection={handleDeleteCollection}
           onUpdateCollection={handleUpdateCollection}
+          onBatchAddToCollection={handleBatchAddToCollection}
           isLoading={isTreeLoading}
         />
       </div>
@@ -308,16 +307,14 @@ export function SourcesView() {
         </div>
 
         {/* Batch actions bar */}
-        {viewMode === 'list' && selectedSampleIds.size > 0 && (
+        {selectedSampleIds.size > 0 && (
           <SourcesBatchActions
             selectedCount={selectedSampleIds.size}
             selectedIds={selectedSampleIds}
             onBatchDelete={handleBatchDelete}
             onBatchDownload={handleBatchDownload}
-            onBatchGenerateTags={handleBatchGenerateTags}
             onClearSelection={() => setSelectedSampleIds(new Set())}
             isDeleting={batchDeleteSlices.isPending}
-            isGeneratingTags={batchGenerateAiTags.isPending}
           />
         )}
 
@@ -328,7 +325,10 @@ export function SourcesView() {
               <SourcesSampleGrid
                 samples={samples}
                 selectedId={selectedSampleId}
+                selectedIds={selectedSampleIds}
                 onSelect={setSelectedSampleId}
+                onToggleSelect={handleToggleSelect}
+                onToggleSelectAll={handleToggleSelectAll}
                 onToggleFavorite={handleToggleFavorite}
                 isLoading={isSamplesLoading}
               />

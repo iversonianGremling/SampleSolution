@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Play, Pause, Heart, Trash2, Pencil } from 'lucide-react'
+import { CustomCheckbox } from './CustomCheckbox'
 import type { SliceWithTrackExtended } from '../types'
 
 interface SourcesSampleListRowProps {
@@ -13,6 +14,8 @@ interface SourcesSampleListRowProps {
   onToggleFavorite: () => void
   onUpdateName: (name: string) => void
   onDelete: () => void
+  onDragStart?: (e: React.DragEvent) => void
+  onDragEnd?: () => void
 }
 
 export function SourcesSampleListRow({
@@ -26,6 +29,8 @@ export function SourcesSampleListRow({
   onToggleFavorite,
   onUpdateName,
   onDelete,
+  onDragStart,
+  onDragEnd,
 }: SourcesSampleListRowProps) {
   const [isEditingName, setIsEditingName] = useState(false)
   const [editingName, setEditingName] = useState(sample.name)
@@ -62,6 +67,9 @@ export function SourcesSampleListRow({
   return (
     <div
       onClick={onSelect}
+      draggable={!!onDragStart}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       className={`px-4 py-2 cursor-pointer transition-colors border-l-2 ${
         isSelected
           ? 'bg-accent-primary/10 border-accent-primary ring-2 ring-accent-primary/40'
@@ -71,17 +79,16 @@ export function SourcesSampleListRow({
       }`}
     >
       {/* Main row */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3">
         {/* Checkbox */}
-        <input
-          type="checkbox"
+        <CustomCheckbox
           checked={isChecked}
           onChange={(e) => {
             e.stopPropagation()
             onToggleCheck()
           }}
           onClick={(e) => e.stopPropagation()}
-          className="w-4 h-4 rounded border-surface-border bg-surface-base text-accent-primary focus:ring-accent-primary flex-shrink-0"
+          className="flex-shrink-0"
         />
 
         {/* Play button */}
@@ -90,7 +97,7 @@ export function SourcesSampleListRow({
             e.stopPropagation()
             onPlay(e)
           }}
-          className={`p-1.5 rounded transition-colors flex-shrink-0 ${
+          className={`p-1 sm:p-1.5 rounded transition-colors flex-shrink-0 ${
             isPlaying
               ? 'bg-accent-primary text-white'
               : 'text-slate-400 hover:text-accent-primary hover:bg-surface-base'
@@ -101,7 +108,7 @@ export function SourcesSampleListRow({
         </button>
 
         {/* Sample name (editable) */}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 pl-1">
           {isEditingName ? (
             <input
               ref={nameInputRef}
@@ -133,15 +140,8 @@ export function SourcesSampleListRow({
           )}
         </div>
 
-        {/* Track title */}
-        <div className="w-48 flex-shrink-0">
-          <span className="text-xs text-slate-400 truncate block">
-            {sample.track.title}
-          </span>
-        </div>
-
-        {/* Tags */}
-        <div className="flex items-center gap-1 flex-shrink-0">
+        {/* Tags (hidden on small screens) */}
+        <div className="hidden sm:flex items-center gap-1 flex-shrink-0 pl-1">
           {visibleTags.map((tag) => (
             <span
               key={tag.id}
@@ -163,39 +163,42 @@ export function SourcesSampleListRow({
         </div>
 
         {/* Duration */}
-        <div className="w-20 flex-shrink-0 text-right">
+        <div className="w-16 sm:w-20 flex-shrink-0 text-right">
           <span className="text-xs text-slate-400">
             {formatDuration(sample.startTime, sample.endTime)}
           </span>
         </div>
 
-        {/* Favorite button */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onToggleFavorite()
-          }}
-          className={`p-1.5 rounded transition-colors flex-shrink-0 ${
-            sample.favorite
-              ? 'text-amber-400 bg-amber-400/20'
-              : 'text-slate-400 hover:text-amber-400 hover:bg-amber-400/20'
-          }`}
-          title={sample.favorite ? 'Remove from favorites' : 'Add to favorites'}
-        >
-          <Heart size={16} className={sample.favorite ? 'fill-current' : ''} />
-        </button>
+        {/* Actions */}
+        <div className="w-12 sm:w-16 flex-shrink-0 flex items-center justify-end gap-0.5 sm:gap-1">
+          {/* Favorite button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleFavorite()
+            }}
+            className={`p-1 sm:p-1.5 rounded transition-colors flex-shrink-0 ${
+              sample.favorite
+                ? 'text-amber-400 bg-amber-400/20'
+                : 'text-slate-400 hover:text-amber-400 hover:bg-amber-400/20'
+            }`}
+            title={sample.favorite ? 'Remove from favorites' : 'Add to favorites'}
+          >
+            <Heart size={14} className={sample.favorite ? 'fill-current' : ''} />
+          </button>
 
-        {/* Delete button */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-          className="p-1.5 rounded text-slate-400 hover:text-red-400 hover:bg-red-400/20 transition-colors flex-shrink-0"
-          title="Delete"
-        >
-          <Trash2 size={16} />
-        </button>
+          {/* Delete button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+            className="p-1 sm:p-1.5 rounded text-slate-400 hover:text-red-400 hover:bg-red-400/20 transition-colors flex-shrink-0"
+            title="Delete"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
       </div>
     </div>
   )

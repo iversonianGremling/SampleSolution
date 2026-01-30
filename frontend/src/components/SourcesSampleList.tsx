@@ -1,8 +1,13 @@
-import { useState, useRef, useEffect } from 'react'
-import { Loader2 } from 'lucide-react'
+import { useState, useRef, useEffect, useMemo } from 'react'
+import { Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { SourcesSampleListRow } from './SourcesSampleListRow'
+import { CustomCheckbox } from './CustomCheckbox'
+import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
+
+type SortField = 'name' | 'duration'
+type SortOrder = 'asc' | 'desc'
 
 interface SourcesSampleListProps {
   samples: SliceWithTrackExtended[]
@@ -32,6 +37,9 @@ export function SourcesSampleList({
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const listContainerRef = useRef<HTMLDivElement>(null)
+  const [sortField, setSortField] = useState<SortField | null>(null)
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
+  const dragPreviewRef = useRef<HTMLElement | null>(null)
 
   // Stop audio when unmounting
   useEffect(() => {
@@ -70,9 +78,76 @@ export function SourcesSampleList({
     }
   }
 
+  const handleSortClick = (field: SortField) => {
+    if (sortField === field) {
+      // Toggle order if same field
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
+    } else {
+      // Set new field with ascending order
+      setSortField(field)
+      setSortOrder('asc')
+    }
+  }
+
+  const handleDragStart = (sample: SliceWithTrackExtended) => (e: React.DragEvent) => {
+    // Determine which samples to drag
+    let samplesToDrag: number[]
+    if (selectedIds.has(sample.id)) {
+      // If the dragged sample is selected, drag all selected samples
+      samplesToDrag = Array.from(selectedIds)
+    } else {
+      // Otherwise, just drag this one sample
+      samplesToDrag = [sample.id]
+    }
+
+    // Set drag data
+    e.dataTransfer.setData('application/json', JSON.stringify({
+      type: 'samples',
+      sampleIds: samplesToDrag,
+    }))
+    e.dataTransfer.effectAllowed = 'copy'
+
+    // Create and set custom drag preview
+    const preview = createDragPreview(samplesToDrag.length)
+    dragPreviewRef.current = preview
+
+    // Set the drag image synchronously
+    try {
+      e.dataTransfer.setDragImage(preview, 35, 20)
+    } catch (err) {
+      console.error('Failed to set drag image:', err)
+    }
+  }
+
+  const handleDragEnd = () => {
+    // Clean up preview element
+    if (dragPreviewRef.current && dragPreviewRef.current.parentNode) {
+      document.body.removeChild(dragPreviewRef.current)
+      dragPreviewRef.current = null
+    }
+  }
+
+  const sortedSamples = useMemo(() => {
+    if (!sortField) return samples
+
+    return [...samples].sort((a, b) => {
+      let compareValue = 0
+
+      if (sortField === 'name') {
+        compareValue = a.name.localeCompare(b.name)
+      } else if (sortField === 'duration') {
+        const durationA = a.endTime - a.startTime
+        const durationB = b.endTime - b.startTime
+        compareValue = durationA - durationB
+      }
+
+      return sortOrder === 'asc' ? compareValue : -compareValue
+    })
+  }, [samples, sortField, sortOrder])
+
   // Determine if select-all checkbox should be indeterminate
-  const selectAllIndeterminate = selectedIds.size > 0 && selectedIds.size < samples.length
-  const selectAllChecked = selectedIds.size === samples.length && samples.length > 0
+  const selectAllIndeterminate = selectedIds.size > 0 && selectedIds.size < sortedSamples.length
+  const selectAllChecked = selectedIds.size === sortedSamples.length && sortedSamples.length > 0
 
   if (isLoading) {
     return (
@@ -92,38 +167,63 @@ export function SourcesSampleList({
     )
   }
 
+  const getSortIcon = (field: SortField) => {
+    if (sortField !== field) {
+      return <ArrowUpDown size={12} className="ml-1 opacity-50" />
+    }
+    return sortOrder === 'asc' ? <ArrowUp size={12} className="ml-1" /> : <ArrowDown size={12} className="ml-1" />
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header row */}
       <div className="sticky top-0 bg-surface-raised border-b border-surface-border px-4 py-2 flex-shrink-0 z-10">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           {/* Select all checkbox */}
-          <input
-            type="checkbox"
+          <CustomCheckbox
             checked={selectAllChecked}
-            ref={(el) => {
-              if (el) {
-                el.indeterminate = selectAllIndeterminate
-              }
-            }}
+            indeterminate={selectAllIndeterminate}
             onChange={onToggleSelectAll}
-            className="w-4 h-4 rounded border-surface-border bg-surface-base text-accent-primary focus:ring-accent-primary flex-shrink-0"
+            className="flex-shrink-0"
             title="Select all samples"
           />
 
           {/* Column headers */}
-          <span className="w-10 flex-shrink-0 text-xs font-semibold text-slate-400 uppercase">Play</span>
-          <span className="flex-1 text-xs font-semibold text-slate-400 uppercase">Name</span>
-          <span className="w-48 flex-shrink-0 text-xs font-semibold text-slate-400 uppercase">Track</span>
-          <span className="text-xs font-semibold text-slate-400 uppercase">Tags</span>
-          <span className="w-20 flex-shrink-0 text-right text-xs font-semibold text-slate-400 uppercase">Duration</span>
-          <span className="w-16 flex-shrink-0 text-right text-xs font-semibold text-slate-400 uppercase">Actions</span>
+          <span className="w-8 sm:w-10 flex-shrink-0 text-xs font-semibold text-slate-400 uppercase text-left">Play</span>
+
+          {/* Name column with sort */}
+          <button
+            onClick={() => handleSortClick('name')}
+            className={`flex-1 min-w-0 flex items-center text-left text-xs font-semibold uppercase transition-colors hover:text-slate-200 pl-1 ${
+              sortField === 'name' ? 'text-accent-primary' : 'text-slate-400'
+            }`}
+          >
+            Name
+            {getSortIcon('name')}
+          </button>
+
+          {/* Tags */}
+          <span className="hidden sm:block text-xs font-semibold text-slate-400 uppercase text-left pl-1">Tags</span>
+
+          {/* Duration column with sort */}
+          <button
+            onClick={() => handleSortClick('duration')}
+            className={`w-16 sm:w-20 flex-shrink-0 flex items-center justify-end text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
+              sortField === 'duration' ? 'text-accent-primary' : 'text-slate-400'
+            }`}
+          >
+            Duration
+            {getSortIcon('duration')}
+          </button>
+
+          {/* Actions */}
+          <span className="w-12 sm:w-16 flex-shrink-0 text-right text-xs font-semibold text-slate-400 uppercase">Actions</span>
         </div>
       </div>
 
       {/* List items */}
       <div ref={listContainerRef} className="flex-1 overflow-y-auto divide-y divide-surface-border">
-        {samples.map((sample) => (
+        {sortedSamples.map((sample) => (
           <SourcesSampleListRow
             key={sample.id}
             sample={sample}
@@ -136,6 +236,8 @@ export function SourcesSampleList({
             onToggleFavorite={() => onToggleFavorite(sample.id)}
             onUpdateName={(name) => onUpdateName(sample.id, name)}
             onDelete={() => onDelete(sample.id)}
+            onDragStart={handleDragStart(sample)}
+            onDragEnd={handleDragEnd}
           />
         ))}
       </div>
