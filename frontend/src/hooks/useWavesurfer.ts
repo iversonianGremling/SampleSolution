@@ -342,18 +342,44 @@ export function useWavesurfer({
     (start: number, end: number) => {
       if (!viewportRegionRef.current || !duration) return
 
-      // Clamp values to valid range
-      const clampedStart = Math.max(0, Math.min(start, duration))
-      const clampedEnd = Math.max(clampedStart, Math.min(end, duration))
+      const epsilon = 0.001 // 1ms threshold for floating point comparison
+      const currentRegion = viewportRegionRef.current
+      const currentStart = currentRegion.start
+      const currentEnd = currentRegion.end
 
-      // Update state immediately for instant feedback
-      setViewportStart(clampedStart)
-      setViewportEnd(clampedEnd)
+      // Determine which edge is being changed
+      const startChanged = Math.abs(currentStart - start) > epsilon
+      const endChanged = Math.abs(currentEnd - end) > epsilon
+
+      if (!startChanged && !endChanged) {
+        return // No change, skip update
+      }
+
+      let finalStart: number
+      let finalEnd: number
+
+      if (startChanged && !endChanged) {
+        // Only start is changing - preserve end exactly
+        finalStart = Math.max(0, Math.min(start, duration))
+        finalEnd = currentEnd
+      } else if (endChanged && !startChanged) {
+        // Only end is changing - preserve start exactly
+        finalStart = currentStart
+        finalEnd = Math.max(0, Math.min(end, duration))
+      } else {
+        // Both changing (panning) - clamp both
+        finalStart = Math.max(0, Math.min(start, duration))
+        finalEnd = Math.max(0, Math.min(end, duration))
+      }
+
+      // Update state
+      setViewportStart(finalStart)
+      setViewportEnd(finalEnd)
 
       // Update the region
-      viewportRegionRef.current.setOptions({
-        start: clampedStart,
-        end: clampedEnd,
+      currentRegion.setOptions({
+        start: finalStart,
+        end: finalEnd,
       })
     },
     [duration]
