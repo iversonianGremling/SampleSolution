@@ -25,6 +25,7 @@ export function useWavesurfer({
   const minimapRegionsRef = useRef<RegionsPlugin | null>(null)
   const viewportRegionRef = useRef<Region | null>(null)
   const playbackPositionRegionRef = useRef<Region | null>(null)
+  const currentZoomRef = useRef<number>(150)
 
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -58,7 +59,7 @@ export function useWavesurfer({
       barRadius: 2,
       height: 128,
       normalize: true,
-      minPxPerSec: 200,
+      minPxPerSec: 150,
       autoScroll: false,
       autoCenter: false,
       plugins: [regions],
@@ -146,8 +147,12 @@ export function useWavesurfer({
     const mainWidth = wavesurferRef.current.getWidth()
     const pxPerSec = mainWidth / visibleDuration
 
-    // Apply zoom
-    wavesurferRef.current.zoom(pxPerSec)
+    // Only apply zoom if it changed significantly (>1%) to reduce re-renders
+    const zoomChange = Math.abs(pxPerSec - currentZoomRef.current) / currentZoomRef.current
+    if (zoomChange > 0.01) {
+      wavesurferRef.current.zoom(pxPerSec)
+      currentZoomRef.current = pxPerSec
+    }
 
     // Use WaveSurfer's native setScrollTime method to position the view
     // This moves the viewing window to show the start of the viewport region
@@ -222,7 +227,7 @@ export function useWavesurfer({
 
     wavesurferRef.current.on('timeupdate', updatePlaybackPosition)
 
-    // Handle clicks on minimap to move viewport edges
+    // Handle clicks on minimap to pan viewport while maintaining width
     const handleMinimapClick = (relativeX: number) => {
       if (!viewportRegionRef.current || !minimapWavesurferRef.current) {
         return
@@ -235,19 +240,24 @@ export function useWavesurfer({
       const viewportEnd = viewportRegionRef.current.end
       const viewportDuration = viewportEnd - viewportStart
 
-      // If clicked to the left of the viewport, move the left edge
-      if (clickTime < viewportStart) {
-        const newStart = Math.max(0, clickTime)
+      // If clicked outside the viewport, pan to center the viewport on the clicked position
+      if (clickTime < viewportStart || clickTime > viewportEnd) {
+        // Center the viewport on the clicked position
+        let newStart = clickTime - viewportDuration / 2
+        let newEnd = clickTime + viewportDuration / 2
+
+        // Clamp to boundaries while maintaining width
+        if (newStart < 0) {
+          newStart = 0
+          newEnd = viewportDuration
+        }
+        if (newEnd > duration) {
+          newEnd = duration
+          newStart = duration - viewportDuration
+        }
+
         viewportRegionRef.current.setOptions({
           start: newStart,
-          end: Math.min(newStart + viewportDuration, duration),
-        })
-      }
-      // If clicked to the right of the viewport, move the right edge
-      else if (clickTime > viewportEnd) {
-        const newEnd = Math.min(duration, clickTime)
-        viewportRegionRef.current.setOptions({
-          start: Math.max(0, newEnd - viewportDuration),
           end: newEnd,
         })
       }

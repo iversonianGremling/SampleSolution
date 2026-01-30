@@ -5,7 +5,7 @@ import { SourcesTagFilter } from './SourcesTagFilter'
 import { SourcesSampleGrid } from './SourcesSampleGrid'
 import { SourcesSampleList } from './SourcesSampleList'
 import { SourcesBatchActions } from './SourcesBatchActions'
-import { SourcesDetailPane } from './SourcesDetailPane'
+import { SourcesDetailModal } from './SourcesDetailModal'
 import { EditingModal } from './EditingModal'
 import { useSourceTree } from '../hooks/useSourceTree'
 import { useScopedSamples } from '../hooks/useScopedSamples'
@@ -321,56 +321,51 @@ export function SourcesView() {
           />
         )}
 
-        {/* Sample grid and detail pane */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Sample grid/list */}
-          <div className="flex-1 overflow-hidden">
-            {viewMode === 'grid' ? (
-              <div className="overflow-y-auto h-full">
-                <SourcesSampleGrid
-                  samples={samples}
-                  selectedId={selectedSampleId}
-                  onSelect={setSelectedSampleId}
-                  onToggleFavorite={handleToggleFavorite}
-                  isLoading={isSamplesLoading}
-                />
-              </div>
-            ) : (
-              <SourcesSampleList
+        {/* Sample grid/list */}
+        <div className="flex-1 overflow-hidden">
+          {viewMode === 'grid' ? (
+            <div className="overflow-y-auto h-full">
+              <SourcesSampleGrid
                 samples={samples}
                 selectedId={selectedSampleId}
-                selectedIds={selectedSampleIds}
                 onSelect={setSelectedSampleId}
-                onToggleSelect={handleToggleSelect}
-                onToggleSelectAll={handleToggleSelectAll}
                 onToggleFavorite={handleToggleFavorite}
-                onUpdateName={handleUpdateName}
-                onDelete={handleDeleteSingle}
                 isLoading={isSamplesLoading}
               />
-            )}
-          </div>
-
-          {/* Detail pane - shown when sample is selected */}
-          {selectedSample && (
-            <div className="w-80 flex-shrink-0">
-              <SourcesDetailPane
-                sample={selectedSample}
-                allTags={allTags}
-                collections={collections}
-                onClose={() => setSelectedSampleId(null)}
-                onToggleFavorite={handleToggleFavorite}
-                onAddTag={handleAddTag}
-                onRemoveTag={handleRemoveTag}
-                onAddToCollection={handleAddToCollection}
-                onRemoveFromCollection={handleRemoveFromCollection}
-                onUpdateName={handleUpdateName}
-                onEdit={() => setEditingTrackId(selectedSample.trackId)}
-              />
             </div>
+          ) : (
+            <SourcesSampleList
+              samples={samples}
+              selectedId={selectedSampleId}
+              selectedIds={selectedSampleIds}
+              onSelect={setSelectedSampleId}
+              onToggleSelect={handleToggleSelect}
+              onToggleSelectAll={handleToggleSelectAll}
+              onToggleFavorite={handleToggleFavorite}
+              onUpdateName={handleUpdateName}
+              onDelete={handleDeleteSingle}
+              isLoading={isSamplesLoading}
+            />
           )}
         </div>
       </div>
+
+      {/* Sample Detail Modal */}
+      {selectedSample && (
+        <SourcesDetailModal
+          sample={selectedSample}
+          allTags={allTags}
+          collections={collections}
+          onClose={() => setSelectedSampleId(null)}
+          onToggleFavorite={handleToggleFavorite}
+          onAddTag={handleAddTag}
+          onRemoveTag={handleRemoveTag}
+          onAddToCollection={handleAddToCollection}
+          onRemoveFromCollection={handleRemoveFromCollection}
+          onUpdateName={handleUpdateName}
+          onEdit={() => setEditingTrackId(selectedSample.trackId)}
+        />
+      )}
 
       {/* Editing Modal */}
       {editingTrackId !== null && (

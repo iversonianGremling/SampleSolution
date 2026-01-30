@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useState, useEffect } from 'react'
 
 interface WaveformMinimapProps {
   minimapRef: React.RefObject<HTMLDivElement>
@@ -18,6 +18,19 @@ export function WaveformMinimap({
   onSetViewport,
 }: WaveformMinimapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const [showContent, setShowContent] = useState(false)
+
+  // Fade in the waveform after a delay once ready
+  useEffect(() => {
+    if (isReady) {
+      const timer = setTimeout(() => {
+        setShowContent(true)
+      }, 300)
+      return () => clearTimeout(timer)
+    } else {
+      setShowContent(false)
+    }
+  }, [isReady])
 
   // Calculate overlay position and width
   const overlayLeftPercent = (viewportStart / duration) * 100
@@ -29,43 +42,69 @@ export function WaveformMinimap({
       <div className="relative">
         <div
           ref={minimapRef}
-          className={`bg-gray-900 rounded overflow-hidden border border-gray-700 ${
-            isReady ? 'opacity-100' : 'opacity-50'
+          className={`bg-gray-900 rounded overflow-hidden border border-gray-700 transition-opacity duration-300 ${
+            showContent ? 'opacity-100' : 'opacity-0'
           }`}
         />
+        {/* Loading animation */}
+        {!showContent && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80 rounded">
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-8 h-8 border-3 border-yellow-400/30 border-t-yellow-400 rounded-full animate-spin" />
+              <span className="text-xs text-slate-400">Loading minimap...</span>
+            </div>
+          </div>
+        )}
         {/* Yellow viewport overlay */}
         <div
           ref={containerRef}
-          className="absolute top-0 left-0 w-full h-full"
+          className={`absolute top-0 left-0 w-full h-full transition-opacity duration-300 ${
+            showContent ? 'opacity-100' : 'opacity-0'
+          }`}
           style={{ pointerEvents: onSetViewport ? 'auto' : 'none' }}
+          onDoubleClick={() => {
+            onSetViewport?.(0, duration)
+          }}
         >
-          {/* Left draggable area */}
+          {/* Left draggable area - pans viewport while maintaining width */}
           <div
             className="absolute top-0 left-0 h-full"
             style={{
               width: `${overlayLeftPercent}%`,
-              cursor: 'col-resize',
+              cursor: 'grab',
             }}
             onMouseDown={(e) => {
               if (!containerRef.current) return
-              const rect = containerRef.current.getBoundingClientRect()
-              const clickX = e.clientX - rect.left
-              const clickTime = (clickX / rect.width) * duration
-              const newStart = Math.max(0, Math.min(clickTime, viewportEnd - 0.1))
-              onSetViewport?.(newStart, viewportEnd)
-
-              // Allow dragging after snap
               e.preventDefault()
               const startX = e.clientX
-              const startStart = newStart
+              const startViewportStart = viewportStart
+              const startViewportEnd = viewportEnd
+              const viewportWidth = viewportEnd - viewportStart
 
               const handleMouseMove = (moveEvent: MouseEvent) => {
                 if (!containerRef.current) return
                 const deltaX = moveEvent.clientX - startX
                 const containerWidth = containerRef.current.offsetWidth
                 const deltaTime = (deltaX / containerWidth) * duration
-                const dragStart = Math.max(0, Math.min(startStart + deltaTime, viewportEnd - 0.1))
-                onSetViewport?.(dragStart, viewportEnd)
+
+                // Calculate new positions
+                let newStart = startViewportStart + deltaTime
+                let newEnd = startViewportEnd + deltaTime
+
+                // Clamp to boundaries while maintaining constant width
+                if (newStart < 0) {
+                  newStart = 0
+                  newEnd = viewportWidth
+                } else if (newEnd > duration) {
+                  newEnd = duration
+                  newStart = duration - viewportWidth
+                }
+
+                // Ensure bounds are respected (edge case protection)
+                newStart = Math.max(0, newStart)
+                newEnd = Math.min(duration, newEnd)
+
+                onSetViewport?.(newStart, newEnd)
               }
 
               const handleMouseUp = () => {
@@ -78,30 +117,84 @@ export function WaveformMinimap({
             }}
           />
 
-          {/* Yellow center box */}
+          {/* Yellow center box - draggable for panning */}
           <div
             className="absolute top-0 h-full bg-yellow-400 opacity-30 flex items-center justify-center text-xs group"
             style={{
               left: `${overlayLeftPercent}%`,
               width: `${overlayWidthPercent}%`,
+              cursor: 'grab',
+            }}
+            onMouseDown={(e) => {
+              // Only handle center area dragging if not clicking on resize handles
+              if ((e.target as HTMLElement).classList.contains('resize-handle')) {
+                return
+              }
+
+              e.preventDefault()
+              const startX = e.clientX
+              const startViewportStart = viewportStart
+              const startViewportEnd = viewportEnd
+              const viewportWidth = viewportEnd - viewportStart
+
+              const handleMouseMove = (moveEvent: MouseEvent) => {
+                if (!containerRef.current) return
+                const deltaX = moveEvent.clientX - startX
+                const containerWidth = containerRef.current.offsetWidth
+                const deltaTime = (deltaX / containerWidth) * duration
+
+                // Calculate new positions
+                let newStart = startViewportStart + deltaTime
+                let newEnd = startViewportEnd + deltaTime
+
+                // Clamp to boundaries while maintaining constant width
+                if (newStart < 0) {
+                  newStart = 0
+                  newEnd = viewportWidth
+                } else if (newEnd > duration) {
+                  newEnd = duration
+                  newStart = duration - viewportWidth
+                }
+
+                // Ensure bounds are respected (edge case protection)
+                newStart = Math.max(0, newStart)
+                newEnd = Math.min(duration, newEnd)
+
+                onSetViewport?.(newStart, newEnd)
+              }
+
+              const handleMouseUp = () => {
+                document.removeEventListener('mousemove', handleMouseMove)
+                document.removeEventListener('mouseup', handleMouseUp)
+              }
+
+              document.addEventListener('mousemove', handleMouseMove)
+              document.addEventListener('mouseup', handleMouseUp)
             }}
           >
             {/* Left resize handle */}
             <div
-              className="absolute left-0 top-0 h-full w-3 bg-yellow-600 opacity-0 group-hover:opacity-60 cursor-col-resize transition-opacity"
+              className="resize-handle absolute left-0 top-0 h-full w-3 bg-yellow-600 opacity-0 group-hover:opacity-60 cursor-col-resize transition-opacity"
               style={{ cursor: 'col-resize' }}
               onMouseDown={(e) => {
                 e.stopPropagation()
                 const startX = e.clientX
                 const startStart = viewportStart
+                const startEnd = viewportEnd
+                let lastStart = startStart
 
                 const handleMouseMove = (moveEvent: MouseEvent) => {
                   if (!containerRef.current) return
                   const deltaX = moveEvent.clientX - startX
                   const containerWidth = containerRef.current.offsetWidth
                   const deltaTime = (deltaX / containerWidth) * duration
-                  const newStart = Math.max(0, Math.min(startStart + deltaTime, viewportEnd - 0.1))
-                  onSetViewport?.(newStart, viewportEnd)
+                  const newStart = Math.max(0, Math.min(startStart + deltaTime, startEnd - 0.1))
+
+                  // Only update if the value actually changed
+                  if (newStart !== lastStart) {
+                    onSetViewport?.(newStart, startEnd)
+                    lastStart = newStart
+                  }
                 }
 
                 const handleMouseUp = () => {
@@ -120,20 +213,27 @@ export function WaveformMinimap({
 
             {/* Right resize handle */}
             <div
-              className="absolute right-0 top-0 h-full w-3 bg-yellow-600 opacity-0 group-hover:opacity-60 cursor-col-resize transition-opacity"
+              className="resize-handle absolute right-0 top-0 h-full w-3 bg-yellow-600 opacity-0 group-hover:opacity-60 cursor-col-resize transition-opacity"
               style={{ cursor: 'col-resize' }}
               onMouseDown={(e) => {
                 e.stopPropagation()
                 const startX = e.clientX
                 const startEnd = viewportEnd
+                const startStart = viewportStart
+                let lastEnd = startEnd
 
                 const handleMouseMove = (moveEvent: MouseEvent) => {
                   if (!containerRef.current) return
                   const deltaX = moveEvent.clientX - startX
                   const containerWidth = containerRef.current.offsetWidth
                   const deltaTime = (deltaX / containerWidth) * duration
-                  const newEnd = Math.min(duration, Math.max(startEnd + deltaTime, viewportStart + 0.1))
-                  onSetViewport?.(viewportStart, newEnd)
+                  const newEnd = Math.min(duration, Math.max(startEnd + deltaTime, startStart + 0.1))
+
+                  // Only update if the value actually changed
+                  if (newEnd !== lastEnd) {
+                    onSetViewport?.(startStart, newEnd)
+                    lastEnd = newEnd
+                  }
                 }
 
                 const handleMouseUp = () => {
@@ -147,34 +247,46 @@ export function WaveformMinimap({
             />
           </div>
 
-          {/* Right draggable area */}
+          {/* Right draggable area - pans viewport while maintaining width */}
           <div
             className="absolute top-0 h-full"
             style={{
               left: `${overlayLeftPercent + overlayWidthPercent}%`,
               width: `${100 - (overlayLeftPercent + overlayWidthPercent)}%`,
-              cursor: 'col-resize',
+              cursor: 'grab',
             }}
             onMouseDown={(e) => {
               if (!containerRef.current) return
-              const rect = containerRef.current.getBoundingClientRect()
-              const clickX = e.clientX - rect.left
-              const clickTime = (clickX / rect.width) * duration
-              const newEnd = Math.min(duration, Math.max(clickTime, viewportStart + 0.1))
-              onSetViewport?.(viewportStart, newEnd)
-
-              // Allow dragging after snap
               e.preventDefault()
               const startX = e.clientX
-              const startEnd = newEnd
+              const startViewportStart = viewportStart
+              const startViewportEnd = viewportEnd
+              const viewportWidth = viewportEnd - viewportStart
 
               const handleMouseMove = (moveEvent: MouseEvent) => {
                 if (!containerRef.current) return
                 const deltaX = moveEvent.clientX - startX
                 const containerWidth = containerRef.current.offsetWidth
                 const deltaTime = (deltaX / containerWidth) * duration
-                const dragEnd = Math.min(duration, Math.max(startEnd + deltaTime, viewportStart + 0.1))
-                onSetViewport?.(viewportStart, dragEnd)
+
+                // Calculate new positions
+                let newStart = startViewportStart + deltaTime
+                let newEnd = startViewportEnd + deltaTime
+
+                // Clamp to boundaries while maintaining constant width
+                if (newStart < 0) {
+                  newStart = 0
+                  newEnd = viewportWidth
+                } else if (newEnd > duration) {
+                  newEnd = duration
+                  newStart = duration - viewportWidth
+                }
+
+                // Ensure bounds are respected (edge case protection)
+                newStart = Math.max(0, newStart)
+                newEnd = Math.min(duration, newEnd)
+
+                onSetViewport?.(newStart, newEnd)
               }
 
               const handleMouseUp = () => {
@@ -189,7 +301,7 @@ export function WaveformMinimap({
         </div>
       </div>
       <div className="text-xs text-gray-500 mt-1 px-1">
-        Drag edges to zoom, drag center to pan, click to move window
+        Drag edge handles to resize, drag anywhere to pan, double-click to select all
       </div>
     </div>
   )
