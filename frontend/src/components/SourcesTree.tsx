@@ -433,7 +433,7 @@ export function SourcesTree({
                 drop here
               </span>
             )}
-            <span className="text-xs text-slate-500">{Number(node.sliceCount || 0)}</span>
+            <span className="text-xs text-slate-500 group-hover:opacity-0 transition-opacity">{Number(node.sliceCount || 0)}</span>
           </button>
 
           {/* Context menu button */}
