@@ -78,6 +78,8 @@ export function SourcesTree({
   // Drag and drop state
   const [draggedCollectionId, setDraggedCollectionId] = useState<number | null>(null)
   const [dropTargetId, setDropTargetId] = useState<number | null>(null)
+  const expandTimerRef = useRef<number | null>(null)
+  const lastHoveredIdRef = useRef<number | null>(null)
 
   // Click outside handler for context menu and color picker
   useEffect(() => {
@@ -166,7 +168,7 @@ export function SourcesTree({
     e.dataTransfer.effectAllowed = 'move'
   }
 
-  const handleDragOver = (e: React.DragEvent, targetId: number | null) => {
+  const handleDragOver = (e: React.DragEvent, targetId: number | null, hasChildren?: boolean) => {
     e.preventDefault()
     e.stopPropagation()
 
@@ -175,6 +177,25 @@ export function SourcesTree({
     if (data) {
       e.dataTransfer.dropEffect = draggedCollectionId !== null ? 'move' : 'copy'
       setDropTargetId(targetId)
+
+      // Auto-expand folders with children after a delay
+      if (hasChildren && targetId !== null && !expandedCollections.has(targetId)) {
+        // Only set timer if we've moved to a different folder
+        if (lastHoveredIdRef.current !== targetId) {
+          // Clear any existing timer
+          if (expandTimerRef.current !== null) {
+            clearTimeout(expandTimerRef.current)
+          }
+
+          lastHoveredIdRef.current = targetId
+
+          // Set new timer to expand after 600ms
+          expandTimerRef.current = window.setTimeout(() => {
+            setExpandedCollections(prev => new Set(prev).add(targetId))
+            expandTimerRef.current = null
+          }, 600)
+        }
+      }
     }
   }
 
@@ -188,6 +209,12 @@ export function SourcesTree({
     const y = e.clientY
 
     if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
+      // Clear the expand timer
+      if (expandTimerRef.current !== null) {
+        clearTimeout(expandTimerRef.current)
+        expandTimerRef.current = null
+      }
+      lastHoveredIdRef.current = null
       setDropTargetId(null)
     }
   }
@@ -369,8 +396,13 @@ export function SourcesTree({
           onDragEnd={() => {
             setDraggedCollectionId(null)
             setDropTargetId(null)
+            if (expandTimerRef.current !== null) {
+              clearTimeout(expandTimerRef.current)
+              expandTimerRef.current = null
+            }
+            lastHoveredIdRef.current = null
           }}
-          onDragOver={(e) => handleDragOver(e, node.id)}
+          onDragOver={(e) => handleDragOver(e, node.id, hasChildren)}
           onDragLeave={handleDragLeave}
           onDrop={(e) => handleDrop(e, node.id)}
         >

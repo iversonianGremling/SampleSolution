@@ -2,19 +2,22 @@ import { Layers } from 'lucide-react'
 
 interface DragPreviewProps {
   count: number
+  sampleName?: string
 }
 
-export function DragPreview({ count }: DragPreviewProps) {
+export function DragPreview({ count, sampleName }: DragPreviewProps) {
+  const displayText = count === 1 && sampleName ? sampleName : count.toString()
+
   return (
     <div className="flex items-center gap-2 px-3 py-2 bg-accent-primary rounded-lg shadow-lg">
       <Layers size={20} className="text-white" />
-      <span className="text-white font-semibold">{count}</span>
+      <span className="text-white font-semibold">{displayText}</span>
     </div>
   )
 }
 
 // Helper function to create a custom drag image
-export function createDragPreview(count: number): HTMLElement {
+export function createDragPreview(count: number, sampleName?: string): HTMLElement {
   const preview = document.createElement('div')
 
   // Position it visible but far to the right temporarily
@@ -36,11 +39,13 @@ export function createDragPreview(count: number): HTMLElement {
   icon.style.alignItems = 'center'
   icon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/></svg>`
 
+  const displayText = count === 1 && sampleName ? sampleName : count.toString()
+
   const countText = document.createElement('span')
   countText.style.color = 'white'
   countText.style.fontWeight = '600'
   countText.style.fontSize = '14px'
-  countText.textContent = count.toString()
+  countText.textContent = displayText
 
   preview.appendChild(icon)
   preview.appendChild(countText)

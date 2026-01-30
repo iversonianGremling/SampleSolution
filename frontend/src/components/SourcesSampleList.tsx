@@ -108,7 +108,8 @@ export function SourcesSampleList({
     e.dataTransfer.effectAllowed = 'copy'
 
     // Create and set custom drag preview
-    const preview = createDragPreview(samplesToDrag.length)
+    const sampleName = samplesToDrag.length === 1 ? sample.name : undefined
+    const preview = createDragPreview(samplesToDrag.length, sampleName)
     dragPreviewRef.current = preview
 
     // Set the drag image synchronously
