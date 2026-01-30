@@ -16,6 +16,7 @@ interface SourcesDetailModalProps {
   onRemoveFromCollection?: (collectionId: number, sliceId: number) => void
   onUpdateName?: (sliceId: number, name: string) => void
   onEdit?: () => void
+  onTagClick?: (tagId: number) => void
 }
 
 export function SourcesDetailModal({
@@ -30,6 +31,7 @@ export function SourcesDetailModal({
   onRemoveFromCollection,
   onUpdateName,
   onEdit,
+  onTagClick,
 }: SourcesDetailModalProps) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [isWaveformReady, setIsWaveformReady] = useState(false)
@@ -336,16 +338,26 @@ export function SourcesDetailModal({
                 {sample.tags.map(tag => (
                   <span
                     key={tag.id}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium"
+                    onClick={() => {
+                      if (onTagClick) {
+                        onTagClick(tag.id)
+                        onClose()
+                      }
+                    }}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
                     style={{
                       backgroundColor: tag.color + '25',
                       color: tag.color,
                     }}
+                    title={onTagClick ? `Filter by ${tag.name}` : undefined}
                   >
                     {tag.name}
                     {onRemoveTag && (
                       <button
-                        onClick={() => onRemoveTag(sample.id, tag.id)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRemoveTag(sample.id, tag.id)
+                        }}
                         className="hover:opacity-70 transition-opacity"
                       >
                         <X size={12} />

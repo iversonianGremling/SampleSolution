@@ -14,6 +14,7 @@ interface SourcesSampleListRowProps {
   onToggleFavorite: () => void
   onUpdateName: (name: string) => void
   onDelete: () => void
+  onTagClick?: (tagId: number) => void
   onDragStart?: (e: React.DragEvent) => void
   onDragEnd?: () => void
 }
@@ -29,12 +30,17 @@ export function SourcesSampleListRow({
   onToggleFavorite,
   onUpdateName,
   onDelete,
+  onTagClick,
   onDragStart,
   onDragEnd,
 }: SourcesSampleListRowProps) {
   const [isEditingName, setIsEditingName] = useState(false)
   const [editingName, setEditingName] = useState(sample.name)
+  const [showTagsPopup, setShowTagsPopup] = useState(false)
+  const [popupDirection, setPopupDirection] = useState<'up' | 'down'>('up')
   const nameInputRef = useRef<HTMLInputElement>(null)
+  const tagTriggerRef = useRef<HTMLDivElement>(null)
+  const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     if (isEditingName && nameInputRef.current) {
@@ -63,6 +69,46 @@ export function SourcesSampleListRow({
   const maxVisibleTags = 3
   const visibleTags = sample.tags.slice(0, maxVisibleTags)
   const remainingTags = sample.tags.length - maxVisibleTags
+
+  const handleTagPopupOpen = () => {
+    // Clear any pending close timeout
+    if (closeTimeoutRef.current) {
+      clearTimeout(closeTimeoutRef.current)
+      closeTimeoutRef.current = null
+    }
+
+    // Check if popup would go off screen at the top
+    if (tagTriggerRef.current) {
+      const rect = tagTriggerRef.current.getBoundingClientRect()
+      const spaceAbove = rect.top
+      const popupHeight = 150 // Approximate max height of popup
+
+      // Use a threshold that accounts for being close to the top of the component
+      // Not just the viewport
+      if (spaceAbove < popupHeight + 50) {
+        setPopupDirection('down')
+      } else {
+        setPopupDirection('up')
+      }
+    }
+    setShowTagsPopup(true)
+  }
+
+  const handleTagPopupClose = () => {
+    // Add a small delay before closing to make it easier to move mouse to popup
+    closeTimeoutRef.current = setTimeout(() => {
+      setShowTagsPopup(false)
+    }, 150)
+  }
+
+  const handleTagPopupEnter = () => {
+    // Cancel close if mouse enters popup
+    if (closeTimeoutRef.current) {
+      clearTimeout(closeTimeoutRef.current)
+      closeTimeoutRef.current = null
+    }
+    setShowTagsPopup(true)
+  }
 
   return (
     <div
@@ -145,20 +191,70 @@ export function SourcesSampleListRow({
           {visibleTags.map((tag) => (
             <span
               key={tag.id}
-              className="px-1.5 py-0.5 text-[10px] rounded-full flex-shrink-0"
+              onClick={(e) => {
+                if (onTagClick) {
+                  e.stopPropagation()
+                  onTagClick(tag.id)
+                }
+              }}
+              className={`px-1.5 py-0.5 text-[10px] rounded-full flex-shrink-0 ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
               style={{
                 backgroundColor: tag.color + '25',
                 color: tag.color,
               }}
-              title={tag.name}
+              title={onTagClick ? `Filter by ${tag.name}` : tag.name}
             >
               {tag.name.length > 10 ? tag.name.slice(0, 10) + '…' : tag.name}
             </span>
           ))}
           {remainingTags > 0 && (
-            <span className="text-[10px] text-slate-500 flex-shrink-0">
-              +{remainingTags}
-            </span>
+            <div
+              ref={tagTriggerRef}
+              className="relative flex-shrink-0"
+              onMouseEnter={handleTagPopupOpen}
+              onMouseLeave={handleTagPopupClose}
+            >
+              <span className="text-[10px] text-slate-500 cursor-default">
+                +{remainingTags}
+              </span>
+              {showTagsPopup && (
+                <div
+                  className={`absolute z-50 right-0 bg-surface-raised border border-surface-border rounded-lg shadow-lg p-2 min-w-[120px] max-h-[200px] overflow-y-auto ${
+                    popupDirection === 'up' ? 'bottom-full mb-0.5' : 'top-full mt-0.5'
+                  }`}
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseEnter={handleTagPopupEnter}
+                  onMouseLeave={handleTagPopupClose}
+                >
+                  <div className="flex flex-wrap gap-1">
+                    {sample.tags.slice(maxVisibleTags).map((tag) => (
+                      <span
+                        key={tag.id}
+                        onClick={(e) => {
+                          if (onTagClick) {
+                            e.stopPropagation()
+                            onTagClick(tag.id)
+                            setShowTagsPopup(false)
+                            if (closeTimeoutRef.current) {
+                              clearTimeout(closeTimeoutRef.current)
+                              closeTimeoutRef.current = null
+                            }
+                          }
+                        }}
+                        className={`px-1.5 py-0.5 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                        style={{
+                          backgroundColor: tag.color + '25',
+                          color: tag.color,
+                        }}
+                        title={onTagClick ? `Filter by ${tag.name}` : tag.name}
+                      >
+                        {tag.name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
 

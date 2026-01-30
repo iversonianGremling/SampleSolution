@@ -1,0 +1,493 @@
+import { useState, useRef, useEffect, useMemo } from 'react'
+import { Play, Pause, Heart, ChevronDown, ChevronRight, GripVertical } from 'lucide-react'
+import { CustomCheckbox } from './CustomCheckbox'
+import { createDragPreview } from './DragPreview'
+import type { SliceWithTrackExtended } from '../types'
+import { getSliceDownloadUrl } from '../api/client'
+
+interface VideoGroup {
+  trackId: number
+  trackTitle: string
+  youtubeId: string
+  thumbnailUrl?: string
+  slices: SliceWithTrackExtended[]
+}
+
+interface SourcesYouTubeGroupedGridProps {
+  samples: SliceWithTrackExtended[]
+  selectedId: number | null
+  selectedIds?: Set<number>
+  onSelect: (id: number) => void
+  onToggleSelect?: (id: number) => void
+  onToggleSelectAll?: () => void
+  onToggleFavorite?: (id: number) => void
+  onTagClick?: (tagId: number) => void
+  isLoading?: boolean
+}
+
+export function SourcesYouTubeGroupedGrid({
+  samples,
+  selectedId,
+  selectedIds = new Set(),
+  onSelect,
+  onToggleSelect,
+  onToggleSelectAll,
+  onToggleFavorite,
+  onTagClick,
+  isLoading = false,
+}: SourcesYouTubeGroupedGridProps) {
+  const [playingId, setPlayingId] = useState<number | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [draggedId, setDraggedId] = useState<number | null>(null)
+  const dragPreviewRef = useRef<HTMLElement | null>(null)
+  const [expandedVideos, setExpandedVideos] = useState<Set<number>>(new Set())
+  const [tagPopupId, setTagPopupId] = useState<number | null>(null)
+  const [popupDirection, setPopupDirection] = useState<Record<number, 'up' | 'down'>>({})
+  const tagTriggerRefs = useRef<Record<number, HTMLDivElement | null>>({})
+
+  // Stop audio when unmounting
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+    }
+  }, [])
+
+  // Group samples by video
+  const videoGroups: VideoGroup[] = Object.values(
+    samples.reduce((acc, sample) => {
+      const trackId = sample.trackId
+      if (!acc[trackId]) {
+        acc[trackId] = {
+          trackId,
+          trackTitle: sample.track.title,
+          youtubeId: sample.track.youtubeId,
+          thumbnailUrl: `https://i.ytimg.com/vi/${sample.track.youtubeId}/mqdefault.jpg`,
+          slices: [],
+        }
+      }
+      acc[trackId].slices.push(sample)
+      return acc
+    }, {} as Record<number, VideoGroup>)
+  )
+
+  // Auto-expand all videos on mount
+  useEffect(() => {
+    setExpandedVideos(new Set(videoGroups.map(v => v.trackId)))
+  }, [])
+
+  const formatDuration = (startTime: number, endTime: number) => {
+    const duration = endTime - startTime
+    if (duration < 60) {
+      return `${duration.toFixed(1)}s`
+    }
+    const mins = Math.floor(duration / 60)
+    const secs = Math.floor(duration % 60)
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const handlePlay = (id: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (playingId === id) {
+      // Stop playing
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+      setPlayingId(null)
+    } else {
+      // Stop previous
+      if (audioRef.current) {
+        audioRef.current.pause()
+      }
+      // Play new
+      const audio = new Audio(getSliceDownloadUrl(id))
+      audio.onended = () => {
+        setPlayingId(null)
+        audioRef.current = null
+      }
+      audio.play()
+      audioRef.current = audio
+      setPlayingId(id)
+    }
+  }
+
+  const handleDragStart = (e: React.DragEvent, sample: SliceWithTrackExtended) => {
+    setDraggedId(sample.id)
+
+    // Determine which samples to drag
+    let samplesToDrag: number[]
+    if (selectedIds.has(sample.id)) {
+      // If the dragged sample is selected, drag all selected samples
+      samplesToDrag = Array.from(selectedIds)
+    } else {
+      // Otherwise, just drag this one sample
+      samplesToDrag = [sample.id]
+    }
+
+    // Set drag data
+    e.dataTransfer.setData('application/json', JSON.stringify({
+      type: 'samples',
+      sampleIds: samplesToDrag,
+    }))
+    e.dataTransfer.effectAllowed = 'copy'
+
+    // Create and set custom drag preview
+    const sampleName = samplesToDrag.length === 1 ? sample.name : undefined
+    const preview = createDragPreview(samplesToDrag.length, sampleName)
+    dragPreviewRef.current = preview
+
+    // Set the drag image synchronously
+    try {
+      e.dataTransfer.setDragImage(preview, 35, 20)
+    } catch (err) {
+      console.error('Failed to set drag image:', err)
+    }
+  }
+
+  const handleDragEnd = () => {
+    setDraggedId(null)
+
+    // Clean up preview element
+    if (dragPreviewRef.current && dragPreviewRef.current.parentNode) {
+      document.body.removeChild(dragPreviewRef.current)
+      dragPreviewRef.current = null
+    }
+  }
+
+  const toggleVideoExpanded = (trackId: number) => {
+    setExpandedVideos(prev => {
+      const next = new Set(prev)
+      if (next.has(trackId)) {
+        next.delete(trackId)
+      } else {
+        next.add(trackId)
+      }
+      return next
+    })
+  }
+
+  const handleTagPopupOpen = (sampleId: number) => {
+    // Check if popup would go off screen at the top
+    const triggerElement = tagTriggerRefs.current[sampleId]
+    if (triggerElement) {
+      const rect = triggerElement.getBoundingClientRect()
+      const spaceAbove = rect.top
+      const popupHeight = 150 // Approximate max height of popup
+
+      setPopupDirection(prev => ({
+        ...prev,
+        [sampleId]: spaceAbove < popupHeight ? 'down' : 'up'
+      }))
+    }
+    setTagPopupId(sampleId)
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64 text-slate-400">
+        Loading samples...
+      </div>
+    )
+  }
+
+  if (samples.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-slate-400">
+        <p className="text-lg">No samples found</p>
+        <p className="text-sm mt-1">Try adjusting your filters or selecting a different source</p>
+      </div>
+    )
+  }
+
+  // Determine if select-all checkbox should be indeterminate
+  const selectAllIndeterminate = selectedIds.size > 0 && selectedIds.size < samples.length
+  const selectAllChecked = selectedIds.size === samples.length && samples.length > 0
+
+  return (
+    <div className="flex flex-col">
+      {/* Controls */}
+      <div className="flex items-center gap-2 px-4 pt-4 pb-2">
+        {onToggleSelect && onToggleSelectAll && (
+          <>
+            <CustomCheckbox
+              checked={selectAllChecked}
+              indeterminate={selectAllIndeterminate}
+              onChange={onToggleSelectAll}
+              className="flex-shrink-0"
+              title="Select all samples"
+            />
+            <div className="w-px h-5 bg-surface-border" />
+          </>
+        )}
+        <span className="text-sm text-slate-400">
+          {videoGroups.length} video{videoGroups.length !== 1 ? 's' : ''}, {samples.length} slice{samples.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      {/* Video groups */}
+      <div className="space-y-4 p-4">
+        {videoGroups.map(group => {
+          const isExpanded = expandedVideos.has(group.trackId)
+
+          // Calculate selection state for this video's slices
+          const videoSliceIds = group.slices.map(s => s.id)
+          const selectedInVideo = videoSliceIds.filter(id => selectedIds.has(id)).length
+          const allVideoSlicesSelected = selectedInVideo === videoSliceIds.length && videoSliceIds.length > 0
+          const someVideoSlicesSelected = selectedInVideo > 0 && selectedInVideo < videoSliceIds.length
+
+          const handleToggleVideoSelection = (e: React.MouseEvent) => {
+            e.stopPropagation()
+            if (!onToggleSelect) return
+
+            if (allVideoSlicesSelected) {
+              // Deselect all slices from this video
+              videoSliceIds.forEach(id => {
+                if (selectedIds.has(id)) {
+                  onToggleSelect(id)
+                }
+              })
+            } else {
+              // Select all slices from this video
+              videoSliceIds.forEach(id => {
+                if (!selectedIds.has(id)) {
+                  onToggleSelect(id)
+                }
+              })
+            }
+          }
+
+          return (
+            <div key={group.trackId} className="bg-surface-raised rounded-lg overflow-hidden">
+              {/* Video header */}
+              <div className="flex items-center gap-3 p-3 hover:bg-surface-base transition-colors">
+                <button
+                  onClick={() => toggleVideoExpanded(group.trackId)}
+                  className="flex items-center gap-3 flex-1"
+                >
+                  {isExpanded ? <ChevronDown size={18} className="text-slate-400" /> : <ChevronRight size={18} className="text-slate-400" />}
+
+                  {/* YouTube thumbnail */}
+                  {group.thumbnailUrl && (
+                    <img
+                      src={group.thumbnailUrl}
+                      alt={group.trackTitle}
+                      className="w-24 h-14 object-cover rounded"
+                    />
+                  )}
+
+                  <div className="flex-1 text-left">
+                    <p className="text-sm font-medium text-white truncate">{group.trackTitle}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">{group.slices.length} slice{group.slices.length !== 1 ? 's' : ''}</p>
+                  </div>
+                </button>
+
+                {/* Select all checkbox for this video */}
+                {onToggleSelect && (
+                  <div onClick={handleToggleVideoSelection}>
+                    <CustomCheckbox
+                      checked={allVideoSlicesSelected}
+                      indeterminate={someVideoSlicesSelected}
+                      onChange={() => {}}
+                      title={`Select all slices from ${group.trackTitle}`}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Slices grid */}
+              {isExpanded && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2 p-3 pt-0">
+                  {group.slices.map(sample => {
+                    const isSelected = selectedId === sample.id
+                    const isChecked = selectedIds.has(sample.id)
+                    const isPlaying = playingId === sample.id
+                    const isDragging = draggedId === sample.id
+
+                    return (
+                      <div
+                        key={sample.id}
+                        onClick={() => onSelect(sample.id)}
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, sample)}
+                        onDragEnd={handleDragEnd}
+                        className={`group relative bg-surface-base rounded-lg overflow-hidden cursor-pointer transition-all ${
+                          isSelected
+                            ? 'ring-2 ring-accent-primary shadow-lg shadow-accent-primary/20'
+                            : isChecked
+                            ? 'ring-2 ring-indigo-400/60 shadow-md shadow-indigo-400/10'
+                            : 'hover:bg-surface-raised hover:shadow-md'
+                        } ${isDragging ? 'opacity-50' : ''}`}
+                      >
+                        {/* YouTube thumbnail as background */}
+                        <div className="aspect-[4/3] relative flex items-center justify-center overflow-hidden">
+                          <img
+                            src={group.thumbnailUrl}
+                            alt=""
+                            className="absolute inset-0 w-full h-full object-cover opacity-40"
+                          />
+
+                          {/* Overlay gradient */}
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+
+                          {/* Play button overlay */}
+                          <button
+                            onClick={(e) => handlePlay(sample.id, e)}
+                            className={`relative z-10 transition-opacity ${
+                              isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                            }`}
+                          >
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                              isPlaying ? 'bg-accent-primary' : 'bg-black/60 hover:bg-black/80'
+                            }`}>
+                              {isPlaying ? (
+                                <Pause size={14} className="text-white" />
+                              ) : (
+                                <Play size={14} className="text-white ml-0.5" />
+                              )}
+                            </div>
+                          </button>
+
+                          {/* Checkbox for selection */}
+                          {onToggleSelect && (
+                            <div
+                              className={`absolute top-1 left-1 transition-opacity z-10 ${
+                                isChecked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                              }`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onToggleSelect(sample.id)
+                              }}
+                            >
+                              <CustomCheckbox
+                                checked={isChecked}
+                                onChange={() => {}}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  onToggleSelect(sample.id)
+                                }}
+                              />
+                            </div>
+                          )}
+
+                          {/* Favorite button */}
+                          {onToggleFavorite && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onToggleFavorite(sample.id)
+                              }}
+                              className={`absolute top-1 right-1 p-1 rounded transition-all z-10 ${
+                                sample.favorite
+                                  ? 'text-amber-400 bg-amber-400/20'
+                                  : 'text-slate-400 opacity-0 group-hover:opacity-100 hover:text-amber-400 hover:bg-amber-400/20'
+                              }`}
+                            >
+                              <Heart size={12} className={sample.favorite ? 'fill-current' : ''} />
+                            </button>
+                          )}
+
+                          {/* Drag handle */}
+                          {!onToggleSelect && (
+                            <div className="absolute top-1 left-1 p-1 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab z-10">
+                              <GripVertical size={12} />
+                            </div>
+                          )}
+
+                          {/* Duration badge */}
+                          <span className="absolute bottom-1 right-1 px-1.5 py-0.5 text-[10px] font-medium bg-black/80 rounded text-white z-10">
+                            {formatDuration(sample.startTime, sample.endTime)}
+                          </span>
+                        </div>
+
+                        {/* Info */}
+                        <div className="p-1.5">
+                          <p className="text-xs font-medium text-white truncate" title={sample.name}>
+                            {sample.name}
+                          </p>
+
+                          {/* Tags preview */}
+                          {sample.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {sample.tags.slice(0, 1).map(tag => (
+                                <span
+                                  key={tag.id}
+                                  onClick={(e) => {
+                                    if (onTagClick) {
+                                      e.stopPropagation()
+                                      onTagClick(tag.id)
+                                    }
+                                  }}
+                                  className={`px-1 py-0.5 text-[9px] rounded-full ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                                  style={{
+                                    backgroundColor: tag.color + '25',
+                                    color: tag.color,
+                                  }}
+                                  title={onTagClick ? `Filter by ${tag.name}` : tag.name}
+                                >
+                                  {tag.name}
+                                </span>
+                              ))}
+                              {sample.tags.length > 1 && (
+                                <div
+                                  ref={(el) => { tagTriggerRefs.current[sample.id] = el }}
+                                  className="relative inline-block"
+                                  onMouseEnter={() => handleTagPopupOpen(sample.id)}
+                                  onMouseLeave={() => setTagPopupId(null)}
+                                >
+                                  <span className="px-1 py-0.5 text-[9px] text-slate-500 cursor-default">
+                                    +{sample.tags.length - 1}
+                                  </span>
+                                  {tagPopupId === sample.id && (
+                                    <div
+                                      className={`absolute z-50 left-0 bg-surface-raised border border-surface-border rounded-lg shadow-lg p-2 min-w-[120px] max-h-[200px] overflow-y-auto ${
+                                        popupDirection[sample.id] === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'
+                                      }`}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onMouseEnter={() => setTagPopupId(sample.id)}
+                                      onMouseLeave={() => setTagPopupId(null)}
+                                    >
+                                      <div className="flex flex-wrap gap-1">
+                                        {sample.tags.slice(1).map((tag) => (
+                                          <span
+                                            key={tag.id}
+                                            onClick={(e) => {
+                                              if (onTagClick) {
+                                                e.stopPropagation()
+                                                onTagClick(tag.id)
+                                                setTagPopupId(null)
+                                              }
+                                            }}
+                                            className={`px-1 py-0.5 text-[9px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                                            style={{
+                                              backgroundColor: tag.color + '25',
+                                              color: tag.color,
+                                            }}
+                                            title={onTagClick ? `Filter by ${tag.name}` : tag.name}
+                                          >
+                                            {tag.name}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}

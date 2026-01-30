@@ -19,6 +19,7 @@ interface SourcesSampleListProps {
   onToggleFavorite: (id: number) => void
   onUpdateName: (id: number, name: string) => void
   onDelete: (id: number) => void
+  onTagClick?: (tagId: number) => void
   isLoading?: boolean
 }
 
@@ -32,6 +33,7 @@ export function SourcesSampleList({
   onToggleFavorite,
   onUpdateName,
   onDelete,
+  onTagClick,
   isLoading = false,
 }: SourcesSampleListProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
@@ -237,6 +239,7 @@ export function SourcesSampleList({
             onToggleFavorite={() => onToggleFavorite(sample.id)}
             onUpdateName={(name) => onUpdateName(sample.id, name)}
             onDelete={() => onDelete(sample.id)}
+            onTagClick={onTagClick}
             onDragStart={handleDragStart(sample)}
             onDragEnd={handleDragEnd}
           />

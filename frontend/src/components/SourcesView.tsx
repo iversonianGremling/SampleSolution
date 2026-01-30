@@ -4,6 +4,8 @@ import { SourcesTree } from './SourcesTree'
 import { SourcesTagFilter } from './SourcesTagFilter'
 import { SourcesSampleGrid } from './SourcesSampleGrid'
 import { SourcesSampleList } from './SourcesSampleList'
+import { SourcesYouTubeGroupedGrid } from './SourcesYouTubeGroupedGrid'
+import { SourcesYouTubeGroupedList } from './SourcesYouTubeGroupedList'
 import { SourcesBatchActions } from './SourcesBatchActions'
 import { SourcesDetailModal } from './SourcesDetailModal'
 import { EditingModal } from './EditingModal'
@@ -130,6 +132,18 @@ export function SourcesView() {
 
   const handleCreateTag = (name: string, color: string) => {
     createTag.mutate({ name, color })
+  }
+
+  const handleTagClick = (tagId: number) => {
+    setSelectedTags((prev) => {
+      if (prev.includes(tagId)) {
+        // Remove tag from filter
+        return prev.filter(id => id !== tagId)
+      } else {
+        // Add tag to filter
+        return [...prev, tagId]
+      }
+    })
   }
 
   const handleViewModeChange = (mode: 'grid' | 'list') => {
@@ -320,9 +334,24 @@ export function SourcesView() {
 
         {/* Sample grid/list */}
         <div className="flex-1 overflow-hidden">
-          {viewMode === 'grid' ? (
-            <div className="overflow-y-auto h-full">
-              <SourcesSampleGrid
+          {currentScope.type === 'youtube' ? (
+            // YouTube grouped view
+            viewMode === 'grid' ? (
+              <div className="overflow-y-auto h-full">
+                <SourcesYouTubeGroupedGrid
+                  samples={samples}
+                  selectedId={selectedSampleId}
+                  selectedIds={selectedSampleIds}
+                  onSelect={setSelectedSampleId}
+                  onToggleSelect={handleToggleSelect}
+                  onToggleSelectAll={handleToggleSelectAll}
+                  onToggleFavorite={handleToggleFavorite}
+                  onTagClick={handleTagClick}
+                  isLoading={isSamplesLoading}
+                />
+              </div>
+            ) : (
+              <SourcesYouTubeGroupedList
                 samples={samples}
                 selectedId={selectedSampleId}
                 selectedIds={selectedSampleIds}
@@ -330,22 +359,43 @@ export function SourcesView() {
                 onToggleSelect={handleToggleSelect}
                 onToggleSelectAll={handleToggleSelectAll}
                 onToggleFavorite={handleToggleFavorite}
+                onUpdateName={handleUpdateName}
+                onDelete={handleDeleteSingle}
+                onTagClick={handleTagClick}
                 isLoading={isSamplesLoading}
               />
-            </div>
+            )
           ) : (
-            <SourcesSampleList
-              samples={samples}
-              selectedId={selectedSampleId}
-              selectedIds={selectedSampleIds}
-              onSelect={setSelectedSampleId}
-              onToggleSelect={handleToggleSelect}
-              onToggleSelectAll={handleToggleSelectAll}
-              onToggleFavorite={handleToggleFavorite}
-              onUpdateName={handleUpdateName}
-              onDelete={handleDeleteSingle}
-              isLoading={isSamplesLoading}
-            />
+            // Standard view for all other scopes
+            viewMode === 'grid' ? (
+              <div className="overflow-y-auto h-full">
+                <SourcesSampleGrid
+                  samples={samples}
+                  selectedId={selectedSampleId}
+                  selectedIds={selectedSampleIds}
+                  onSelect={setSelectedSampleId}
+                  onToggleSelect={handleToggleSelect}
+                  onToggleSelectAll={handleToggleSelectAll}
+                  onToggleFavorite={handleToggleFavorite}
+                  onTagClick={handleTagClick}
+                  isLoading={isSamplesLoading}
+                />
+              </div>
+            ) : (
+              <SourcesSampleList
+                samples={samples}
+                selectedId={selectedSampleId}
+                selectedIds={selectedSampleIds}
+                onSelect={setSelectedSampleId}
+                onToggleSelect={handleToggleSelect}
+                onToggleSelectAll={handleToggleSelectAll}
+                onToggleFavorite={handleToggleFavorite}
+                onUpdateName={handleUpdateName}
+                onDelete={handleDeleteSingle}
+                onTagClick={handleTagClick}
+                isLoading={isSamplesLoading}
+              />
+            )
           )}
         </div>
       </div>
@@ -364,6 +414,7 @@ export function SourcesView() {
           onRemoveFromCollection={handleRemoveFromCollection}
           onUpdateName={handleUpdateName}
           onEdit={() => setEditingTrackId(selectedSample.trackId)}
+          onTagClick={handleTagClick}
         />
       )}
 

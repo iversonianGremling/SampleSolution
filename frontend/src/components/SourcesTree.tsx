@@ -78,6 +78,8 @@ export function SourcesTree({
   // Drag and drop state
   const [draggedCollectionId, setDraggedCollectionId] = useState<number | null>(null)
   const [dropTargetId, setDropTargetId] = useState<number | null>(null)
+  const [dropPosition, setDropPosition] = useState<'before' | 'inside' | 'after' | null>(null)
+  const [isOverRootZone, setIsOverRootZone] = useState(false)
   const expandTimerRef = useRef<number | null>(null)
   const lastHoveredIdRef = useRef<number | null>(null)
 
@@ -173,13 +175,40 @@ export function SourcesTree({
     e.stopPropagation()
 
     // Check if we're dragging samples or collections
-    const data = e.dataTransfer.types.includes('application/json')
-    if (data) {
-      e.dataTransfer.dropEffect = draggedCollectionId !== null ? 'move' : 'copy'
+    const hasJsonData = e.dataTransfer.types.includes('application/json')
+    const isDraggingCollection = draggedCollectionId !== null
+
+    if (hasJsonData || isDraggingCollection) {
+      e.dataTransfer.dropEffect = isDraggingCollection ? 'move' : 'copy'
       setDropTargetId(targetId)
 
-      // Auto-expand folders with children after a delay
-      if (hasChildren && targetId !== null && !expandedCollections.has(targetId)) {
+      // Set root zone flag
+      if (targetId === null) {
+        setIsOverRootZone(true)
+      } else {
+        setIsOverRootZone(false)
+      }
+
+      // For collection dragging, determine drop position based on mouse position
+      if (isDraggingCollection && targetId !== null) {
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+        const mouseY = e.clientY - rect.top
+        const height = rect.height
+
+        // Divide into three zones: before (top 25%), inside (middle 50%), after (bottom 25%)
+        if (mouseY < height * 0.25) {
+          setDropPosition('before')
+        } else if (mouseY > height * 0.75) {
+          setDropPosition('after')
+        } else {
+          setDropPosition('inside')
+        }
+      } else {
+        setDropPosition(null)
+      }
+
+      // Auto-expand folders with children after a delay (only for 'inside' drops)
+      if (hasChildren && targetId !== null && !expandedCollections.has(targetId) && dropPosition === 'inside') {
         // Only set timer if we've moved to a different folder
         if (lastHoveredIdRef.current !== targetId) {
           // Clear any existing timer
@@ -216,11 +245,14 @@ export function SourcesTree({
       }
       lastHoveredIdRef.current = null
       setDropTargetId(null)
+      setDropPosition(null)
+      setIsOverRootZone(false)
     }
   }
 
   const handleDrop = (e: React.DragEvent, targetId: number | null) => {
     e.preventDefault()
+    e.stopPropagation()
 
     try {
       const jsonData = e.dataTransfer.getData('application/json')
@@ -231,15 +263,25 @@ export function SourcesTree({
         if (data.type === 'samples' && data.sampleIds && targetId !== null && onBatchAddToCollection) {
           onBatchAddToCollection(targetId, data.sampleIds)
           setDropTargetId(null)
+          setDraggedCollectionId(null)
+          setDropPosition(null)
           return
         }
       }
     } catch (err) {
-      console.error('Error parsing drag data:', err)
+      // Ignore JSON parse errors for collection drags
     }
 
-    // Handle moving collections (existing logic)
-    if (draggedCollectionId !== null && draggedCollectionId !== targetId && onUpdateCollection) {
+    // Handle moving collections
+    if (draggedCollectionId !== null && onUpdateCollection) {
+      // Can't drop onto itself
+      if (draggedCollectionId === targetId && dropPosition === 'inside') {
+        setDraggedCollectionId(null)
+        setDropTargetId(null)
+        setDropPosition(null)
+        return
+      }
+
       // Prevent moving a folder into itself or its descendants
       const isDescendant = (parentId: number, childId: number): boolean => {
         const child = collections.find(c => c.id === childId)
@@ -248,17 +290,34 @@ export function SourcesTree({
         return isDescendant(parentId, child.parentId)
       }
 
-      if (targetId !== null && isDescendant(draggedCollectionId, targetId)) {
+      if (targetId !== null && dropPosition === 'inside' && isDescendant(draggedCollectionId, targetId)) {
         // Cannot move a folder into its own descendant
         setDraggedCollectionId(null)
         setDropTargetId(null)
+        setDropPosition(null)
         return
       }
 
-      onUpdateCollection(draggedCollectionId, { parentId: targetId })
+      // Determine the new parent based on drop position
+      let newParentId: number | null = null
+
+      if (dropPosition === 'inside') {
+        // Drop inside the target folder
+        newParentId = targetId
+      } else if (dropPosition === 'before' || dropPosition === 'after') {
+        // Drop at the same level as the target folder
+        const targetCollection = collections.find(c => c.id === targetId)
+        newParentId = targetCollection?.parentId ?? null
+      } else {
+        // Default: root level
+        newParentId = targetId
+      }
+
+      onUpdateCollection(draggedCollectionId, { parentId: newParentId })
     }
     setDraggedCollectionId(null)
     setDropTargetId(null)
+    setDropPosition(null)
   }
 
   // Build collection hierarchy
@@ -365,6 +424,9 @@ export function SourcesTree({
     const isDragOver = dropTargetId === node.id
     const isDragging = draggedCollectionId === node.id
 
+    // Highlight self when dropping inside
+    const shouldHighlightSelf = isDragOver && dropPosition === 'inside' && draggedCollectionId !== null
+
     if (isEditing) {
       return (
         <div key={node.id} className="px-2 py-1" style={{ paddingLeft: `${depth * 16 + 8}px` }}>
@@ -388,7 +450,12 @@ export function SourcesTree({
     }
 
     return (
-      <div key={node.id}>
+      <div key={node.id} className="relative">
+        {/* Drop indicator - BEFORE */}
+        {isDragOver && dropPosition === 'before' && (
+          <div className="absolute left-0 right-0 -top-[2px] h-[3px] bg-indigo-400 rounded-full shadow-lg shadow-indigo-400/50 z-10 animate-pulse" />
+        )}
+
         <div
           className="relative group"
           draggable
@@ -396,6 +463,7 @@ export function SourcesTree({
           onDragEnd={() => {
             setDraggedCollectionId(null)
             setDropTargetId(null)
+            setDropPosition(null)
             if (expandTimerRef.current !== null) {
               clearTimeout(expandTimerRef.current)
               expandTimerRef.current = null
@@ -407,17 +475,18 @@ export function SourcesTree({
           onDrop={(e) => handleDrop(e, node.id)}
         >
           <button
+            draggable={false}
             onClick={() => {
               onScopeChange(scope)
               if (hasChildren) toggleCollection(node.id)
             }}
-            className={`group/folder w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-all relative ${
+            className={`group/folder w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors relative ${
               active
                 ? 'bg-accent-primary/20 text-accent-primary'
-                : isDragOver
-                ? 'bg-indigo-500/30 border-2 border-indigo-400 text-white shadow-lg shadow-indigo-500/50 scale-105'
-                : 'text-slate-300 hover:bg-surface-base hover:ring-1 hover:ring-indigo-400/30'
-            } ${isDragging ? 'opacity-50' : ''}`}
+                : shouldHighlightSelf
+                ? 'bg-indigo-500/30 outline outline-2 outline-indigo-400'
+                : 'text-slate-300 hover:bg-surface-base'
+            } ${isDragging ? 'opacity-40 cursor-grabbing' : ''}`}
             style={{ paddingLeft: `${depth * 16 + 8}px` }}
           >
             {hasChildren ? (
@@ -428,12 +497,27 @@ export function SourcesTree({
             <Folder size={14} style={{ color: node.color }} />
             <span className="flex-1 text-left truncate">{node.name}</span>
             {/* Drop hint on hover */}
-            {!active && !isDragOver && (
-              <span className="text-[10px] text-indigo-400/0 group-hover/folder:text-indigo-400/70 transition-colors mr-1">
+            {!active && !isDragOver && draggedCollectionId !== null && !isDragging && (
+              <span className="text-[10px] text-indigo-400/70 transition-colors mr-1">
                 drop here
               </span>
             )}
-            <span className="text-xs text-slate-500 group-hover:opacity-0 transition-opacity">{Number(node.sliceCount || 0)}</span>
+            {isDragOver && dropPosition === 'inside' && (
+              <span className="text-[10px] text-indigo-300 mr-1 font-semibold animate-pulse">
+                drop inside
+              </span>
+            )}
+            {isDragOver && dropPosition === 'before' && (
+              <span className="text-[10px] text-indigo-300 mr-1 font-semibold animate-pulse">
+                drop above
+              </span>
+            )}
+            {isDragOver && dropPosition === 'after' && (
+              <span className="text-[10px] text-indigo-300 mr-1 font-semibold animate-pulse">
+                drop below
+              </span>
+            )}
+            <span className={`text-xs text-slate-500 transition-opacity ${draggedCollectionId !== null && !isDragOver && !isDragging ? 'opacity-0' : ''} group-hover:opacity-0`}>{Number(node.sliceCount || 0)}</span>
           </button>
 
           {/* Context menu button */}
@@ -529,6 +613,11 @@ export function SourcesTree({
           )}
         </div>
 
+        {/* Drop indicator - AFTER */}
+        {isDragOver && dropPosition === 'after' && (
+          <div className="absolute left-0 right-0 -bottom-[2px] h-[3px] bg-indigo-400 rounded-full shadow-lg shadow-indigo-400/50 z-10 animate-pulse" />
+        )}
+
         {/* Render children */}
         {isExpanded && hasChildren && (
           <div>
@@ -616,7 +705,7 @@ export function SourcesTree({
                     toggleSection('youtube')
                   }}
                   className={`w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors ${
-                    isActive({ type: 'youtube' })
+                    currentScope.type === 'youtube' || currentScope.type === 'youtube-video'
                       ? 'bg-red-500/20 text-red-400'
                       : 'text-slate-300 hover:bg-surface-base'
                   }`}
@@ -722,7 +811,11 @@ export function SourcesTree({
                 onDragOver={(e) => handleDragOver(e, null)}
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, null)}
-                className={`${dropTargetId === null && draggedCollectionId !== null ? 'bg-blue-500/10 border border-blue-500/30 rounded-md py-2' : ''}`}
+                className={`transition-colors rounded-md ${
+                  isOverRootZone && draggedCollectionId !== null
+                    ? 'bg-indigo-500/20'
+                    : ''
+                }`}
               >
                 {filteredCollectionTree.map(collection => renderCollectionNode(collection, 0))}
               </div>

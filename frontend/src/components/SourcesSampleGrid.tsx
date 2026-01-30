@@ -16,6 +16,7 @@ interface SourcesSampleGridProps {
   onToggleSelect?: (id: number) => void
   onToggleSelectAll?: () => void
   onToggleFavorite?: (id: number) => void
+  onTagClick?: (tagId: number) => void
   isLoading?: boolean
 }
 
@@ -27,6 +28,7 @@ export function SourcesSampleGrid({
   onToggleSelect,
   onToggleSelectAll,
   onToggleFavorite,
+  onTagClick,
   isLoading = false,
 }: SourcesSampleGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
@@ -34,7 +36,10 @@ export function SourcesSampleGrid({
   const [draggedId, setDraggedId] = useState<number | null>(null)
   const [sortField, setSortField] = useState<SortField | null>(null)
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
+  const [tagPopupId, setTagPopupId] = useState<number | null>(null)
+  const [popupDirection, setPopupDirection] = useState<Record<number, 'up' | 'down'>>({})
   const dragPreviewRef = useRef<HTMLElement | null>(null)
+  const tagTriggerRefs = useRef<Record<number, HTMLDivElement | null>>({})
 
   // Stop audio when unmounting
   useEffect(() => {
@@ -153,6 +158,22 @@ export function SourcesSampleGrid({
       document.body.removeChild(dragPreviewRef.current)
       dragPreviewRef.current = null
     }
+  }
+
+  const handleTagPopupOpen = (sampleId: number) => {
+    // Check if popup would go off screen at the top
+    const triggerElement = tagTriggerRefs.current[sampleId]
+    if (triggerElement) {
+      const rect = triggerElement.getBoundingClientRect()
+      const spaceAbove = rect.top
+      const popupHeight = 150 // Approximate max height of popup
+
+      setPopupDirection(prev => ({
+        ...prev,
+        [sampleId]: spaceAbove < popupHeight ? 'down' : 'up'
+      }))
+    }
+    setTagPopupId(sampleId)
   }
 
   if (isLoading) {
@@ -351,19 +372,66 @@ export function SourcesSampleGrid({
                   {sample.tags.slice(0, 2).map(tag => (
                     <span
                       key={tag.id}
-                      className="px-1.5 py-0.5 text-[10px] rounded-full"
+                      onClick={(e) => {
+                        if (onTagClick) {
+                          e.stopPropagation()
+                          onTagClick(tag.id)
+                        }
+                      }}
+                      className={`px-1.5 py-0.5 text-[10px] rounded-full ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
                       style={{
                         backgroundColor: tag.color + '25',
                         color: tag.color,
                       }}
+                      title={onTagClick ? `Filter by ${tag.name}` : tag.name}
                     >
                       {tag.name}
                     </span>
                   ))}
                   {sample.tags.length > 2 && (
-                    <span className="px-1.5 py-0.5 text-[10px] text-slate-500">
-                      +{sample.tags.length - 2}
-                    </span>
+                    <div
+                      ref={(el) => { tagTriggerRefs.current[sample.id] = el }}
+                      className="relative inline-block"
+                      onMouseEnter={() => handleTagPopupOpen(sample.id)}
+                      onMouseLeave={() => setTagPopupId(null)}
+                    >
+                      <span className="px-1.5 py-0.5 text-[10px] text-slate-500 cursor-default">
+                        +{sample.tags.length - 2}
+                      </span>
+                      {tagPopupId === sample.id && (
+                        <div
+                          className={`absolute z-50 left-0 bg-surface-raised border border-surface-border rounded-lg shadow-lg p-2 min-w-[120px] max-h-[200px] overflow-y-auto ${
+                            popupDirection[sample.id] === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'
+                          }`}
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseEnter={() => setTagPopupId(sample.id)}
+                          onMouseLeave={() => setTagPopupId(null)}
+                        >
+                          <div className="flex flex-wrap gap-1">
+                            {sample.tags.slice(2).map((tag) => (
+                              <span
+                                key={tag.id}
+                                onClick={(e) => {
+                                  if (onTagClick) {
+                                    e.stopPropagation()
+                                    onTagClick(tag.id)
+                                    setTagPopupId(null)
+                                  }
+                                }}
+                                className={`px-1.5 py-0.5 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                                style={{
+                                  backgroundColor: tag.color + '25',
+                                  color: tag.color,
+                                }}
+                                title={onTagClick ? `Filter by ${tag.name}` : tag.name}
+                              >
+                                {tag.name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
