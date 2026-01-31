@@ -7,6 +7,7 @@ import { getSliceDownloadUrl } from '../api/client'
 
 type SortField = 'name' | 'duration'
 type SortOrder = 'asc' | 'desc'
+export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
 interface SourcesSampleGridProps {
   samples: SliceWithTrackExtended[]
@@ -18,6 +19,8 @@ interface SourcesSampleGridProps {
   onToggleFavorite?: (id: number) => void
   onTagClick?: (tagId: number) => void
   isLoading?: boolean
+  playMode?: PlayMode
+  loopEnabled?: boolean
 }
 
 export function SourcesSampleGrid({
@@ -30,6 +33,8 @@ export function SourcesSampleGrid({
   onToggleFavorite,
   onTagClick,
   isLoading = false,
+  playMode = 'normal',
+  loopEnabled = false,
 }: SourcesSampleGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -94,20 +99,41 @@ export function SourcesSampleGrid({
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
 
-    if (playingId === id) {
-      // Stop playing
+    if (playMode === 'normal') {
+      // Normal mode: toggle play/pause
+      if (playingId === id) {
+        // Stop playing
+        if (audioRef.current) {
+          audioRef.current.pause()
+          audioRef.current = null
+        }
+        setPlayingId(null)
+      } else {
+        // Stop previous
+        if (audioRef.current) {
+          audioRef.current.pause()
+        }
+        // Play new
+        const audio = new Audio(getSliceDownloadUrl(id))
+        audio.loop = loopEnabled
+        audio.onended = () => {
+          setPlayingId(null)
+          audioRef.current = null
+        }
+        audio.play()
+        audioRef.current = audio
+        setPlayingId(id)
+      }
+    } else if (playMode === 'one-shot') {
+      // One-shot mode: always play the whole sample, stop others (loop disabled)
+      // Stop previous
       if (audioRef.current) {
         audioRef.current.pause()
         audioRef.current = null
       }
-      setPlayingId(null)
-    } else {
-      // Stop previous
-      if (audioRef.current) {
-        audioRef.current.pause()
-      }
       // Play new
       const audio = new Audio(getSliceDownloadUrl(id))
+      audio.loop = false
       audio.onended = () => {
         setPlayingId(null)
         audioRef.current = null
@@ -115,6 +141,41 @@ export function SourcesSampleGrid({
       audio.play()
       audioRef.current = audio
       setPlayingId(id)
+    }
+  }
+
+  const handleMouseDown = (id: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (playMode === 'reproduce-while-clicking') {
+      // Stop current if playing
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+      // Play from the beginning
+      const audio = new Audio(getSliceDownloadUrl(id))
+      audio.loop = loopEnabled
+      audio.onended = () => {
+        setPlayingId(null)
+        audioRef.current = null
+      }
+      audio.play()
+      audioRef.current = audio
+      setPlayingId(id)
+    }
+  }
+
+  const handleMouseUp = (e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (playMode === 'reproduce-while-clicking') {
+      // Stop playing when mouse is released
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+      setPlayingId(null)
     }
   }
 
@@ -316,7 +377,15 @@ export function SourcesSampleGrid({
 
               {/* Play button overlay */}
               <button
-                onClick={(e) => handlePlay(sample.id, e)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (playMode !== 'reproduce-while-clicking') {
+                    handlePlay(sample.id, e)
+                  }
+                }}
+                onMouseDown={playMode === 'reproduce-while-clicking' ? (e) => handleMouseDown(sample.id, e) : undefined}
+                onMouseUp={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
+                onMouseLeave={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
                 className={`absolute inset-0 flex items-center justify-center transition-opacity ${
                   isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                 }`}
@@ -324,7 +393,7 @@ export function SourcesSampleGrid({
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
                   isPlaying ? 'bg-accent-primary' : 'bg-black/60 hover:bg-black/80'
                 }`}>
-                  {isPlaying ? (
+                  {isPlaying && playMode === 'normal' ? (
                     <Pause size={18} className="text-white" />
                   ) : (
                     <Play size={18} className="text-white ml-0.5" />

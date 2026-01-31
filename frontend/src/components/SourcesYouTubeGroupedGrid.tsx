@@ -5,6 +5,8 @@ import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 
+export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
+
 interface VideoGroup {
   trackId: number
   trackTitle: string
@@ -23,6 +25,8 @@ interface SourcesYouTubeGroupedGridProps {
   onToggleFavorite?: (id: number) => void
   onTagClick?: (tagId: number) => void
   isLoading?: boolean
+  playMode?: PlayMode
+  loopEnabled?: boolean
 }
 
 export function SourcesYouTubeGroupedGrid({
@@ -35,6 +39,8 @@ export function SourcesYouTubeGroupedGrid({
   onToggleFavorite,
   onTagClick,
   isLoading = false,
+  playMode = 'normal',
+  loopEnabled = false,
 }: SourcesYouTubeGroupedGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -92,17 +98,36 @@ export function SourcesYouTubeGroupedGrid({
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
 
-    if (playingId === id) {
-      // Stop playing
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current = null
+    if (playMode === 'normal') {
+      // Normal mode: toggle play/pause
+      if (playingId === id) {
+        // Stop playing
+        if (audioRef.current) {
+          audioRef.current.pause()
+          audioRef.current = null
+        }
+        setPlayingId(null)
+      } else {
+        // Stop previous
+        if (audioRef.current) {
+          audioRef.current.pause()
+        }
+        // Play new
+        const audio = new Audio(getSliceDownloadUrl(id))
+        audio.onended = () => {
+          setPlayingId(null)
+          audioRef.current = null
+        }
+        audio.play()
+        audioRef.current = audio
+        setPlayingId(id)
       }
-      setPlayingId(null)
-    } else {
+    } else if (playMode === 'one-shot') {
+      // One-shot mode: always play the whole sample, stop others
       // Stop previous
       if (audioRef.current) {
         audioRef.current.pause()
+        audioRef.current = null
       }
       // Play new
       const audio = new Audio(getSliceDownloadUrl(id))
@@ -113,6 +138,40 @@ export function SourcesYouTubeGroupedGrid({
       audio.play()
       audioRef.current = audio
       setPlayingId(id)
+    }
+  }
+
+  const handleMouseDown = (id: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (playMode === 'reproduce-while-clicking') {
+      // Stop current if playing
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+      // Play from the beginning
+      const audio = new Audio(getSliceDownloadUrl(id))
+      audio.onended = () => {
+        setPlayingId(null)
+        audioRef.current = null
+      }
+      audio.play()
+      audioRef.current = audio
+      setPlayingId(id)
+    }
+  }
+
+  const handleMouseUp = (e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (playMode === 'reproduce-while-clicking') {
+      // Stop playing when mouse is released
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+      setPlayingId(null)
     }
   }
 
@@ -359,7 +418,15 @@ export function SourcesYouTubeGroupedGrid({
 
                           {/* Play button overlay */}
                           <button
-                            onClick={(e) => handlePlay(sample.id, e)}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (playMode !== 'reproduce-while-clicking') {
+                                handlePlay(sample.id, e)
+                              }
+                            }}
+                            onMouseDown={playMode === 'reproduce-while-clicking' ? (e) => handleMouseDown(sample.id, e) : undefined}
+                            onMouseUp={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
+                            onMouseLeave={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
                             className={`relative z-10 transition-opacity ${
                               isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                             }`}
@@ -367,7 +434,7 @@ export function SourcesYouTubeGroupedGrid({
                             <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
                               isPlaying ? 'bg-accent-primary' : 'bg-black/60 hover:bg-black/80'
                             }`}>
-                              {isPlaying ? (
+                              {isPlaying && playMode === 'normal' ? (
                                 <Pause size={14} className="text-white" />
                               ) : (
                                 <Play size={14} className="text-white ml-0.5" />

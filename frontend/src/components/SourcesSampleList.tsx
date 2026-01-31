@@ -8,6 +8,7 @@ import { getSliceDownloadUrl } from '../api/client'
 
 type SortField = 'name' | 'duration'
 type SortOrder = 'asc' | 'desc'
+export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
 interface SourcesSampleListProps {
   samples: SliceWithTrackExtended[]
@@ -21,6 +22,8 @@ interface SourcesSampleListProps {
   onDelete: (id: number) => void
   onTagClick?: (tagId: number) => void
   isLoading?: boolean
+  playMode?: PlayMode
+  loopEnabled?: boolean
 }
 
 export function SourcesSampleList({
@@ -35,6 +38,8 @@ export function SourcesSampleList({
   onDelete,
   onTagClick,
   isLoading = false,
+  playMode = 'normal',
+  loopEnabled = false,
 }: SourcesSampleListProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -56,20 +61,41 @@ export function SourcesSampleList({
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
 
-    if (playingId === id) {
-      // Stop playing
+    if (playMode === 'normal') {
+      // Normal mode: toggle play/pause
+      if (playingId === id) {
+        // Stop playing
+        if (audioRef.current) {
+          audioRef.current.pause()
+          audioRef.current = null
+        }
+        setPlayingId(null)
+      } else {
+        // Stop previous
+        if (audioRef.current) {
+          audioRef.current.pause()
+        }
+        // Play new
+        const audio = new Audio(getSliceDownloadUrl(id))
+        audio.loop = loopEnabled
+        audio.onended = () => {
+          setPlayingId(null)
+          audioRef.current = null
+        }
+        audio.play()
+        audioRef.current = audio
+        setPlayingId(id)
+      }
+    } else if (playMode === 'one-shot') {
+      // One-shot mode: always play the whole sample, stop others (loop disabled)
+      // Stop previous
       if (audioRef.current) {
         audioRef.current.pause()
         audioRef.current = null
       }
-      setPlayingId(null)
-    } else {
-      // Stop previous
-      if (audioRef.current) {
-        audioRef.current.pause()
-      }
       // Play new
       const audio = new Audio(getSliceDownloadUrl(id))
+      audio.loop = false
       audio.onended = () => {
         setPlayingId(null)
         audioRef.current = null
@@ -77,6 +103,41 @@ export function SourcesSampleList({
       audio.play()
       audioRef.current = audio
       setPlayingId(id)
+    }
+  }
+
+  const handleMouseDown = (id: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (playMode === 'reproduce-while-clicking') {
+      // Stop current if playing
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+      // Play from the beginning
+      const audio = new Audio(getSliceDownloadUrl(id))
+      audio.loop = loopEnabled
+      audio.onended = () => {
+        setPlayingId(null)
+        audioRef.current = null
+      }
+      audio.play()
+      audioRef.current = audio
+      setPlayingId(id)
+    }
+  }
+
+  const handleMouseUp = (e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (playMode === 'reproduce-while-clicking') {
+      // Stop playing when mouse is released
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+      setPlayingId(null)
     }
   }
 
@@ -236,12 +297,15 @@ export function SourcesSampleList({
             onSelect={() => onSelect(sample.id)}
             onToggleCheck={() => onToggleSelect(sample.id)}
             onPlay={(e) => handlePlay(sample.id, e as any)}
+            onMouseDown={(e) => handleMouseDown(sample.id, e as any)}
+            onMouseUp={handleMouseUp}
             onToggleFavorite={() => onToggleFavorite(sample.id)}
             onUpdateName={(name) => onUpdateName(sample.id, name)}
             onDelete={() => onDelete(sample.id)}
             onTagClick={onTagClick}
             onDragStart={handleDragStart(sample)}
             onDragEnd={handleDragEnd}
+            playMode={playMode}
           />
         ))}
       </div>

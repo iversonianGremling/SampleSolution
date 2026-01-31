@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect } from 'react'
+import { GripVertical } from 'lucide-react'
 
 interface WaveformMinimapProps {
   minimapRef: React.RefObject<HTMLDivElement>
@@ -8,6 +9,9 @@ interface WaveformMinimapProps {
   duration: number
   onSetViewport?: (start: number, end: number) => void
 }
+
+const MIN_WIDTH = 0.1
+const ZOOM_SENSITIVITY = 0.004
 
 export function WaveformMinimap({
   minimapRef,
@@ -19,283 +23,237 @@ export function WaveformMinimap({
 }: WaveformMinimapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [showContent, setShowContent] = useState(false)
+  const rafRef = useRef<number | null>(null)
+  const pendingUpdateRef = useRef<{ start: number; end: number } | null>(null)
 
-  // Fade in the waveform after a delay once ready
+  // Throttled update using requestAnimationFrame
+  const throttledSetViewport = (start: number, end: number) => {
+    pendingUpdateRef.current = { start, end }
+
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null
+        if (pendingUpdateRef.current) {
+          onSetViewport?.(pendingUpdateRef.current.start, pendingUpdateRef.current.end)
+          pendingUpdateRef.current = null
+        }
+      })
+    }
+  }
+
+  // Cleanup RAF on unmount
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current)
+      }
+    }
+  }, [])
+
   useEffect(() => {
     if (isReady) {
-      const timer = setTimeout(() => {
-        setShowContent(true)
-      }, 300)
+      const timer = setTimeout(() => setShowContent(true), 300)
       return () => clearTimeout(timer)
-    } else {
-      setShowContent(false)
     }
   }, [isReady])
 
-  // Calculate overlay position and width
-  const overlayLeftPercent = (viewportStart / duration) * 100
-  const overlayWidthPercent = ((viewportEnd - viewportStart) / duration) * 100
+  // Prevent division by zero
+  const safeDuration = duration || 1
+  const leftPercent = (viewportStart / safeDuration) * 100
+  const widthPercent = ((viewportEnd - viewportStart) / safeDuration) * 100
+
+  const clamp = (value: number, min: number, max: number) =>
+    Math.max(min, Math.min(max, value))
+
+  // ========== RESIZE HANDLES ==========
+  const handleResizeMouseDown = (e: React.MouseEvent, isLeft: boolean) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    const startX = e.clientX
+    const initStart = viewportStart
+    const initEnd = viewportEnd
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!containerRef.current || !duration) return
+      const dx = ((moveEvent.clientX - startX) / containerRef.current.offsetWidth) * duration
+
+      if (isLeft) {
+        const newStart = clamp(initStart + dx, 0, initEnd - MIN_WIDTH)
+        throttledSetViewport(newStart, initEnd)
+      } else {
+        const newEnd = clamp(initEnd + dx, initStart + MIN_WIDTH, duration)
+        throttledSetViewport(initStart, newEnd)
+      }
+    }
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }
+
+  // ========== CENTER DRAG (PAN + ZOOM SIMULTANEOUS) ==========
+  const handleCenterMouseDown = (e: React.MouseEvent) => {
+    // Don't handle if clicking on resize handles
+    const target = e.target as HTMLElement
+    if (target.closest('.resize-handle')) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    if (!duration) return
+
+    const startX = e.clientX
+    const startY = e.clientY
+    const initStart = viewportStart
+    const initEnd = viewportEnd
+    const initWidth = initEnd - initStart
+    const initCenter = (initStart + initEnd) / 2
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!containerRef.current) return
+
+      const dxPixels = moveEvent.clientX - startX
+      const dyPixels = moveEvent.clientY - startY
+      const containerWidth = containerRef.current.offsetWidth
+
+      // ZOOM: vertical movement changes width (down = zoom out, up = zoom in)
+      const widthMultiplier = 1 + dyPixels * ZOOM_SENSITIVITY
+      let newWidth = initWidth * widthMultiplier
+      newWidth = Math.max(newWidth, MIN_WIDTH)
+
+      // PAN: horizontal movement shifts the center
+      const dxSeconds = (dxPixels / containerWidth) * duration
+      const newCenter = initCenter + dxSeconds
+
+      // Calculate max width possible without either edge hitting a wall at this center
+      const maxWidth = Math.min(newCenter * 2, (duration - newCenter) * 2, duration)
+      newWidth = Math.min(newWidth, maxWidth)
+
+      // Calculate bounds
+      let nStart = newCenter - newWidth / 2
+      let nEnd = newCenter + newWidth / 2
+
+      // Clamp to walls while preserving width
+      if (nStart < 0) {
+        nStart = 0
+        nEnd = newWidth
+      }
+      if (nEnd > duration) {
+        nEnd = duration
+        nStart = duration - newWidth
+      }
+
+      throttledSetViewport(nStart, nEnd)
+    }
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }
+
+  // ========== BACKGROUND CLICK ==========
+  const handleBackgroundMouseDown = (e: React.MouseEvent) => {
+    // Only handle clicks directly on the background, not on children
+    if (e.target !== e.currentTarget) return
+    if (!containerRef.current || !duration) return
+
+    e.preventDefault()
+
+    const rect = containerRef.current.getBoundingClientRect()
+    const currentWidth = viewportEnd - viewportStart
+
+    if (currentWidth >= duration) return
+
+    const getClampedStart = (clientX: number) => {
+      const clickSeconds = ((clientX - rect.left) / rect.width) * duration
+      const start = clickSeconds - currentWidth / 2
+      return clamp(start, 0, duration - currentWidth)
+    }
+
+    const nStart = getClampedStart(e.clientX)
+    throttledSetViewport(nStart, nStart + currentWidth)
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const mStart = getClampedStart(moveEvent.clientX)
+      throttledSetViewport(mStart, mStart + currentWidth)
+    }
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }
+
+  // ========== DOUBLE CLICK ==========
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (duration) {
+      onSetViewport?.(0, duration)
+    }
+  }
 
   return (
-    <div className="mb-2">
-
-      <div className="relative">
+    <div className="mb-2 select-none">
+      <div className="relative h-16">
+        {/* Waveform minimap canvas - rendered by wavesurfer */}
         <div
           ref={minimapRef}
-          className={`bg-gray-900 rounded overflow-hidden border border-gray-700 transition-opacity duration-300 ${
+          className={`bg-gray-900 h-full rounded overflow-hidden border border-gray-700 transition-opacity duration-300 ${
             showContent ? 'opacity-100' : 'opacity-0'
           }`}
         />
-        {/* Loading animation */}
-        {!showContent && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80 rounded">
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-8 h-8 border-3 border-yellow-400/30 border-t-yellow-400 rounded-full animate-spin" />
-              <span className="text-xs text-slate-400">Loading minimap...</span>
-            </div>
-          </div>
-        )}
-        {/* Yellow viewport overlay */}
+
+        {/* Interaction layer - must be on top with z-index */}
         <div
           ref={containerRef}
-          className={`absolute top-0 left-0 w-full h-full transition-opacity duration-300 ${
-            showContent ? 'opacity-100' : 'opacity-0'
-          }`}
+          className="absolute inset-0 z-10"
           style={{ pointerEvents: onSetViewport ? 'auto' : 'none' }}
+          onMouseDown={handleBackgroundMouseDown}
+          onDoubleClick={handleDoubleClick}
         >
-          {/* Left draggable area - pans viewport while maintaining width */}
+          {/* Selector box */}
           <div
-            className="absolute top-0 left-0 h-full"
+            className="absolute top-0 h-full rounded-sm cursor-grab active:cursor-grabbing"
             style={{
-              width: `${overlayLeftPercent}%`,
-              cursor: 'grab',
+              left: `${leftPercent}%`,
+              width: `${widthPercent}%`,
+              backgroundColor: 'rgba(99, 102, 241, 0.3)',
+              border: '1px solid rgba(99, 102, 241, 0.6)',
+              pointerEvents: 'auto',
             }}
-            onMouseDown={(e) => {
-              if (!containerRef.current) return
-              e.preventDefault()
-              const startX = e.clientX
-              const startViewportStart = viewportStart
-              const startViewportEnd = viewportEnd
-              const viewportWidth = viewportEnd - viewportStart
-
-              const handleMouseMove = (moveEvent: MouseEvent) => {
-                if (!containerRef.current) return
-                const deltaX = moveEvent.clientX - startX
-                const containerWidth = containerRef.current.offsetWidth
-                const deltaTime = (deltaX / containerWidth) * duration
-
-                // Calculate new positions
-                let newStart = startViewportStart + deltaTime
-                let newEnd = startViewportEnd + deltaTime
-
-                // Clamp to boundaries while maintaining constant width
-                if (newStart < 0) {
-                  newStart = 0
-                  newEnd = viewportWidth
-                } else if (newEnd > duration) {
-                  newEnd = duration
-                  newStart = duration - viewportWidth
-                }
-
-                // Ensure bounds are respected (edge case protection)
-                newStart = Math.max(0, newStart)
-                newEnd = Math.min(duration, newEnd)
-
-                onSetViewport?.(newStart, newEnd)
-              }
-
-              const handleMouseUp = () => {
-                document.removeEventListener('mousemove', handleMouseMove)
-                document.removeEventListener('mouseup', handleMouseUp)
-              }
-
-              document.addEventListener('mousemove', handleMouseMove)
-              document.addEventListener('mouseup', handleMouseUp)
-            }}
-          />
-
-          {/* Yellow center box - draggable for panning */}
-          <div
-            className="absolute top-0 h-full bg-yellow-400 opacity-30 flex items-center justify-center text-xs group"
-            style={{
-              left: `${overlayLeftPercent}%`,
-              width: `${overlayWidthPercent}%`,
-              cursor: 'grab',
-            }}
-            onMouseDown={(e) => {
-              // Only handle center area dragging if not clicking on resize handles
-              if ((e.target as HTMLElement).classList.contains('resize-handle')) {
-                return
-              }
-
-              console.log('[CENTER PAN] MouseDown - start:', viewportStart, 'end:', viewportEnd, 'duration:', duration)
-              e.preventDefault()
-              const startX = e.clientX
-              const startViewportStart = viewportStart
-              const startViewportEnd = viewportEnd
-
-              const handleMouseMove = (moveEvent: MouseEvent) => {
-                if (!containerRef.current) return
-                const deltaX = moveEvent.clientX - startX
-                const containerWidth = containerRef.current.offsetWidth
-                const deltaTime = (deltaX / containerWidth) * duration
-
-                // Calculate new positions
-                let newStart = startViewportStart + deltaTime
-                let newEnd = startViewportEnd + deltaTime
-
-                console.log('[CENTER PAN] Move - deltaTime:', deltaTime, 'newStart:', newStart, 'newEnd:', newEnd)
-
-                // Only allow panning if both edges stay within boundaries
-                // This keeps the viewport width constant during center panning
-                if (newStart < 0 || newEnd > duration) {
-                  console.log('[CENTER PAN] BLOCKED - out of bounds')
-                  return
-                }
-
-                console.log('[CENTER PAN] Calling onSetViewport(', newStart, ',', newEnd, ')')
-                onSetViewport?.(newStart, newEnd)
-              }
-
-              const handleMouseUp = () => {
-                document.removeEventListener('mousemove', handleMouseMove)
-                document.removeEventListener('mouseup', handleMouseUp)
-              }
-
-              document.addEventListener('mousemove', handleMouseMove)
-              document.addEventListener('mouseup', handleMouseUp)
-            }}
+            onMouseDown={handleCenterMouseDown}
+            onDoubleClick={handleDoubleClick}
           >
             {/* Left resize handle */}
             <div
-              className="resize-handle absolute left-0 top-0 h-full w-3 bg-yellow-600 opacity-0 group-hover:opacity-60 cursor-col-resize transition-opacity"
-              style={{ cursor: 'col-resize' }}
-              onMouseDown={(e) => {
-                e.stopPropagation()
-                const startX = e.clientX
-                const startStart = viewportStart
-                const startEnd = viewportEnd
-                let lastStart = startStart
-
-                const handleMouseMove = (moveEvent: MouseEvent) => {
-                  if (!containerRef.current) return
-                  const deltaX = moveEvent.clientX - startX
-                  const containerWidth = containerRef.current.offsetWidth
-                  const deltaTime = (deltaX / containerWidth) * duration
-                  const newStart = Math.max(0, Math.min(startStart + deltaTime, startEnd - 0.1))
-
-                  // Only update if the value actually changed
-                  if (newStart !== lastStart) {
-                    onSetViewport?.(newStart, startEnd)
-                    lastStart = newStart
-                  }
-                }
-
-                const handleMouseUp = () => {
-                  document.removeEventListener('mousemove', handleMouseMove)
-                  document.removeEventListener('mouseup', handleMouseUp)
-                }
-
-                document.addEventListener('mousemove', handleMouseMove)
-                document.addEventListener('mouseup', handleMouseUp)
-              }}
-            />
-
-            <span className="text-gray-900 font-semibold whitespace-nowrap px-1 drop-shadow pointer-events-none">
-              {viewportStart.toFixed(2)} - {viewportEnd.toFixed(2)}
-            </span>
+              className="resize-handle absolute left-0 top-0 h-full w-3 cursor-ew-resize flex items-center justify-center bg-indigo-500/40 hover:bg-indigo-500/70 transition-colors"
+              onMouseDown={(e) => handleResizeMouseDown(e, true)}
+            >
+              <GripVertical size={12} className="text-white/70" />
+            </div>
 
             {/* Right resize handle */}
             <div
-              className="resize-handle absolute right-0 top-0 h-full w-3 bg-yellow-600 opacity-0 group-hover:opacity-60 cursor-col-resize transition-opacity"
-              style={{ cursor: 'col-resize' }}
-              onMouseDown={(e) => {
-                e.stopPropagation()
-                const startX = e.clientX
-                const startEnd = viewportEnd
-                const startStart = viewportStart
-                let lastEnd = startEnd
-
-                const handleMouseMove = (moveEvent: MouseEvent) => {
-                  if (!containerRef.current) return
-                  const deltaX = moveEvent.clientX - startX
-                  const containerWidth = containerRef.current.offsetWidth
-                  const deltaTime = (deltaX / containerWidth) * duration
-                  const newEnd = Math.min(duration, Math.max(startEnd + deltaTime, startStart + 0.1))
-
-                  // Only update if the value actually changed
-                  if (newEnd !== lastEnd) {
-                    onSetViewport?.(startStart, newEnd)
-                    lastEnd = newEnd
-                  }
-                }
-
-                const handleMouseUp = () => {
-                  document.removeEventListener('mousemove', handleMouseMove)
-                  document.removeEventListener('mouseup', handleMouseUp)
-                }
-
-                document.addEventListener('mousemove', handleMouseMove)
-                document.addEventListener('mouseup', handleMouseUp)
-              }}
-            />
+              className="resize-handle absolute right-0 top-0 h-full w-3 cursor-ew-resize flex items-center justify-center bg-indigo-500/40 hover:bg-indigo-500/70 transition-colors"
+              onMouseDown={(e) => handleResizeMouseDown(e, false)}
+            >
+              <GripVertical size={12} className="text-white/70" />
+            </div>
           </div>
-
-          {/* Right draggable area - pans viewport while maintaining width */}
-          <div
-            className="absolute top-0 h-full"
-            style={{
-              left: `${overlayLeftPercent + overlayWidthPercent}%`,
-              width: `${100 - (overlayLeftPercent + overlayWidthPercent)}%`,
-              cursor: 'grab',
-            }}
-            onMouseDown={(e) => {
-              if (!containerRef.current) return
-              e.preventDefault()
-              const startX = e.clientX
-              const startViewportStart = viewportStart
-              const startViewportEnd = viewportEnd
-              const viewportWidth = viewportEnd - viewportStart
-
-              const handleMouseMove = (moveEvent: MouseEvent) => {
-                if (!containerRef.current) return
-                const deltaX = moveEvent.clientX - startX
-                const containerWidth = containerRef.current.offsetWidth
-                const deltaTime = (deltaX / containerWidth) * duration
-
-                // Calculate new positions
-                let newStart = startViewportStart + deltaTime
-                let newEnd = startViewportEnd + deltaTime
-
-                // Clamp to boundaries while maintaining constant width
-                if (newStart < 0) {
-                  newStart = 0
-                  newEnd = viewportWidth
-                } else if (newEnd > duration) {
-                  newEnd = duration
-                  newStart = duration - viewportWidth
-                }
-
-                // Ensure bounds are respected (edge case protection)
-                newStart = Math.max(0, newStart)
-                newEnd = Math.min(duration, newEnd)
-
-                onSetViewport?.(newStart, newEnd)
-              }
-
-              const handleMouseUp = () => {
-                document.removeEventListener('mousemove', handleMouseMove)
-                document.removeEventListener('mouseup', handleMouseUp)
-              }
-
-              document.addEventListener('mousemove', handleMouseMove)
-              document.addEventListener('mouseup', handleMouseUp)
-            }}
-          />
         </div>
-      </div>
-      <div className="text-xs text-gray-500 mt-1 px-1">
-        Drag edge handles to resize, drag anywhere to pan, double-click to select all
       </div>
     </div>
   )

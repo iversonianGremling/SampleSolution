@@ -6,6 +6,8 @@ import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 
+export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
+
 interface VideoGroup {
   trackId: number
   trackTitle: string
@@ -26,6 +28,7 @@ interface SourcesYouTubeGroupedListProps {
   onDelete: (id: number) => void
   onTagClick?: (tagId: number) => void
   isLoading?: boolean
+  playMode?: PlayMode
 }
 
 export function SourcesYouTubeGroupedList({
@@ -40,6 +43,7 @@ export function SourcesYouTubeGroupedList({
   onDelete,
   onTagClick,
   isLoading = false,
+  playMode = 'normal',
 }: SourcesYouTubeGroupedListProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -82,17 +86,36 @@ export function SourcesYouTubeGroupedList({
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
 
-    if (playingId === id) {
-      // Stop playing
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current = null
+    if (playMode === 'normal') {
+      // Normal mode: toggle play/pause
+      if (playingId === id) {
+        // Stop playing
+        if (audioRef.current) {
+          audioRef.current.pause()
+          audioRef.current = null
+        }
+        setPlayingId(null)
+      } else {
+        // Stop previous
+        if (audioRef.current) {
+          audioRef.current.pause()
+        }
+        // Play new
+        const audio = new Audio(getSliceDownloadUrl(id))
+        audio.onended = () => {
+          setPlayingId(null)
+          audioRef.current = null
+        }
+        audio.play()
+        audioRef.current = audio
+        setPlayingId(id)
       }
-      setPlayingId(null)
-    } else {
+    } else if (playMode === 'one-shot') {
+      // One-shot mode: always play the whole sample, stop others
       // Stop previous
       if (audioRef.current) {
         audioRef.current.pause()
+        audioRef.current = null
       }
       // Play new
       const audio = new Audio(getSliceDownloadUrl(id))
@@ -103,6 +126,40 @@ export function SourcesYouTubeGroupedList({
       audio.play()
       audioRef.current = audio
       setPlayingId(id)
+    }
+  }
+
+  const handleMouseDown = (id: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (playMode === 'reproduce-while-clicking') {
+      // Stop current if playing
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+      // Play from the beginning
+      const audio = new Audio(getSliceDownloadUrl(id))
+      audio.onended = () => {
+        setPlayingId(null)
+        audioRef.current = null
+      }
+      audio.play()
+      audioRef.current = audio
+      setPlayingId(id)
+    }
+  }
+
+  const handleMouseUp = (e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (playMode === 'reproduce-while-clicking') {
+      // Stop playing when mouse is released
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+      setPlayingId(null)
     }
   }
 
@@ -280,12 +337,15 @@ export function SourcesYouTubeGroupedList({
                       onSelect={() => onSelect(sample.id)}
                       onToggleCheck={() => onToggleSelect(sample.id)}
                       onPlay={(e) => handlePlay(sample.id, e as any)}
+                      onMouseDown={(e) => handleMouseDown(sample.id, e as any)}
+                      onMouseUp={handleMouseUp}
                       onToggleFavorite={() => onToggleFavorite(sample.id)}
                       onUpdateName={(name) => onUpdateName(sample.id, name)}
                       onDelete={() => onDelete(sample.id)}
                       onTagClick={onTagClick}
                       onDragStart={handleDragStart(sample)}
                       onDragEnd={handleDragEnd}
+                      playMode={playMode}
                     />
                   ))}
                 </div>

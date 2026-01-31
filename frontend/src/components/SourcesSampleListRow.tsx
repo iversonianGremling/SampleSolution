@@ -3,6 +3,8 @@ import { Play, Pause, Heart, Trash2, Pencil } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import type { SliceWithTrackExtended } from '../types'
 
+export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
+
 interface SourcesSampleListRowProps {
   sample: SliceWithTrackExtended
   isSelected: boolean
@@ -11,12 +13,15 @@ interface SourcesSampleListRowProps {
   onSelect: () => void
   onToggleCheck: () => void
   onPlay: (e: React.MouseEvent) => void
+  onMouseDown?: (e: React.MouseEvent) => void
+  onMouseUp?: (e: React.MouseEvent) => void
   onToggleFavorite: () => void
   onUpdateName: (name: string) => void
   onDelete: () => void
   onTagClick?: (tagId: number) => void
   onDragStart?: (e: React.DragEvent) => void
   onDragEnd?: () => void
+  playMode?: PlayMode
 }
 
 export function SourcesSampleListRow({
@@ -27,12 +32,15 @@ export function SourcesSampleListRow({
   onSelect,
   onToggleCheck,
   onPlay,
+  onMouseDown,
+  onMouseUp,
   onToggleFavorite,
   onUpdateName,
   onDelete,
   onTagClick,
   onDragStart,
   onDragEnd,
+  playMode = 'normal',
 }: SourcesSampleListRowProps) {
   const [isEditingName, setIsEditingName] = useState(false)
   const [editingName, setEditingName] = useState(sample.name)
@@ -125,16 +133,30 @@ export function SourcesSampleListRow({
         <button
           onClick={(e) => {
             e.stopPropagation()
-            onPlay(e)
+            if (playMode !== 'reproduce-while-clicking') {
+              onPlay(e)
+            }
           }}
+          onMouseDown={playMode === 'reproduce-while-clicking' && onMouseDown ? (e) => {
+            e.stopPropagation()
+            onMouseDown(e)
+          } : undefined}
+          onMouseUp={playMode === 'reproduce-while-clicking' && onMouseUp ? (e) => {
+            e.stopPropagation()
+            onMouseUp(e)
+          } : undefined}
+          onMouseLeave={playMode === 'reproduce-while-clicking' && onMouseUp ? (e) => {
+            e.stopPropagation()
+            onMouseUp(e)
+          } : undefined}
           className={`p-1 sm:p-1.5 rounded transition-colors flex-shrink-0 ${
             isPlaying
               ? 'bg-accent-primary text-white'
               : 'text-slate-400 hover:text-accent-primary hover:bg-surface-base'
           }`}
-          title={isPlaying ? 'Pause' : 'Play'}
+          title={isPlaying && playMode === 'normal' ? 'Pause' : 'Play'}
         >
-          {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+          {isPlaying && playMode === 'normal' ? <Pause size={16} /> : <Play size={16} />}
         </button>
 
         {/* Sample name (editable) */}

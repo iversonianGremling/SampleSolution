@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Search, Heart, LayoutGrid, List, Sparkles } from 'lucide-react'
+import { Search, Heart, LayoutGrid, List, Sparkles, Play, Repeat1, MousePointerClick, ChevronDown, Repeat } from 'lucide-react'
 import { SourcesTree } from './SourcesTree'
 import { SourcesTagFilter } from './SourcesTagFilter'
 import { SourcesSampleGrid } from './SourcesSampleGrid'
@@ -31,6 +31,8 @@ import {
 import type { SourceScope, SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 
+export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
+
 export function SourcesView() {
   // State
   const [currentScope, setCurrentScope] = useState<SourceScope>({ type: 'all' })
@@ -41,6 +43,13 @@ export function SourcesView() {
   const [viewMode, setViewMode] = useState<'grid' | 'list' | 'space'>('grid')
   const [selectedSampleIds, setSelectedSampleIds] = useState<Set<number>>(new Set())
   const [editingTrackId, setEditingTrackId] = useState<number | null>(null)
+
+  // Advanced filters
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [minDuration, setMinDuration] = useState<number>(0)
+  const [maxDuration, setMaxDuration] = useState<number>(300)
+  const [playMode, setPlayMode] = useState<PlayMode>('normal')
+  const [loopEnabled, setLoopEnabled] = useState(false)
 
   // Data queries
   const { data: sourceTree, isLoading: isTreeLoading } = useSourceTree()
@@ -68,8 +77,16 @@ export function SourcesView() {
   const batchDeleteSlices = useBatchDeleteSlices()
 
   // Derived data
-  const samples = samplesData?.samples || []
+  const allSamples = samplesData?.samples || []
   const totalCount = samplesData?.total || 0
+
+  // Filter samples by duration
+  const samples = useMemo(() => {
+    return allSamples.filter(sample => {
+      const duration = sample.endTime - sample.startTime
+      return duration >= minDuration && (maxDuration >= 600 || duration <= maxDuration)
+    })
+  }, [allSamples, minDuration, maxDuration])
 
   const selectedSample = useMemo<SliceWithTrackExtended | null>(() => {
     if (!selectedSampleId) return null
@@ -80,12 +97,12 @@ export function SourcesView() {
   const spaceViewFilterState = useMemo(() => ({
     searchQuery,
     selectedTags,
-    minDuration: 0,
-    maxDuration: Infinity,
+    minDuration,
+    maxDuration: maxDuration >= 600 ? Infinity : maxDuration,
     showFavoritesOnly,
     selectedCollectionIds: currentScope.type === 'my-folder' ? [currentScope.collectionId] : [],
     selectedTrackId: currentScope.type === 'youtube-video' ? currentScope.trackId : null,
-  }), [searchQuery, selectedTags, showFavoritesOnly, currentScope])
+  }), [searchQuery, selectedTags, minDuration, maxDuration, showFavoritesOnly, currentScope])
 
   // Clear selected sample if it's no longer in the list
   if (selectedSampleId && !selectedSample && samples.length > 0) {
@@ -222,6 +239,26 @@ export function SourcesView() {
     setSelectedSampleIds(new Set())
   }
 
+  const handlePlayModeChange = () => {
+    setPlayMode((prev) => {
+      if (prev === 'normal') return 'one-shot'
+      if (prev === 'one-shot') return 'reproduce-while-clicking'
+      return 'normal'
+    })
+  }
+
+  const getPlayModeIcon = () => {
+    if (playMode === 'one-shot') return <Repeat1 size={16} />
+    if (playMode === 'reproduce-while-clicking') return <MousePointerClick size={16} />
+    return <Play size={16} />
+  }
+
+  const getPlayModeLabel = () => {
+    if (playMode === 'one-shot') return 'One-shot'
+    if (playMode === 'reproduce-while-clicking') return 'Sample'
+    return 'Normal'
+  }
+
   // Get scope label for display
   const getScopeLabel = (): string => {
     switch (currentScope.type) {
@@ -341,6 +378,168 @@ export function SourcesView() {
               filteredCount={samples.length}
             />
           </div>
+
+          {/* Advanced filters section */}
+          <div className="mt-3">
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-300 transition-colors"
+            >
+              <ChevronDown size={14} className={`transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
+              <span>Advanced</span>
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-3 p-2.5 bg-surface-base border border-surface-border rounded-lg">
+                <div className="flex items-center gap-4">
+                  {/* Duration controls */}
+                  <div className="flex items-center gap-3 flex-1 max-w-md">
+                    <span className="text-xs text-slate-400 whitespace-nowrap">Duration:</span>
+                    <div className="flex-1 flex items-center gap-2">
+                      {/* Helper functions for exponential scaling */}
+                      {(() => {
+                        const MAX_DURATION = 600
+                        const EXPONENT = 5.5
+
+                        // Convert slider position (0-100) to actual duration (0-600)
+                        const sliderToDuration = (sliderValue: number) => {
+                          return MAX_DURATION * Math.pow(sliderValue / 100, EXPONENT)
+                        }
+
+                        // Convert actual duration (0-600) to slider position (0-100)
+                        const durationToSlider = (duration: number) => {
+                          return 100 * Math.pow(Math.min(duration, MAX_DURATION) / MAX_DURATION, 1 / EXPONENT)
+                        }
+
+                        const minSlider = durationToSlider(minDuration)
+                        const maxSlider = durationToSlider(maxDuration)
+
+                        const isMaxInfinity = maxDuration >= MAX_DURATION
+
+                        return (
+                          <>
+                            {/* Number inputs */}
+                            <input
+                              type="number"
+                              value={minDuration.toFixed(1)}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value) || 0
+                                setMinDuration(Math.max(0, Math.min(val, maxDuration)))
+                              }}
+                              placeholder="Min"
+                              className="w-16 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary no-spinner"
+                              step="0.1"
+                              min="0"
+                              max={maxDuration}
+                            />
+
+                            {/* Dual slider */}
+                            <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+                              {/* Track background */}
+                              <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
+
+                              {/* Active range */}
+                              <div
+                                className="absolute h-0.5 bg-accent-primary rounded-full pointer-events-none"
+                                style={{
+                                  left: `${minSlider}%`,
+                                  right: `${100 - maxSlider}%`,
+                                }}
+                              />
+
+                              {/* Min handle */}
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={0.1}
+                                value={minSlider}
+                                onChange={(e) => {
+                                  const newSliderMin = parseFloat(e.target.value)
+                                  const newDuration = sliderToDuration(newSliderMin)
+                                  setMinDuration(Math.min(newDuration, maxDuration))
+                                }}
+                                className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                                style={{ zIndex: minSlider > maxSlider - 2 ? 5 : 3 }}
+                              />
+
+                              {/* Max handle */}
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={0.1}
+                                value={maxSlider}
+                                onChange={(e) => {
+                                  const newSliderMax = parseFloat(e.target.value)
+                                  const newDuration = sliderToDuration(newSliderMax)
+                                  setMaxDuration(Math.max(newDuration, minDuration))
+                                }}
+                                className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                                style={{ zIndex: maxSlider < minSlider + 2 ? 5 : 4 }}
+                              />
+                            </div>
+
+                            {isMaxInfinity ? (
+                              <div className="w-16 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-center text-white flex items-center justify-center">
+                                ∞
+                              </div>
+                            ) : (
+                              <input
+                                type="number"
+                                value={maxDuration.toFixed(1)}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value) || 0
+                                  setMaxDuration(Math.max(minDuration, Math.min(val, MAX_DURATION)))
+                                }}
+                                placeholder="Max"
+                                className="w-16 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary no-spinner"
+                                step="0.1"
+                                min={minDuration}
+                                max={MAX_DURATION}
+                              />
+                            )}
+                            <span className="text-xs text-slate-500 whitespace-nowrap">sec</span>
+                          </>
+                        )
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Separator */}
+                  <div className="h-5 w-px bg-surface-border" />
+
+                  {/* Play mode selector */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handlePlayModeChange}
+                      className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-raised border border-surface-border rounded-lg text-xs text-white hover:bg-surface-base transition-colors"
+                      title="Click to cycle through play modes"
+                    >
+                      {getPlayModeIcon()}
+                      <span>{getPlayModeLabel()}</span>
+                    </button>
+
+                    {/* Loop toggle */}
+                    <button
+                      onClick={() => setLoopEnabled(!loopEnabled)}
+                      disabled={playMode === 'one-shot'}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 border rounded-lg text-xs transition-colors ${
+                        playMode === 'one-shot'
+                          ? 'bg-surface-raised border-surface-border text-slate-600 cursor-not-allowed'
+                          : loopEnabled
+                          ? 'bg-accent-primary border-accent-primary text-white'
+                          : 'bg-surface-raised border-surface-border text-white hover:bg-surface-base'
+                      }`}
+                      title={playMode === 'one-shot' ? 'Loop not available in one-shot mode' : loopEnabled ? 'Loop enabled' : 'Loop disabled'}
+                    >
+                      <Repeat size={14} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Batch actions bar */}
@@ -371,6 +570,8 @@ export function SourcesView() {
                   onToggleFavorite={handleToggleFavorite}
                   onTagClick={handleTagClick}
                   isLoading={isSamplesLoading}
+                  playMode={playMode}
+                  loopEnabled={loopEnabled}
                 />
               </div>
             ) : viewMode === 'list' ? (
@@ -386,6 +587,8 @@ export function SourcesView() {
                 onDelete={handleDeleteSingle}
                 onTagClick={handleTagClick}
                 isLoading={isSamplesLoading}
+                playMode={playMode}
+                loopEnabled={loopEnabled}
               />
             ) : (
               <SampleSpaceView
@@ -408,6 +611,8 @@ export function SourcesView() {
                   onToggleFavorite={handleToggleFavorite}
                   onTagClick={handleTagClick}
                   isLoading={isSamplesLoading}
+                  playMode={playMode}
+                  loopEnabled={loopEnabled}
                 />
               </div>
             ) : viewMode === 'list' ? (
@@ -423,6 +628,8 @@ export function SourcesView() {
                 onDelete={handleDeleteSingle}
                 onTagClick={handleTagClick}
                 isLoading={isSamplesLoading}
+                playMode={playMode}
+                loopEnabled={loopEnabled}
               />
             ) : (
               <SampleSpaceView
