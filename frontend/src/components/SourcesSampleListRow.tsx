@@ -37,10 +37,9 @@ export function SourcesSampleListRow({
   const [isEditingName, setIsEditingName] = useState(false)
   const [editingName, setEditingName] = useState(sample.name)
   const [showTagsPopup, setShowTagsPopup] = useState(false)
-  const [popupDirection, setPopupDirection] = useState<'up' | 'down'>('up')
   const nameInputRef = useRef<HTMLInputElement>(null)
   const tagTriggerRef = useRef<HTMLDivElement>(null)
-  const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const closeTimeoutRef = useRef<number | null>(null)
 
   useEffect(() => {
     if (isEditingName && nameInputRef.current) {
@@ -75,21 +74,6 @@ export function SourcesSampleListRow({
     if (closeTimeoutRef.current) {
       clearTimeout(closeTimeoutRef.current)
       closeTimeoutRef.current = null
-    }
-
-    // Check if popup would go off screen at the top
-    if (tagTriggerRef.current) {
-      const rect = tagTriggerRef.current.getBoundingClientRect()
-      const spaceAbove = rect.top
-      const popupHeight = 150 // Approximate max height of popup
-
-      // Use a threshold that accounts for being close to the top of the component
-      // Not just the viewport
-      if (spaceAbove < popupHeight + 50) {
-        setPopupDirection('down')
-      } else {
-        setPopupDirection('up')
-      }
     }
     setShowTagsPopup(true)
   }
@@ -219,14 +203,24 @@ export function SourcesSampleListRow({
               </span>
               {showTagsPopup && (
                 <div
-                  className={`absolute z-50 right-0 bg-surface-raised border border-surface-border rounded-lg shadow-lg p-2 min-w-[120px] max-h-[200px] overflow-y-auto ${
-                    popupDirection === 'up' ? 'bottom-full mb-0.5' : 'top-full mt-0.5'
-                  }`}
+                  className="absolute left-full ml-2 top-1/2 bg-surface-raised border border-surface-border rounded-lg shadow-lg py-1 px-2"
+                  style={{
+                    zIndex: 9999,
+                    transform: 'translateY(-50%)'
+                  }}
                   onClick={(e) => e.stopPropagation()}
                   onMouseEnter={handleTagPopupEnter}
                   onMouseLeave={handleTagPopupClose}
                 >
-                  <div className="flex flex-wrap gap-1">
+                  <div
+                    className="gap-1"
+                    style={{
+                      display: remainingTags > 2 ? 'grid' : 'flex',
+                      flexDirection: remainingTags <= 2 ? 'column' : undefined,
+                      gridTemplateRows: remainingTags > 2 ? 'repeat(2, auto)' : undefined,
+                      gridAutoFlow: remainingTags > 2 ? 'column' : undefined
+                    }}
+                  >
                     {sample.tags.slice(maxVisibleTags).map((tag) => (
                       <span
                         key={tag.id}

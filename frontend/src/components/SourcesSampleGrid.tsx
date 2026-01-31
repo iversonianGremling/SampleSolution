@@ -37,9 +37,10 @@ export function SourcesSampleGrid({
   const [sortField, setSortField] = useState<SortField | null>(null)
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
   const [tagPopupId, setTagPopupId] = useState<number | null>(null)
-  const [popupDirection, setPopupDirection] = useState<Record<number, 'up' | 'down'>>({})
+  const [popupPosition, setPopupPosition] = useState<Record<number, { bottom: number; left: number }>>({})
   const dragPreviewRef = useRef<HTMLElement | null>(null)
   const tagTriggerRefs = useRef<Record<number, HTMLDivElement | null>>({})
+  const closeTimeoutRef = useRef<number | null>(null)
 
   // Stop audio when unmounting
   useEffect(() => {
@@ -161,17 +162,40 @@ export function SourcesSampleGrid({
   }
 
   const handleTagPopupOpen = (sampleId: number) => {
-    // Check if popup would go off screen at the top
+    // Clear any pending close timeout
+    if (closeTimeoutRef.current) {
+      clearTimeout(closeTimeoutRef.current)
+      closeTimeoutRef.current = null
+    }
+
+    // Calculate fixed position for the popup - always upward and to the left
     const triggerElement = tagTriggerRefs.current[sampleId]
     if (triggerElement) {
       const rect = triggerElement.getBoundingClientRect()
-      const spaceAbove = rect.top
-      const popupHeight = 150 // Approximate max height of popup
 
-      setPopupDirection(prev => ({
+      setPopupPosition(prev => ({
         ...prev,
-        [sampleId]: spaceAbove < popupHeight ? 'down' : 'up'
+        [sampleId]: {
+          bottom: window.innerHeight - rect.top + 2,
+          left: rect.right
+        }
       }))
+    }
+    setTagPopupId(sampleId)
+  }
+
+  const handleTagPopupClose = () => {
+    // Add a small delay before closing to make it easier to move mouse to popup
+    closeTimeoutRef.current = setTimeout(() => {
+      setTagPopupId(null)
+    }, 150)
+  }
+
+  const handleTagPopupEnter = (sampleId: number) => {
+    // Cancel close if mouse enters popup
+    if (closeTimeoutRef.current) {
+      clearTimeout(closeTimeoutRef.current)
+      closeTimeoutRef.current = null
     }
     setTagPopupId(sampleId)
   }
@@ -393,21 +417,24 @@ export function SourcesSampleGrid({
                       ref={(el) => { tagTriggerRefs.current[sample.id] = el }}
                       className="relative inline-block"
                       onMouseEnter={() => handleTagPopupOpen(sample.id)}
-                      onMouseLeave={() => setTagPopupId(null)}
+                      onMouseLeave={handleTagPopupClose}
                     >
                       <span className="px-1.5 py-0.5 text-[10px] text-slate-500 cursor-default">
                         +{sample.tags.length - 2}
                       </span>
-                      {tagPopupId === sample.id && (
+                      {tagPopupId === sample.id && popupPosition[sample.id] && (
                         <div
-                          className={`absolute z-50 left-0 bg-surface-raised border border-surface-border rounded-lg shadow-lg p-2 min-w-[120px] max-h-[200px] overflow-y-auto ${
-                            popupDirection[sample.id] === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'
-                          }`}
+                          className="fixed z-50 bg-surface-raised border border-surface-border rounded-lg shadow-lg py-1 px-2 max-w-[200px]"
+                          style={{
+                            bottom: popupPosition[sample.id].bottom !== undefined ? `${popupPosition[sample.id].bottom}px` : undefined,
+                            left: `${popupPosition[sample.id].left}px`,
+                            transform: 'translateX(-100%)'
+                          }}
                           onClick={(e) => e.stopPropagation()}
-                          onMouseEnter={() => setTagPopupId(sample.id)}
-                          onMouseLeave={() => setTagPopupId(null)}
+                          onMouseEnter={() => handleTagPopupEnter(sample.id)}
+                          onMouseLeave={handleTagPopupClose}
                         >
-                          <div className="flex flex-wrap gap-1">
+                          <div className="flex flex-col gap-1">
                             {sample.tags.slice(2).map((tag) => (
                               <span
                                 key={tag.id}
@@ -416,6 +443,10 @@ export function SourcesSampleGrid({
                                     e.stopPropagation()
                                     onTagClick(tag.id)
                                     setTagPopupId(null)
+                                    if (closeTimeoutRef.current) {
+                                      clearTimeout(closeTimeoutRef.current)
+                                      closeTimeoutRef.current = null
+                                    }
                                   }
                                 }}
                                 className={`px-1.5 py-0.5 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}

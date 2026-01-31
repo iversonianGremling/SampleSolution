@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Search, Heart, LayoutGrid, List } from 'lucide-react'
+import { Search, Heart, LayoutGrid, List, Sparkles } from 'lucide-react'
 import { SourcesTree } from './SourcesTree'
 import { SourcesTagFilter } from './SourcesTagFilter'
 import { SourcesSampleGrid } from './SourcesSampleGrid'
@@ -9,6 +9,7 @@ import { SourcesYouTubeGroupedList } from './SourcesYouTubeGroupedList'
 import { SourcesBatchActions } from './SourcesBatchActions'
 import { SourcesDetailModal } from './SourcesDetailModal'
 import { EditingModal } from './EditingModal'
+import { SampleSpaceView } from './SampleSpaceView'
 import { useSourceTree } from '../hooks/useSourceTree'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import {
@@ -37,7 +38,7 @@ export function SourcesView() {
   const [searchQuery, setSearchQuery] = useState('')
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
   const [selectedSampleId, setSelectedSampleId] = useState<number | null>(null)
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
+  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'space'>('grid')
   const [selectedSampleIds, setSelectedSampleIds] = useState<Set<number>>(new Set())
   const [editingTrackId, setEditingTrackId] = useState<number | null>(null)
 
@@ -74,6 +75,17 @@ export function SourcesView() {
     if (!selectedSampleId) return null
     return samples.find(s => s.id === selectedSampleId) || null
   }, [selectedSampleId, samples])
+
+  // Create filter state for SampleSpaceView
+  const spaceViewFilterState = useMemo(() => ({
+    searchQuery,
+    selectedTags,
+    minDuration: 0,
+    maxDuration: Infinity,
+    showFavoritesOnly,
+    selectedCollectionIds: currentScope.type === 'my-folder' ? [currentScope.collectionId] : [],
+    selectedTrackId: currentScope.type === 'youtube-video' ? currentScope.trackId : null,
+  }), [searchQuery, selectedTags, showFavoritesOnly, currentScope])
 
   // Clear selected sample if it's no longer in the list
   if (selectedSampleId && !selectedSample && samples.length > 0) {
@@ -146,7 +158,7 @@ export function SourcesView() {
     })
   }
 
-  const handleViewModeChange = (mode: 'grid' | 'list') => {
+  const handleViewModeChange = (mode: 'grid' | 'list' | 'space') => {
     setViewMode(mode)
   }
 
@@ -291,6 +303,17 @@ export function SourcesView() {
               >
                 <List size={16} />
               </button>
+              <button
+                onClick={() => handleViewModeChange('space')}
+                className={`p-1.5 rounded transition-colors ${
+                  viewMode === 'space'
+                    ? 'bg-accent-primary text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title="Space view"
+              >
+                <Sparkles size={16} />
+              </button>
             </div>
 
             {/* Favorites toggle */}
@@ -350,7 +373,7 @@ export function SourcesView() {
                   isLoading={isSamplesLoading}
                 />
               </div>
-            ) : (
+            ) : viewMode === 'list' ? (
               <SourcesYouTubeGroupedList
                 samples={samples}
                 selectedId={selectedSampleId}
@@ -363,6 +386,12 @@ export function SourcesView() {
                 onDelete={handleDeleteSingle}
                 onTagClick={handleTagClick}
                 isLoading={isSamplesLoading}
+              />
+            ) : (
+              <SampleSpaceView
+                externalFilterState={spaceViewFilterState}
+                selectedSliceId={selectedSampleId}
+                onSliceSelect={setSelectedSampleId}
               />
             )
           ) : (
@@ -381,7 +410,7 @@ export function SourcesView() {
                   isLoading={isSamplesLoading}
                 />
               </div>
-            ) : (
+            ) : viewMode === 'list' ? (
               <SourcesSampleList
                 samples={samples}
                 selectedId={selectedSampleId}
@@ -394,6 +423,12 @@ export function SourcesView() {
                 onDelete={handleDeleteSingle}
                 onTagClick={handleTagClick}
                 isLoading={isSamplesLoading}
+              />
+            ) : (
+              <SampleSpaceView
+                externalFilterState={spaceViewFilterState}
+                selectedSliceId={selectedSampleId}
+                onSliceSelect={setSelectedSampleId}
               />
             )
           )}

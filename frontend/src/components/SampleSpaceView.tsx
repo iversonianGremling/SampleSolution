@@ -1,88 +1,50 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Info, AlertCircle, ChevronDown } from 'lucide-react'
+import { Loader2, Info, AlertCircle } from 'lucide-react'
 import { getSliceFeatures, getSliceDownloadUrl } from '../api/client'
 import { WebGLScatter } from './WebGLScatter'
-import { SliceFilterPanel } from './SliceFilterPanel'
+import { FeatureWeightsPanel } from './FeatureWeightsPanel'
 import { SliceDetailPanel } from './SliceDetailPanel'
 import { buildFeatureMatrix, DEFAULT_WEIGHTS } from '../utils/featureMatrix'
 import { useDimensionReduction, type ReductionMethod } from '../hooks/useDimensionReduction'
 import { useClustering, getClusterColor, type ClusterMethod } from '../hooks/useClustering'
-import { useAllSlices, useTags, useCollections, useCreateCollection } from '../hooks/useTracks'
-import { useFilteredSlices } from '../hooks/useSliceFilters'
+import { useAllSlices } from '../hooks/useTracks'
 import { enrichAudioFeatures } from '../utils/enrichAudioFeatures'
 import { applySliceFilters } from '../utils/sliceFilters'
 import AudioManager from '../services/AudioManager'
 import type { FeatureWeights, SamplePoint, SliceFilterState } from '../types'
 
 interface SampleSpaceViewProps {
-  hideFilter?: boolean
-  hideDetailPanel?: boolean
   externalFilterState?: SliceFilterState
   selectedSliceId?: number | null
   onSliceSelect?: (id: number | null) => void
-  // External weights control
-  externalWeights?: FeatureWeights
-  onWeightsChange?: (weights: FeatureWeights) => void
-  externalReductionMethod?: ReductionMethod
-  onReductionMethodChange?: (method: ReductionMethod) => void
-  externalClusterMethod?: ClusterMethod
-  onClusterMethodChange?: (method: ClusterMethod) => void
-  externalClusterCount?: number
-  onClusterCountChange?: (count: number) => void
-  externalDbscanEpsilon?: number
-  onDbscanEpsilonChange?: (epsilon: number) => void
 }
 
 export function SampleSpaceView({
-  hideFilter = false,
   externalFilterState,
   selectedSliceId: externalSelectedId,
   onSliceSelect,
-  externalWeights,
-  onWeightsChange,
-  externalReductionMethod,
-  onReductionMethodChange,
-  externalClusterMethod,
-  onClusterMethodChange,
-  externalClusterCount,
-  onClusterCountChange,
-  externalDbscanEpsilon,
-  onDbscanEpsilonChange,
 }: SampleSpaceViewProps = {}) {
-  // Feature weights state (internal fallback)
-  const [internalWeights, setInternalWeights] = useState<FeatureWeights>(DEFAULT_WEIGHTS)
-  const [internalReductionMethod, setInternalReductionMethod] = useState<ReductionMethod>('umap')
-  const [internalClusterMethod, setInternalClusterMethod] = useState<ClusterMethod>('kmeans')
-  const [internalClusterCount, setInternalClusterCount] = useState(7)
-  const [internalDbscanEpsilon, setInternalDbscanEpsilon] = useState(0.15)
-
-  // Use external or internal state
-  const weights = externalWeights ?? internalWeights
-  const setWeights = onWeightsChange ?? setInternalWeights
-  const reductionMethod = externalReductionMethod ?? internalReductionMethod
-  const setReductionMethod = onReductionMethodChange ?? setInternalReductionMethod
-  const clusterMethod = externalClusterMethod ?? internalClusterMethod
-  const setClusterMethod = onClusterMethodChange ?? setInternalClusterMethod
-  const clusterCount = externalClusterCount ?? internalClusterCount
-  const setClusterCount = onClusterCountChange ?? setInternalClusterCount
-  const dbscanEpsilon = externalDbscanEpsilon ?? internalDbscanEpsilon
-  const setDbscanEpsilon = onDbscanEpsilonChange ?? setInternalDbscanEpsilon
+  // Feature weights state
+  const [weights, setWeights] = useState<FeatureWeights>(DEFAULT_WEIGHTS)
+  const [reductionMethod, setReductionMethod] = useState<ReductionMethod>('umap')
+  const [clusterMethod, setClusterMethod] = useState<ClusterMethod>('kmeans')
+  const [clusterCount, setClusterCount] = useState(7)
+  const [dbscanEpsilon, setDbscanEpsilon] = useState(0.15)
 
   // Selection state
   const [selectedPoint, setSelectedPoint] = useState<SamplePoint | null>(null)
   const [_selectedIds, setSelectedIds] = useState<number[]>([])
 
-  // Panel collapse state
-  const [openPanel, setOpenPanel] = useState<'filter' | null>(null)
-  const [filterAnimState, setFilterAnimState] = useState<'none' | 'in' | 'out'>('none')
+  // Sidebar hover state for small screens
+  const [isPanelHovered, setIsPanelHovered] = useState(false)
+  const [isSmallScreen, setIsSmallScreen] = useState(false)
 
   // Audio playback
   const audioManagerRef = useRef<AudioManager>(AudioManager.getInstance())
 
   // Container sizing
   const containerRef = useRef<HTMLDivElement>(null)
-  const filterPanelRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 600, height: 500 })
 
   // Fetch audio features
@@ -100,27 +62,13 @@ export function SampleSpaceView({
     return enrichAudioFeatures(features, allSlices)
   }, [features, allSlices])
 
-  // Filter controls (only used when not using external filter state)
-  const {
-    filterState: internalFilterState,
-    setSearchQuery,
-    setShowFavoritesOnly,
-    setSelectedTags,
-    setMinDuration,
-    setMaxDuration,
-    setSelectedCollectionIds,
-    maxSliceDuration,
-    filteredItems: internalFilteredFeatures,
-  } = useFilteredSlices(enrichedFeatures)
-
-  // Use external filter state if provided, otherwise use internal
-  const filterState = externalFilterState ?? internalFilterState
+  // Apply external filter state
   const rawFilteredFeatures = useMemo(() => {
     if (externalFilterState) {
       return applySliceFilters(enrichedFeatures, externalFilterState)
     }
-    return internalFilteredFeatures
-  }, [externalFilterState, enrichedFeatures, internalFilteredFeatures])
+    return enrichedFeatures
+  }, [externalFilterState, enrichedFeatures])
 
   // Debounced filtered features to avoid rapid updates causing crashes
   const [filteredFeatures, setFilteredFeatures] = useState(rawFilteredFeatures)
@@ -135,21 +83,6 @@ export function SampleSpaceView({
     return () => clearTimeout(timer)
   }, [rawFilteredFeatures])
 
-  // Fetch tags and collections for filtering
-  const { data: allTags } = useTags()
-  const { data: allCollections } = useCollections()
-  const createCollectionMutation = useCreateCollection()
-
-  // Calculate sample counts for category filters
-  const { totalSampleCount, favoriteSampleCount } = useMemo(() => {
-    if (!enrichedFeatures || enrichedFeatures.length === 0) {
-      return { totalSampleCount: 0, favoriteSampleCount: 0 }
-    }
-    return {
-      totalSampleCount: enrichedFeatures.length,
-      favoriteSampleCount: enrichedFeatures.filter(f => f.favorite === true).length,
-    }
-  }, [enrichedFeatures])
 
   // Build feature matrix from filtered data
   const { matrix, validIndices } = useMemo(() => {
@@ -196,7 +129,7 @@ export function SampleSpaceView({
     }).filter(Boolean) as SamplePoint[]
   }, [filteredFeatures, reducedPoints, validIndices, clusters])
 
-  // Handle container resize
+  // Handle container resize and screen size detection
   useEffect(() => {
     const updateDimensions = () => {
       if (containerRef.current) {
@@ -206,6 +139,8 @@ export function SampleSpaceView({
           height: Math.max(400, rect.height),
         })
       }
+      // Check if screen is small (less than 2/3rds of typical desktop width)
+      setIsSmallScreen(window.innerWidth < 1200)
     }
 
     updateDimensions()
@@ -214,19 +149,15 @@ export function SampleSpaceView({
       observer.observe(containerRef.current)
     }
 
-    return () => observer.disconnect()
+    // Listen for window resize
+    window.addEventListener('resize', updateDimensions)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateDimensions)
+    }
   }, [])
 
-  // Handle filter panel animation
-  useEffect(() => {
-    if (openPanel === 'filter') {
-      setFilterAnimState('in')
-    } else if (filterAnimState === 'in') {
-      setFilterAnimState('out')
-      const timer = setTimeout(() => setFilterAnimState('none'), 300)
-      return () => clearTimeout(timer)
-    }
-  }, [openPanel])
 
 
   // Play sample
@@ -308,10 +239,9 @@ export function SampleSpaceView({
   }
 
   return (
-    <div className="relative w-full h-full flex flex-col overflow-hidden">
+    <div className="relative w-full h-full flex overflow-hidden">
       {/* Main Canvas Container */}
       <div className="flex-1 relative overflow-hidden min-h-0">
-        {/* Canvas */}
         <div
           ref={containerRef}
           className="w-full h-full bg-surface-base relative"
@@ -335,85 +265,11 @@ export function SampleSpaceView({
             onPointClick={playPoint}
             onPointSelect={handlePointSelect}
             onSelectionChange={setSelectedIds}
+            selectedId={selectedPoint?.id ?? null}
             width={dimensions.width}
             height={dimensions.height}
           />
 
-          {/* Blur overlay when panels are open - with animated transition */}
-          <div
-            className={`absolute inset-0 pointer-events-none z-20 transition-all duration-300 ease-out ${
-              openPanel
-                ? 'bg-black/10 backdrop-blur-xs opacity-100'
-                : 'bg-transparent backdrop-blur-none opacity-0'
-            }`}
-          />
-
-          {/* Top Filter Panel - Collapsible (hidden when using external filter) */}
-          {!hideFilter && (
-            <div
-              className="absolute top-0 left-1/2 -translate-x-1/2 z-30 pointer-events-none"
-              onMouseEnter={() => setOpenPanel('filter')}
-              onMouseLeave={() => setOpenPanel(null)}
-            >
-              {/* Toggle Bar */}
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 h-6 w-20 flex items-center justify-center cursor-pointer pointer-events-auto z-10">
-                <ChevronDown
-                  className={`w-4 h-4 text-slate-600/40 hover:text-slate-500/60 transition-all duration-300 ${
-                    openPanel === 'filter' ? 'rotate-180' : ''
-                  }`}
-                  strokeWidth={2}
-                />
-              </div>
-
-              {/* Filter Panel */}
-              {filterAnimState !== 'none' && (
-                <div
-                  ref={filterPanelRef}
-                  className={`panel-surface rounded-b-lg p-3 pt-6 shadow-2xl transition-all duration-300 z-20 pointer-events-auto overflow-y-auto ${
-                    filterAnimState === 'in'
-                      ? 'opacity-100'
-                      : 'opacity-0 pointer-events-none'
-                  }`}
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: '50%',
-                    width: 'calc(100vw - 2.6rem)',
-                    maxHeight: 'calc(100vh - 4rem)',
-                    transform: `translateX(-50%) translateY(${filterAnimState === 'in' ? '0' : '-0.5rem'})`,
-                  }}
-                >
-                  <SliceFilterPanel
-                    filterState={filterState}
-                    onSearchChange={setSearchQuery}
-                    onFavoritesChange={setShowFavoritesOnly}
-                    onTagFilterChange={setSelectedTags}
-                    onDurationChange={(min, max) => {
-                      setMinDuration(min)
-                      setMaxDuration(max)
-                    }}
-                    onCollectionChange={setSelectedCollectionIds}
-                    onCreateCollection={(name) => createCollectionMutation.mutate({ name })}
-                    allTags={allTags}
-                    collections={allCollections}
-                    maxDuration={maxSliceDuration}
-                    totalSampleCount={totalSampleCount}
-                    favoriteSampleCount={favoriteSampleCount}
-                    weights={weights}
-                    onWeightsChange={setWeights}
-                    reductionMethod={reductionMethod}
-                    onReductionMethodChange={setReductionMethod}
-                    clusterMethod={clusterMethod}
-                    onClusterMethodChange={setClusterMethod}
-                    clusterCount={clusterCount}
-                    onClusterCountChange={setClusterCount}
-                    dbscanEpsilon={dbscanEpsilon}
-                    onDbscanEpsilonChange={setDbscanEpsilon}
-                  />
-                </div>
-              )}
-            </div>
-          )}
 
           {/* Bottom Information Row - On top of canvas with minimal opacity */}
           <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-surface-base/40 via-surface-base/20 to-transparent p-2.5 pl-4 pr-2">
@@ -452,10 +308,8 @@ export function SampleSpaceView({
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Selected Detail Panel - Outside Canvas */}
-      <div className="min-h-0 overflow-y-auto max-h-[40vh]">
+        {/* Selected Detail Panel - Below Canvas */}
         {selectedPoint && (() => {
           const sliceData = allSlices?.find(s => s.id === selectedPoint.id)
           if (!sliceData) {
@@ -470,11 +324,51 @@ export function SampleSpaceView({
               key={selectedPoint.id * sliceData.id}
               selectedPoint={selectedPoint}
               sliceData={sliceData}
-              onClose={() => setSelectedPoint(null)}
+              onClose={() => handlePointSelect(null)}
             />
           )
         })()}
       </div>
+
+      {/* Right Sidebar - Controls Panel */}
+      <div
+        className={`border-l overflow-y-auto transition-all duration-300 ${
+          isSmallScreen
+            ? `absolute right-0 top-0 bottom-0 z-30 w-80 ${
+                isPanelHovered
+                  ? 'translate-x-0 bg-surface-raised border-surface-border'
+                  : 'translate-x-72 bg-transparent border-transparent'
+              }`
+            : 'w-80 relative flex-shrink-0 bg-surface-raised border-surface-border'
+        }`}
+        onMouseEnter={() => isSmallScreen && setIsPanelHovered(true)}
+        onMouseLeave={() => isSmallScreen && setIsPanelHovered(false)}
+      >
+        {/* Toggle indicator for small screens */}
+        {isSmallScreen && !isPanelHovered && (
+          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-300 transition-colors">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M7 15l5-5-5-5v10z"/>
+            </svg>
+          </div>
+        )}
+
+        <div className={`p-4 ${isSmallScreen && !isPanelHovered ? 'opacity-0' : 'opacity-100'} transition-opacity duration-300`}>
+          <FeatureWeightsPanel
+            weights={weights}
+            onWeightsChange={setWeights}
+            reductionMethod={reductionMethod}
+            onReductionMethodChange={setReductionMethod}
+            clusterMethod={clusterMethod}
+            onClusterMethodChange={setClusterMethod}
+            clusterCount={clusterCount}
+            onClusterCountChange={setClusterCount}
+            dbscanEpsilon={dbscanEpsilon}
+            onDbscanEpsilonChange={setDbscanEpsilon}
+          />
+        </div>
+      </div>
+
     </div>
   )
 }

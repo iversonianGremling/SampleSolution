@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import * as PIXI from 'pixi.js'
+import { RefreshCw } from 'lucide-react'
 import type { SamplePoint } from '../types'
 import { getClusterColor } from '../hooks/useClustering'
 import AudioManager from '../services/AudioManager'
@@ -10,6 +11,7 @@ interface WebGLScatterProps {
   onPointClick: (point: SamplePoint) => void
   onSelectionChange?: (selectedIds: number[]) => void
   onPointSelect?: (point: SamplePoint | null) => void
+  selectedId?: number | null
   width: number
   height: number
 }
@@ -227,6 +229,7 @@ export function WebGLScatter({
   onPointClick,
   onSelectionChange,
   onPointSelect,
+  selectedId,
   width,
   height,
 }: WebGLScatterProps) {
@@ -238,6 +241,7 @@ export function WebGLScatter({
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [resizeCounter, setResizeCounter] = useState(0)
   const [actualContainerSize, setActualContainerSize] = useState({ width, height })
+  const [refreshCounter, setRefreshCounter] = useState(0)
   const audioManagerRef = useRef<AudioManager>(AudioManager.getInstance())
 
   // Animation refs
@@ -722,7 +726,7 @@ export function WebGLScatter({
     if (animations.length > 0) {
       startAnimations(animations)
     }
-  }, [points, transformX, transformY, hoveredId, selectedIds, updateSpriteVisual, startAnimations, resizeCounter])
+  }, [points, transformX, transformY, hoveredId, selectedIds, updateSpriteVisual, startAnimations, resizeCounter, refreshCounter])
 
   // Container-level event handling for pixel-perfect hit detection
   useEffect(() => {
@@ -735,6 +739,17 @@ export function WebGLScatter({
     let currentHoveredId: number | null = null
 
     const handlePointerMove = (event: PIXI.FederatedPointerEvent) => {
+      // Skip hover detection if menu/modal is open
+      if (selectedIds.size > 0) {
+        // Clear hover if we had one
+        if (currentHoveredId !== null) {
+          currentHoveredId = null
+          setHoveredId(null)
+          onPointHover(null)
+        }
+        return
+      }
+
       // Get mouse position in canvas space (already accounts for DPR)
       const mouseX = event.global.x
       const mouseY = event.global.y
@@ -763,7 +778,10 @@ export function WebGLScatter({
         if (data) {
           setHoveredId(closestPointId)
           onPointHover(data.point)
-          playAudio(data.point)
+          // Only play audio on hover if no point is selected (modal closed)
+          if (selectedIds.size === 0) {
+            playAudio(data.point)
+          }
         }
       } else if (closestPointId === null && currentHoveredId !== null) {
         currentHoveredId = null
@@ -793,7 +811,7 @@ export function WebGLScatter({
       container.off('pointermove', handlePointerMove)
       container.off('pointertap', handlePointerTap)
     }
-  }, [actualContainerSize, onPointHover, onPointClick, onPointSelect, playAudio])
+  }, [actualContainerSize, onPointHover, onPointClick, onPointSelect, playAudio, selectedIds])
 
   // Update visuals when hover/selection changes (dirty tracking - never overdraw)
   useEffect(() => {
@@ -836,6 +854,17 @@ export function WebGLScatter({
     onSelectionChange?.(Array.from(selectedIds))
   }, [selectedIds, onSelectionChange])
 
+  // Sync selection with external selectedId prop
+  useEffect(() => {
+    if (selectedId === undefined) return
+
+    if (selectedId === null) {
+      setSelectedIds(new Set())
+    } else if (!selectedIds.has(selectedId)) {
+      setSelectedIds(new Set([selectedId]))
+    }
+  }, [selectedId])
+
   // Cleanup audio on unmount
   useEffect(() => {
     return () => {
@@ -843,11 +872,44 @@ export function WebGLScatter({
     }
   }, [])
 
+  // Force complete refresh - clear everything and redraw
+  const handleRefresh = useCallback(() => {
+    // Cancel any ongoing animations
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current)
+      animationRef.current = null
+    }
+
+    // Clear animation state
+    animationStateRef.current.clear()
+
+    // Clear all sprites
+    pointSpritesRef.current.forEach((spriteData) => {
+      pointsContainerRef.current?.removeChild(spriteData.sprite)
+      spriteData.sprite.destroy({ children: true })
+    })
+    pointSpritesRef.current.clear()
+
+    // Reset previous points so everything is treated as new
+    previousPointsRef.current = []
+
+    // Trigger re-render
+    setRefreshCounter((prev) => prev + 1)
+  }, [])
+
   return (
     <div
       ref={containerRef}
       className="relative rounded-lg overflow-hidden w-full h-full"
       onContextMenu={(e) => e.preventDefault()}
-    />
+    >
+      <button
+        onClick={handleRefresh}
+        className="absolute top-2 left-2 p-1 text-white/60 hover:text-white transition-colors z-10"
+        title="Refresh"
+      >
+        <RefreshCw size={16} />
+      </button>
+    </div>
   )
 }
