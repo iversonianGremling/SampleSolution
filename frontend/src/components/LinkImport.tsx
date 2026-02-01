@@ -134,16 +134,16 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
 
   return (
     <div className="space-y-4">
-      <div className="bg-gray-800 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-700">
+      <div className="bg-surface-raised rounded-lg overflow-hidden border border-surface-border">
+        <div className="px-4 py-3 border-b border-surface-border">
           <h2 className="font-semibold text-white">Import Samples</h2>
-          <p className="text-sm text-gray-400 mt-1">
+          <p className="text-sm text-slate-400 mt-1">
             Import from YouTube, local audio files, or a folder
           </p>
         </div>
 
         {/* Mode Tabs */}
-        <div className="flex border-b border-gray-700">
+        <div className="flex border-b border-surface-border">
           {modes.map((m) => (
             <button
               key={m.id}
@@ -153,8 +153,8 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
               }}
               className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors ${
                 mode === m.id
-                  ? 'text-indigo-400 border-b-2 border-indigo-400 bg-gray-700/30'
-                  : 'text-gray-400 hover:text-gray-200'
+                  ? 'text-accent-primary border-b-2 border-accent-primary bg-surface-overlay/30'
+                  : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               {m.icon}
@@ -172,24 +172,24 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                 onChange={(e) => setText(e.target.value)}
                 placeholder={exampleFormats}
                 rows={12}
-                className="w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-sm resize-none"
+                className="w-full px-4 py-3 bg-surface-base border border-surface-border rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary font-mono text-sm resize-none"
               />
 
               <div className="flex items-center justify-between">
-                <div className="text-sm text-gray-500">
+                <div className="text-sm text-slate-500">
                   {text.trim().split('\n').filter(Boolean).length} lines
                 </div>
                 <div className="flex gap-2">
                   <button
                     onClick={handleClear}
-                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                    className="px-4 py-2 bg-surface-overlay hover:bg-surface-border text-white rounded-lg transition-colors border border-surface-border"
                   >
                     Clear
                   </button>
                   <button
                     onClick={handleYouTubeImport}
                     disabled={!text.trim() || importLinks.isPending}
-                    className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 text-white rounded-lg transition-colors"
+                    className="flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-blue-600 disabled:bg-surface-overlay disabled:text-slate-500 text-white rounded-lg transition-colors"
                   >
                     {importLinks.isPending ? (
                       <Loader2 className="animate-spin" size={18} />
@@ -202,7 +202,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
               </div>
 
               {result && (
-                <div className="border-t border-gray-700 pt-4 space-y-3">
+                <div className="border-t border-surface-border pt-4 space-y-3">
                   {result.success.length > 0 && (
                     <div className="flex items-start gap-2 text-green-400">
                       <CheckCircle size={18} className="mt-0.5 flex-shrink-0" />
@@ -242,10 +242,10 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
           {/* Local Files Mode */}
           {mode === 'local' && (
             <>
-              <div className="bg-gray-700/30 rounded-lg p-3 space-y-3">
+              <div className="bg-surface-overlay/30 rounded-lg p-3 space-y-3 border border-surface-border">
                 <div className="text-sm font-semibold text-white">Import as:</div>
                 <div className="space-y-2">
-                  <label className="flex items-center gap-3 cursor-pointer hover:bg-gray-700/50 p-2 rounded transition-colors">
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-surface-overlay/50 p-2 rounded transition-colors">
                     <input
                       type="radio"
                       name="localImportType"
@@ -256,10 +256,10 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                     />
                     <div>
                       <div className="text-sm font-medium text-white">Sample (auto-analyze)</div>
-                      <div className="text-xs text-gray-400">Audio features analyzed immediately</div>
+                      <div className="text-xs text-slate-400">Audio features analyzed immediately</div>
                     </div>
                   </label>
-                  <label className="flex items-center gap-3 cursor-pointer hover:bg-gray-700/50 p-2 rounded transition-colors">
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-surface-overlay/50 p-2 rounded transition-colors">
                     <input
                       type="radio"
                       name="localImportType"
@@ -270,7 +270,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                     />
                     <div>
                       <div className="text-sm font-medium text-white">Track (no analysis)</div>
-                      <div className="text-xs text-gray-400">Import without analysis</div>
+                      <div className="text-xs text-slate-400">Import without analysis</div>
                     </div>
                   </label>
                 </div>
@@ -283,15 +283,15 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                 onDragLeave={handleDragLeave}
                 className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
                   isDragging
-                    ? 'border-indigo-500 bg-indigo-500/10'
-                    : 'border-gray-600 hover:border-gray-500 hover:bg-gray-700/30'
+                    ? 'border-accent-primary bg-accent-primary/10'
+                    : 'border-surface-border hover:border-slate-500 hover:bg-surface-overlay/30'
                 }`}
               >
-                <HardDrive className="mx-auto mb-3 text-gray-400" size={40} />
+                <HardDrive className="mx-auto mb-3 text-slate-400" size={40} />
                 <div className="text-white font-medium">
                   {isDragging ? 'Drop files here' : 'Click to select or drag & drop'}
                 </div>
-                <div className="text-sm text-gray-400 mt-1">
+                <div className="text-sm text-slate-400 mt-1">
                   Supported: WAV, MP3, FLAC, AIFF, OGG, M4A
                 </div>
                 <input
@@ -305,14 +305,14 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
               </div>
 
               {importLocalFiles.isPending && (
-                <div className="flex items-center justify-center gap-2 text-indigo-400">
+                <div className="flex items-center justify-center gap-2 text-accent-primary">
                   <Loader2 className="animate-spin" size={18} />
                   Importing files...
                 </div>
               )}
 
               {localResult && (
-                <div className="border-t border-gray-700 pt-4 space-y-3">
+                <div className="border-t border-surface-border pt-4 space-y-3">
                   {localResult.successful > 0 && (
                     <div className="flex items-start gap-2 text-green-400">
                       <CheckCircle size={18} className="mt-0.5 flex-shrink-0" />
@@ -351,10 +351,10 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
           {/* Local Folder Mode */}
           {mode === 'folder' && (
             <>
-              <div className="bg-gray-700/30 rounded-lg p-3 space-y-3">
+              <div className="bg-surface-overlay/30 rounded-lg p-3 space-y-3 border border-surface-border">
                 <div className="text-sm font-semibold text-white">Import as:</div>
                 <div className="space-y-2">
-                  <label className="flex items-center gap-3 cursor-pointer hover:bg-gray-700/50 p-2 rounded transition-colors">
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-surface-overlay/50 p-2 rounded transition-colors">
                     <input
                       type="radio"
                       name="folderImportType"
@@ -365,10 +365,10 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                     />
                     <div>
                       <div className="text-sm font-medium text-white">Sample (auto-analyze)</div>
-                      <div className="text-xs text-gray-400">Audio features analyzed immediately</div>
+                      <div className="text-xs text-slate-400">Audio features analyzed immediately</div>
                     </div>
                   </label>
-                  <label className="flex items-center gap-3 cursor-pointer hover:bg-gray-700/50 p-2 rounded transition-colors">
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-surface-overlay/50 p-2 rounded transition-colors">
                     <input
                       type="radio"
                       name="folderImportType"
@@ -379,7 +379,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                     />
                     <div>
                       <div className="text-sm font-medium text-white">Track (no analysis)</div>
-                      <div className="text-xs text-gray-400">Import without analysis</div>
+                      <div className="text-xs text-slate-400">Import without analysis</div>
                     </div>
                   </label>
                 </div>
@@ -387,13 +387,13 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
 
               <div
                 onClick={() => folderInputRef.current?.click()}
-                className="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors border-gray-600 hover:border-gray-500 hover:bg-gray-700/30"
+                className="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors border-surface-border hover:border-slate-500 hover:bg-surface-overlay/30"
               >
                 <FolderOpen className="mx-auto mb-3 text-yellow-500" size={40} />
                 <div className="text-white font-medium">
                   {selectedFolderName ? `Selected: ${selectedFolderName}` : 'Click to select a folder'}
                 </div>
-                <div className="text-sm text-gray-400 mt-1">
+                <div className="text-sm text-slate-400 mt-1">
                   All audio files in the folder will be imported (WAV, MP3, FLAC, AIFF, OGG, M4A)
                 </div>
                 <input
@@ -409,14 +409,14 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
               </div>
 
               {importLocalFiles.isPending && (
-                <div className="flex items-center justify-center gap-2 text-indigo-400">
+                <div className="flex items-center justify-center gap-2 text-accent-primary">
                   <Loader2 className="animate-spin" size={18} />
                   Importing folder contents...
                 </div>
               )}
 
               {folderResult && (
-                <div className="border-t border-gray-700 pt-4 space-y-3">
+                <div className="border-t border-surface-border pt-4 space-y-3">
                   {folderResult.total === 0 ? (
                     <div className="flex items-start gap-2 text-yellow-400">
                       <XCircle size={18} className="mt-0.5 flex-shrink-0" />

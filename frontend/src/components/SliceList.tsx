@@ -1,24 +1,28 @@
 import { useState, useRef, useEffect } from 'react'
-import { Play, Download, Trash2, Sparkles, Loader2, X, Pencil, Check } from 'lucide-react'
+import { Play, Download, Trash2, X, Pencil, Check, Pause, ZapIcon, Hand } from 'lucide-react'
 import { getSliceDownloadUrl } from '../api/client'
-import { useGenerateAiTagsForSlice, useTags, useAddTagToSlice, useRemoveTagFromSlice, useCreateTag, useUpdateSlice } from '../hooks/useTracks'
+import { useTags, useAddTagToSlice, useRemoveTagFromSlice, useCreateTag, useUpdateSlice } from '../hooks/useTracks'
 import { TagSearchInput } from './TagSearchInput'
 import type { Slice } from '../types'
+
+type PlayMode = 'toggle' | 'oneshot' | 'hold'
 
 interface SliceListProps {
   slices: Slice[]
   trackId: number
-  onPlay: (slice: Slice) => void
+  playingSliceId: number | null
+  onTogglePlay: (slice: Slice) => void
+  onOneShotPlay: (slice: Slice) => void
   onDelete: (slice: Slice) => void
   formatTime: (seconds: number) => string
 }
 
-export function SliceList({ slices, trackId, onPlay, onDelete, formatTime }: SliceListProps) {
-  const [taggingSliceId, setTaggingSliceId] = useState<number | null>(null)
+export function SliceList({ slices, trackId, playingSliceId, onTogglePlay, onOneShotPlay, onDelete, formatTime }: SliceListProps) {
   const [editingSliceId, setEditingSliceId] = useState<number | null>(null)
   const [editingName, setEditingName] = useState('')
+  const [playMode, setPlayMode] = useState<PlayMode>('toggle')
+  const [holdingSliceId, setHoldingSliceId] = useState<number | null>(null)
   const editInputRef = useRef<HTMLInputElement>(null)
-  const generateAiTags = useGenerateAiTagsForSlice(trackId)
   const updateSlice = useUpdateSlice(trackId)
   const { data: allTags } = useTags()
   const addTagToSlice = useAddTagToSlice()
@@ -51,12 +55,61 @@ export function SliceList({ slices, trackId, onPlay, onDelete, formatTime }: Sli
     setEditingName('')
   }
 
-  const handleGenerateTags = (e: React.MouseEvent, sliceId: number) => {
-    e.stopPropagation()
-    setTaggingSliceId(sliceId)
-    generateAiTags.mutate(sliceId, {
-      onSettled: () => setTaggingSliceId(null)
+  const cyclePlayMode = () => {
+    setPlayMode((current) => {
+      if (current === 'toggle') return 'oneshot'
+      if (current === 'oneshot') return 'hold'
+      return 'toggle'
     })
+  }
+
+  const handlePlay = (slice: Slice) => {
+    if (playMode === 'toggle') {
+      onTogglePlay(slice)
+    } else if (playMode === 'oneshot') {
+      onOneShotPlay(slice)
+    } else {
+      // hold mode - play on mouse down
+      setHoldingSliceId(slice.id)
+      onOneShotPlay(slice)
+    }
+  }
+
+  const handleMouseDown = (slice: Slice) => {
+    if (playMode === 'hold') {
+      setHoldingSliceId(slice.id)
+      onOneShotPlay(slice)
+    } else {
+      handlePlay(slice)
+    }
+  }
+
+  const handleMouseUp = () => {
+    if (playMode === 'hold') {
+      setHoldingSliceId(null)
+    }
+  }
+
+  const getPlayModeIcon = () => {
+    switch (playMode) {
+      case 'toggle':
+        return <Pause size={8} />
+      case 'oneshot':
+        return <ZapIcon size={8} />
+      case 'hold':
+        return <Hand size={8} />
+    }
+  }
+
+  const getPlayModeLabel = () => {
+    switch (playMode) {
+      case 'toggle':
+        return 'Toggle mode'
+      case 'oneshot':
+        return 'One-shot mode'
+      case 'hold':
+        return 'Hold mode'
+    }
   }
 
   if (slices.length === 0) {
@@ -82,18 +135,18 @@ export function SliceList({ slices, trackId, onPlay, onDelete, formatTime }: Sli
         {slices.map((slice, index) => (
           <div
             key={slice.id}
-            className="flex items-center gap-3 px-4 py-2 hover:bg-gray-700/30 transition-colors"
+            className="flex items-center gap-2 px-3 py-2.5 hover:bg-gray-700/30 transition-colors"
           >
             {/* Color indicator */}
             <div
-              className="w-2 h-8 rounded-full"
+              className="w-1.5 h-8 rounded-full flex-shrink-0"
               style={{ backgroundColor: colors[index % colors.length] }}
             />
 
             {/* Info */}
             <div className="flex-1 min-w-0">
               {editingSliceId === slice.id ? (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
                   <input
                     ref={editInputRef}
                     type="text"
@@ -126,24 +179,24 @@ export function SliceList({ slices, trackId, onPlay, onDelete, formatTime }: Sli
                   className="group flex items-center gap-1 cursor-pointer"
                   onClick={() => startEditing(slice)}
                 >
-                  <span className="font-medium text-white truncate">{slice.name}</span>
-                  <Pencil size={12} className="text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <span className="font-medium text-white truncate text-sm">{slice.name}</span>
+                  <Pencil size={11} className="text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
                 </div>
               )}
-              <div className="text-sm text-gray-400">
+              <div className="text-xs text-gray-400 mt-0.5">
                 {formatTime(slice.startTime)} - {formatTime(slice.endTime)}
-                <span className="ml-2 text-gray-500">
+                <span className="ml-1.5 text-gray-500">
                   ({formatTime(slice.endTime - slice.startTime)})
                 </span>
               </div>
             </div>
 
             {/* Tags with edit capability */}
-            <div className="flex flex-wrap items-center gap-1 max-w-[200px]">
+            <div className="flex flex-wrap items-center gap-1 max-w-[280px] lg:max-w-[380px] flex-shrink-0">
               {slice.tags.map((tag) => (
                 <span
                   key={tag.id}
-                  className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs rounded"
+                  className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs rounded whitespace-nowrap"
                   style={{ backgroundColor: tag.color + '40', color: tag.color }}
                 >
                   {tag.name}
@@ -177,26 +230,36 @@ export function SliceList({ slices, trackId, onPlay, onDelete, formatTime }: Sli
             </div>
 
             {/* Actions */}
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => onPlay(slice)}
-                className="p-2 text-gray-400 hover:text-green-400 transition-colors"
-                title="Play slice"
-              >
-                <Play size={16} />
-              </button>
-              <button
-                onClick={(e) => handleGenerateTags(e, slice.id)}
-                disabled={taggingSliceId === slice.id}
-                className="p-2 text-gray-400 hover:text-yellow-400 transition-colors"
-                title="Generate AI tags"
-              >
-                {taggingSliceId === slice.id ? (
-                  <Loader2 className="animate-spin" size={16} />
-                ) : (
-                  <Sparkles size={16} />
-                )}
-              </button>
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {/* Play button with mode selector overlay */}
+              <div className="relative mr-1">
+                {/* Main play button */}
+                <button
+                  onMouseDown={() => handleMouseDown(slice)}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={handleMouseUp}
+                  onClick={playMode !== 'hold' ? () => handlePlay(slice) : undefined}
+                  className={`p-2 rounded transition-colors ${
+                    (playingSliceId === slice.id && playMode === 'toggle') || holdingSliceId === slice.id
+                      ? 'text-green-400 bg-green-400/20'
+                      : 'text-gray-400 hover:text-green-400 hover:bg-green-400/10'
+                  }`}
+                  title={`Play (${playMode})`}
+                >
+                  {playingSliceId === slice.id && playMode === 'toggle' ? <Pause size={16} /> : <Play size={16} />}
+                </button>
+                {/* Mode selector button - overlaid on bottom-right */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    cyclePlayMode()
+                  }}
+                  className="absolute bottom-0 right-0 p-0.5 text-gray-500 hover:text-gray-200 bg-gray-800/90 hover:bg-gray-700/90 rounded-sm transition-colors border border-gray-600/50"
+                  title={getPlayModeLabel()}
+                >
+                  {getPlayModeIcon()}
+                </button>
+              </div>
               {slice.filePath && (
                 <a
                   href={getSliceDownloadUrl(slice.id)}

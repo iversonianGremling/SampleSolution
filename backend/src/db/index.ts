@@ -160,6 +160,55 @@ function initDatabase() {
     `)
   }
 
+  // Migration: Add Phase 1 advanced audio features (timbral, perceptual, spectral)
+  const audioFeaturesUpdated = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasDissonance = audioFeaturesUpdated.some(col => col.name === 'dissonance')
+  if (!hasDissonance) {
+    console.log('[DB] Migrating: Adding Phase 1 audio features (timbral, perceptual, spectral)')
+    sqlite.exec(`
+      -- Timbral features
+      ALTER TABLE audio_features ADD COLUMN dissonance REAL;
+      ALTER TABLE audio_features ADD COLUMN inharmonicity REAL;
+      ALTER TABLE audio_features ADD COLUMN tristimulus TEXT;
+      ALTER TABLE audio_features ADD COLUMN spectral_complexity REAL;
+      ALTER TABLE audio_features ADD COLUMN spectral_crest REAL;
+
+      -- Perceptual features
+      ALTER TABLE audio_features ADD COLUMN brightness REAL;
+      ALTER TABLE audio_features ADD COLUMN warmth REAL;
+      ALTER TABLE audio_features ADD COLUMN hardness REAL;
+      ALTER TABLE audio_features ADD COLUMN roughness REAL;
+      ALTER TABLE audio_features ADD COLUMN sharpness REAL;
+
+      -- Advanced spectral features
+      ALTER TABLE audio_features ADD COLUMN mel_bands_mean TEXT;
+      ALTER TABLE audio_features ADD COLUMN mel_bands_std TEXT;
+
+      -- Analysis level tracking
+      ALTER TABLE audio_features ADD COLUMN analysis_level TEXT DEFAULT 'standard';
+    `)
+  }
+
+  // Migration: Add Phase 2 features (stereo analysis, HPSS)
+  const audioFeaturesPhase2 = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasStereoWidth = audioFeaturesPhase2.some(col => col.name === 'stereo_width')
+  if (!hasStereoWidth) {
+    console.log('[DB] Migrating: Adding Phase 2 audio features (stereo analysis, harmonic/percussive separation)')
+    sqlite.exec(`
+      -- Stereo analysis features
+      ALTER TABLE audio_features ADD COLUMN stereo_width REAL;
+      ALTER TABLE audio_features ADD COLUMN panning_center REAL;
+      ALTER TABLE audio_features ADD COLUMN stereo_imbalance REAL;
+
+      -- Harmonic/Percussive separation features
+      ALTER TABLE audio_features ADD COLUMN harmonic_percussive_ratio REAL;
+      ALTER TABLE audio_features ADD COLUMN harmonic_energy REAL;
+      ALTER TABLE audio_features ADD COLUMN percussive_energy REAL;
+      ALTER TABLE audio_features ADD COLUMN harmonic_centroid REAL;
+      ALTER TABLE audio_features ADD COLUMN percussive_centroid REAL;
+    `)
+  }
+
   return drizzleDb
 }
 

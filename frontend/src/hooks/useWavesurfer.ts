@@ -26,6 +26,7 @@ export function useWavesurfer({
   const viewportRegionRef = useRef<Region | null>(null)
   const playbackPositionRegionRef = useRef<Region | null>(null)
   const currentZoomRef = useRef<number>(150)
+  const playingRegionBoundsRef = useRef<{ start: number; end: number; loop: boolean } | null>(null)
 
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -230,6 +231,7 @@ export function useWavesurfer({
 
   const pause = useCallback(() => {
     wavesurferRef.current?.pause()
+    playingRegionBoundsRef.current = null
   }, [])
 
   const playPause = useCallback(() => {
@@ -254,6 +256,42 @@ export function useWavesurfer({
         }
       }
       wavesurferRef.current.on('timeupdate', checkEnd)
+    }
+  }, [])
+
+  const playRegionLoop = useCallback((start: number, end: number, loop: boolean) => {
+    if (wavesurferRef.current) {
+      // Store the playing region bounds in a ref so it can be updated dynamically
+      playingRegionBoundsRef.current = { start, end, loop }
+
+      wavesurferRef.current.setTime(start)
+      wavesurferRef.current.play()
+
+      const checkEnd = () => {
+        if (wavesurferRef.current && playingRegionBoundsRef.current) {
+          const { start: currentStart, end: currentEnd, loop: currentLoop } = playingRegionBoundsRef.current
+          const currentTime = wavesurferRef.current.getCurrentTime()
+
+          if (currentTime >= currentEnd) {
+            if (currentLoop) {
+              // Loop back to start (use current start in case it changed)
+              wavesurferRef.current.setTime(currentStart)
+            } else {
+              // Stop playback
+              wavesurferRef.current.pause()
+              wavesurferRef.current.un('timeupdate', checkEnd)
+              playingRegionBoundsRef.current = null
+            }
+          }
+        }
+      }
+      wavesurferRef.current.on('timeupdate', checkEnd)
+    }
+  }, [])
+
+  const updatePlayingRegionBounds = useCallback((start: number, end: number, loop: boolean) => {
+    if (playingRegionBoundsRef.current) {
+      playingRegionBoundsRef.current = { start, end, loop }
     }
   }, [])
 
@@ -325,6 +363,8 @@ export function useWavesurfer({
     playPause,
     seekTo,
     playRegion,
+    playRegionLoop,
+    updatePlayingRegionBounds,
     addRegion,
     clearRegions,
     removeRegion,

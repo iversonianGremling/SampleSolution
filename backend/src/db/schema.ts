@@ -103,7 +103,35 @@ export const audioFeatures = sqliteTable('audio_features', {
   spectralFlux: real('spectral_flux'),
   spectralFlatness: real('spectral_flatness'),
   kurtosis: real('kurtosis'),
+  // Phase 1: Advanced Timbral Features
+  dissonance: real('dissonance'),
+  inharmonicity: real('inharmonicity'),
+  tristimulus: text('tristimulus'), // JSON array [t1, t2, t3]
+  spectralComplexity: real('spectral_complexity'),
+  spectralCrest: real('spectral_crest'),
+  // Phase 1: Perceptual Features (0-1 normalized)
+  brightness: real('brightness'),
+  warmth: real('warmth'),
+  hardness: real('hardness'),
+  roughness: real('roughness'),
+  sharpness: real('sharpness'),
+  // Phase 1: Advanced Spectral Features
+  melBandsMean: text('mel_bands_mean'), // JSON array
+  melBandsStd: text('mel_bands_std'), // JSON array
+  // Phase 2: Stereo Analysis
+  stereoWidth: real('stereo_width'),
+  panningCenter: real('panning_center'),
+  stereoImbalance: real('stereo_imbalance'),
+  // Phase 2: Harmonic/Percussive Separation
+  harmonicPercussiveRatio: real('harmonic_percussive_ratio'),
+  harmonicEnergy: real('harmonic_energy'),
+  percussiveEnergy: real('percussive_energy'),
+  harmonicCentroid: real('harmonic_centroid'),
+  percussiveCentroid: real('percussive_centroid'),
   // Metadata
+  analysisLevel: text('analysis_level', {
+    enum: ['quick', 'standard', 'advanced'],
+  }).default('standard'),
   analysisVersion: text('analysis_version').notNull().default('1.0'),
   createdAt: text('created_at')
     .notNull()

@@ -29,6 +29,7 @@ interface SourcesYouTubeGroupedListProps {
   onTagClick?: (tagId: number) => void
   isLoading?: boolean
   playMode?: PlayMode
+  loopEnabled: boolean
 }
 
 export function SourcesYouTubeGroupedList({
@@ -44,6 +45,7 @@ export function SourcesYouTubeGroupedList({
   onTagClick,
   isLoading = false,
   playMode = 'normal',
+  loopEnabled: _loopEnabled,
 }: SourcesYouTubeGroupedListProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)

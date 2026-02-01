@@ -6,7 +6,7 @@ import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 
-type SortField = 'name' | 'duration'
+type SortField = 'name' | 'duration' | 'bpm' | 'key'
 type SortOrder = 'asc' | 'desc'
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
@@ -203,6 +203,22 @@ export function SourcesSampleList({
         const durationA = a.endTime - a.startTime
         const durationB = b.endTime - b.startTime
         compareValue = durationA - durationB
+      } else if (sortField === 'bpm') {
+        const bpmA = a.bpm ?? -1
+        const bpmB = b.bpm ?? -1
+        // Sort null/undefined values last
+        if (bpmA === -1 && bpmB === -1) return 0
+        if (bpmA === -1) return 1
+        if (bpmB === -1) return -1
+        compareValue = bpmA - bpmB
+      } else if (sortField === 'key') {
+        const keyA = a.keyEstimate ?? ''
+        const keyB = b.keyEstimate ?? ''
+        // Sort null/undefined values last
+        if (!keyA && !keyB) return 0
+        if (!keyA) return 1
+        if (!keyB) return -1
+        compareValue = keyA.localeCompare(keyB)
       }
 
       return sortOrder === 'asc' ? compareValue : -compareValue
@@ -268,6 +284,28 @@ export function SourcesSampleList({
 
           {/* Tags */}
           <span className="hidden sm:block text-xs font-semibold text-slate-400 uppercase text-left pl-1">Tags</span>
+
+          {/* BPM column with sort */}
+          <button
+            onClick={() => handleSortClick('bpm')}
+            className={`hidden md:flex w-14 flex-shrink-0 items-center justify-end text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
+              sortField === 'bpm' ? 'text-accent-primary' : 'text-slate-400'
+            }`}
+          >
+            BPM
+            {getSortIcon('bpm')}
+          </button>
+
+          {/* Key column with sort */}
+          <button
+            onClick={() => handleSortClick('key')}
+            className={`hidden lg:flex w-16 flex-shrink-0 items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
+              sortField === 'key' ? 'text-accent-primary' : 'text-slate-400'
+            }`}
+          >
+            Key
+            {getSortIcon('key')}
+          </button>
 
           {/* Duration column with sort */}
           <button

@@ -25,6 +25,8 @@ export interface Slice {
   favorite: boolean
   createdAt: string
   tags: Tag[]
+  bpm?: number | null
+  keyEstimate?: string | null
 }
 
 export interface SliceWithTrack extends Slice {
@@ -88,6 +90,8 @@ export interface ImportResult {
   failed: { url: string; error: string }[]
 }
 
+export type AnalysisLevel = 'quick' | 'standard' | 'advanced'
+
 export interface AudioFeatures {
   // Slice info
   id: number
@@ -113,6 +117,33 @@ export interface AudioFeatures {
   spectralFlux: number | null
   spectralFlatness: number | null
   kurtosis: number | null
+  // Phase 1: Advanced Timbral Features
+  dissonance?: number | null
+  inharmonicity?: number | null
+  tristimulus?: number[] | null
+  spectralComplexity?: number | null
+  spectralCrest?: number | null
+  // Phase 1: Perceptual Features (0-1 normalized)
+  brightness?: number | null
+  warmth?: number | null
+  hardness?: number | null
+  roughness?: number | null
+  sharpness?: number | null
+  // Phase 1: Advanced Spectral Features
+  melBandsMean?: number[] | null
+  melBandsStd?: number[] | null
+  // Phase 2: Stereo Analysis
+  stereoWidth?: number | null
+  panningCenter?: number | null
+  stereoImbalance?: number | null
+  // Phase 2: Harmonic/Percussive Separation
+  harmonicPercussiveRatio?: number | null
+  harmonicEnergy?: number | null
+  percussiveEnergy?: number | null
+  harmonicCentroid?: number | null
+  percussiveCentroid?: number | null
+  // Metadata
+  analysisLevel?: AnalysisLevel | null
 }
 
 export interface FeatureWeights {
@@ -131,6 +162,27 @@ export interface FeatureWeights {
   bpm: number
   onsetCount: number
   keyStrength: number
+  // Phase 1: Timbral features
+  dissonance: number
+  inharmonicity: number
+  spectralComplexity: number
+  spectralCrest: number
+  // Phase 1: Perceptual features (0-1 normalized)
+  brightness: number
+  warmth: number
+  hardness: number
+  roughness: number
+  sharpness: number
+  // Phase 2: Stereo features
+  stereoWidth: number
+  panningCenter: number
+  stereoImbalance: number
+  // Phase 2: Harmonic/Percussive features
+  harmonicPercussiveRatio: number
+  harmonicEnergy: number
+  percussiveEnergy: number
+  harmonicCentroid: number
+  percussiveCentroid: number
 }
 
 export interface SamplePoint {

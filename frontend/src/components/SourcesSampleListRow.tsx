@@ -274,6 +274,20 @@ export function SourcesSampleListRow({
           )}
         </div>
 
+        {/* BPM (hidden on small screens) */}
+        <div className="hidden md:flex w-14 flex-shrink-0 justify-end">
+          <span className="text-xs text-slate-400">
+            {sample.bpm ? Math.round(sample.bpm) : '-'}
+          </span>
+        </div>
+
+        {/* Key (hidden on small screens) */}
+        <div className="hidden lg:flex w-16 flex-shrink-0 justify-center">
+          <span className="text-xs text-slate-400">
+            {sample.keyEstimate || '-'}
+          </span>
+        </div>
+
         {/* Duration */}
         <div className="w-16 sm:w-20 flex-shrink-0 text-right">
           <span className="text-xs text-slate-400">

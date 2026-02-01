@@ -184,24 +184,42 @@ export interface FolderImportResult extends BatchImportResult {
   folderPath: string
 }
 
-export const importLocalFile = async (file: File, importType?: 'sample' | 'track'): Promise<LocalImportResult> => {
+export const importLocalFile = async (
+  file: File,
+  importType?: 'sample' | 'track',
+  analysisLevel?: 'quick' | 'standard' | 'advanced'
+): Promise<LocalImportResult> => {
   const formData = new FormData()
   formData.append('file', file)
-  const url = `/import/file${importType ? `?importType=${importType}` : ''}`
+  const params = new URLSearchParams()
+  if (importType) params.append('importType', importType)
+  if (analysisLevel) params.append('analysisLevel', analysisLevel)
+  const url = `/import/file${params.toString() ? `?${params.toString()}` : ''}`
   const response = await api.post<LocalImportResult>(url, formData)
   return response.data
 }
 
-export const importLocalFiles = async (files: File[], importType?: 'sample' | 'track'): Promise<BatchImportResult> => {
+export const importLocalFiles = async (
+  files: File[],
+  importType?: 'sample' | 'track',
+  analysisLevel?: 'quick' | 'standard' | 'advanced'
+): Promise<BatchImportResult> => {
   const formData = new FormData()
   files.forEach((file) => formData.append('files', file))
-  const url = `/import/files${importType ? `?importType=${importType}` : ''}`
+  const params = new URLSearchParams()
+  if (importType) params.append('importType', importType)
+  if (analysisLevel) params.append('analysisLevel', analysisLevel)
+  const url = `/import/files${params.toString() ? `?${params.toString()}` : ''}`
   const response = await api.post<BatchImportResult>(url, formData)
   return response.data
 }
 
-export const importFolder = (folderPath: string, importType?: 'sample' | 'track') =>
-  api.post<FolderImportResult>('/import/folder', { folderPath, importType }).then((r) => r.data)
+export const importFolder = (
+  folderPath: string,
+  importType?: 'sample' | 'track',
+  analysisLevel?: 'quick' | 'standard' | 'advanced'
+) =>
+  api.post<FolderImportResult>('/import/folder', { folderPath, importType, analysisLevel }).then((r) => r.data)
 
 // Folder browsing
 export interface BrowseResult {
@@ -227,6 +245,11 @@ export interface SourcesSamplesParams {
   tags?: number[]
   search?: string
   favorites?: boolean
+  sortBy?: 'bpm' | 'key' | 'name' | 'duration' | 'createdAt'
+  sortOrder?: 'asc' | 'desc'
+  minBpm?: number
+  maxBpm?: number
+  keys?: string[]
 }
 
 export const getSourcesSamples = (params: SourcesSamplesParams) => {
@@ -235,6 +258,22 @@ export const getSourcesSamples = (params: SourcesSamplesParams) => {
   if (params.tags && params.tags.length > 0) queryParams.tags = params.tags.join(',')
   if (params.search) queryParams.search = params.search
   if (params.favorites) queryParams.favorites = 'true'
+  if (params.sortBy) queryParams.sortBy = params.sortBy
+  if (params.sortOrder) queryParams.sortOrder = params.sortOrder
+  if (params.minBpm !== undefined) queryParams.minBpm = params.minBpm.toString()
+  if (params.maxBpm !== undefined) queryParams.maxBpm = params.maxBpm.toString()
+  if (params.keys && params.keys.length > 0) queryParams.keys = params.keys.join(',')
 
   return api.get<SourcesSamplesResponse>('/sources/samples', { params: queryParams }).then((r) => r.data)
 }
+
+// Batch re-analyze samples
+export interface BatchReanalyzeResponse {
+  total: number
+  analyzed: number
+  failed: number
+  results: Array<{ sliceId: number; success: boolean; error?: string }>
+}
+
+export const batchReanalyzeSamples = (sliceIds?: number[], analysisLevel?: 'quick' | 'standard' | 'advanced') =>
+  api.post<BatchReanalyzeResponse>('/slices/batch-reanalyze', { sliceIds, analysisLevel }).then((r) => r.data)

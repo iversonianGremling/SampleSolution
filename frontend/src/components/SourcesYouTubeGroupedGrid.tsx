@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Play, Pause, Heart, ChevronDown, ChevronRight, GripVertical } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
@@ -40,7 +40,7 @@ export function SourcesYouTubeGroupedGrid({
   onTagClick,
   isLoading = false,
   playMode = 'normal',
-  loopEnabled = false,
+  loopEnabled: _loopEnabled = false,
 }: SourcesYouTubeGroupedGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)

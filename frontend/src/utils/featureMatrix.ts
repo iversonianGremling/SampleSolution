@@ -17,13 +17,34 @@ export const DEFAULT_WEIGHTS: FeatureWeights = {
   bpm: 1,
   onsetCount: 1,
   keyStrength: 1,
+  // Phase 1: Timbral features
+  dissonance: 1,
+  inharmonicity: 1,
+  spectralComplexity: 1,
+  spectralCrest: 1,
+  // Phase 1: Perceptual features
+  brightness: 1,
+  warmth: 1,
+  hardness: 1,
+  roughness: 1,
+  sharpness: 1,
+  // Phase 2: Stereo features
+  stereoWidth: 1,
+  panningCenter: 1,
+  stereoImbalance: 1,
+  // Phase 2: Harmonic/Percussive features
+  harmonicPercussiveRatio: 1,
+  harmonicEnergy: 1,
+  percussiveEnergy: 1,
+  harmonicCentroid: 1,
+  percussiveCentroid: 1,
 }
 
 // Feature groups for the UI
 export const FEATURE_GROUPS = {
   spectral: {
     label: 'Spectral (Timbre)',
-    features: ['spectralCentroid', 'spectralRolloff', 'spectralBandwidth', 'spectralContrast', 'spectralFlux', 'spectralFlatness'],
+    features: ['spectralCentroid', 'spectralRolloff', 'spectralBandwidth', 'spectralContrast', 'spectralFlux', 'spectralFlatness', 'spectralCrest'],
   },
   energy: {
     label: 'Energy/Dynamics',
@@ -40,6 +61,22 @@ export const FEATURE_GROUPS = {
   tonal: {
     label: 'Tonal',
     features: ['keyStrength'],
+  },
+  timbral: {
+    label: 'Timbral (Advanced)',
+    features: ['dissonance', 'inharmonicity', 'spectralComplexity'],
+  },
+  perceptual: {
+    label: 'Perceptual (Advanced)',
+    features: ['brightness', 'warmth', 'hardness', 'roughness', 'sharpness'],
+  },
+  stereo: {
+    label: 'Stereo (Advanced)',
+    features: ['stereoWidth', 'panningCenter', 'stereoImbalance'],
+  },
+  harmonic: {
+    label: 'Harmonic/Percussive (Advanced)',
+    features: ['harmonicPercussiveRatio', 'harmonicEnergy', 'percussiveEnergy', 'harmonicCentroid', 'percussiveCentroid'],
   },
 } as const
 
@@ -60,6 +97,27 @@ export const FEATURE_LABELS: Record<keyof FeatureWeights, string> = {
   bpm: 'Tempo',
   onsetCount: 'Rhythmic Density',
   keyStrength: 'Tonality',
+  // Phase 1: Timbral features
+  spectralCrest: 'Spectral Peak',
+  dissonance: 'Dissonance',
+  inharmonicity: 'Inharmonicity',
+  spectralComplexity: 'Complexity',
+  // Phase 1: Perceptual features
+  brightness: 'Perceived Brightness',
+  warmth: 'Warmth',
+  hardness: 'Hardness',
+  roughness: 'Roughness',
+  sharpness: 'Sharpness',
+  // Phase 2: Stereo features
+  stereoWidth: 'Stereo Width',
+  panningCenter: 'Panning',
+  stereoImbalance: 'L/R Balance',
+  // Phase 2: Harmonic/Percussive features
+  harmonicPercussiveRatio: 'Harmonic/Percussive',
+  harmonicEnergy: 'Harmonic Energy',
+  percussiveEnergy: 'Percussive Energy',
+  harmonicCentroid: 'Harmonic Brightness',
+  percussiveCentroid: 'Percussive Brightness',
 }
 
 // Normalize a value to 0-1 range using min-max scaling
@@ -101,6 +159,44 @@ function getFeatureValue(sample: AudioFeatures, feature: keyof FeatureWeights): 
       return sample.onsetCount
     case 'keyStrength':
       return sample.keyStrength
+    // Phase 1: Timbral features
+    case 'spectralCrest':
+      return sample.spectralCrest ?? null
+    case 'dissonance':
+      return sample.dissonance ?? null
+    case 'inharmonicity':
+      return sample.inharmonicity ?? null
+    case 'spectralComplexity':
+      return sample.spectralComplexity ?? null
+    // Phase 1: Perceptual features (already 0-1 normalized)
+    case 'brightness':
+      return sample.brightness ?? null
+    case 'warmth':
+      return sample.warmth ?? null
+    case 'hardness':
+      return sample.hardness ?? null
+    case 'roughness':
+      return sample.roughness ?? null
+    case 'sharpness':
+      return sample.sharpness ?? null
+    // Phase 2: Stereo features
+    case 'stereoWidth':
+      return sample.stereoWidth ?? null
+    case 'panningCenter':
+      return sample.panningCenter ?? null
+    case 'stereoImbalance':
+      return sample.stereoImbalance ?? null
+    // Phase 2: Harmonic/Percussive features
+    case 'harmonicPercussiveRatio':
+      return sample.harmonicPercussiveRatio ?? null
+    case 'harmonicEnergy':
+      return sample.harmonicEnergy ?? null
+    case 'percussiveEnergy':
+      return sample.percussiveEnergy ?? null
+    case 'harmonicCentroid':
+      return sample.harmonicCentroid ?? null
+    case 'percussiveCentroid':
+      return sample.percussiveCentroid ?? null
     default:
       return null
   }

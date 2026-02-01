@@ -49,17 +49,17 @@ export function PlaylistImport({ isAuthenticated, onTracksAdded }: PlaylistImpor
 
   if (!isAuthenticated) {
     return (
-      <div className="bg-gray-800 rounded-lg p-8 text-center">
-        <ListMusic className="mx-auto text-gray-600 mb-4" size={48} />
+      <div className="bg-surface-raised rounded-lg p-8 text-center border border-surface-border">
+        <ListMusic className="mx-auto text-slate-600 mb-4" size={48} />
         <h2 className="text-xl font-semibold text-white mb-2">
           Import Your Playlists
         </h2>
-        <p className="text-gray-400 mb-6">
+        <p className="text-slate-400 mb-6">
           Sign in with Google to access your YouTube playlists, including private ones.
         </p>
         <a
           href={getGoogleAuthUrl()}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-accent-primary hover:bg-blue-600 text-white rounded-lg transition-colors"
         >
           <LogIn size={18} />
           Sign in with Google
@@ -72,23 +72,23 @@ export function PlaylistImport({ isAuthenticated, onTracksAdded }: PlaylistImpor
     <div className="space-y-4">
       {/* Playlists or Playlist Items */}
       {!selectedPlaylist ? (
-        <div className="bg-gray-800 rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-700">
+        <div className="bg-surface-raised rounded-lg overflow-hidden border border-surface-border">
+          <div className="px-4 py-3 border-b border-surface-border">
             <h2 className="font-semibold text-white">Your Playlists</h2>
           </div>
 
           {loadingPlaylists ? (
             <div className="p-8 text-center">
-              <Loader2 className="animate-spin mx-auto text-indigo-500" size={32} />
-              <p className="mt-2 text-gray-400">Loading playlists...</p>
+              <Loader2 className="animate-spin mx-auto text-accent-primary" size={32} />
+              <p className="mt-2 text-slate-400">Loading playlists...</p>
             </div>
           ) : playlists && playlists.length > 0 ? (
-            <div className="divide-y divide-gray-700">
+            <div className="divide-y divide-surface-border">
               {playlists.map((playlist) => (
                 <button
                   key={playlist.id}
                   onClick={() => setSelectedPlaylist(playlist.id)}
-                  className="w-full flex items-center gap-3 p-3 hover:bg-gray-700/50 transition-colors text-left"
+                  className="w-full flex items-center gap-3 p-3 hover:bg-surface-overlay/50 transition-colors text-left"
                 >
                   <img
                     src={playlist.thumbnailUrl}
@@ -99,31 +99,31 @@ export function PlaylistImport({ isAuthenticated, onTracksAdded }: PlaylistImpor
                     <h3 className="font-medium text-white truncate">
                       {playlist.title}
                     </h3>
-                    <p className="text-sm text-gray-400">
+                    <p className="text-sm text-slate-400">
                       {playlist.itemCount} videos
                     </p>
                   </div>
-                  <ChevronRight className="text-gray-500" size={20} />
+                  <ChevronRight className="text-slate-500" size={20} />
                 </button>
               ))}
             </div>
           ) : (
-            <div className="p-8 text-center text-gray-500">
+            <div className="p-8 text-center text-slate-500">
               No playlists found
             </div>
           )}
         </div>
       ) : (
-        <div className="bg-gray-800 rounded-lg overflow-hidden">
+        <div className="bg-surface-raised rounded-lg overflow-hidden border border-surface-border">
           {/* Header with back button */}
-          <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
+          <div className="px-4 py-3 border-b border-surface-border flex items-center justify-between">
             <div className="flex items-center gap-3">
               <button
                 onClick={() => {
                   setSelectedPlaylist(null)
                   setSelectedVideos(new Set())
                 }}
-                className="text-gray-400 hover:text-white transition-colors"
+                className="text-slate-400 hover:text-white transition-colors"
               >
                 &larr; Back
               </button>
@@ -134,7 +134,7 @@ export function PlaylistImport({ isAuthenticated, onTracksAdded }: PlaylistImpor
             <div className="flex items-center gap-2">
               <button
                 onClick={handleSelectAll}
-                className="px-3 py-1 text-sm text-gray-400 hover:text-white transition-colors"
+                className="px-3 py-1 text-sm text-slate-400 hover:text-white transition-colors"
               >
                 {selectedVideos.size === playlistItems?.length
                   ? 'Deselect All'
@@ -143,7 +143,7 @@ export function PlaylistImport({ isAuthenticated, onTracksAdded }: PlaylistImpor
               <button
                 onClick={handleImportSelected}
                 disabled={selectedVideos.size === 0 || addTracks.isPending}
-                className="flex items-center gap-2 px-4 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 text-white rounded transition-colors"
+                className="flex items-center gap-2 px-4 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-surface-overlay disabled:text-slate-500 text-white rounded transition-colors"
               >
                 {addTracks.isPending ? (
                   <Loader2 className="animate-spin" size={16} />
@@ -158,21 +158,21 @@ export function PlaylistImport({ isAuthenticated, onTracksAdded }: PlaylistImpor
           {/* Videos */}
           {loadingItems ? (
             <div className="p-8 text-center">
-              <Loader2 className="animate-spin mx-auto text-indigo-500" size={32} />
-              <p className="mt-2 text-gray-400">Loading videos...</p>
+              <Loader2 className="animate-spin mx-auto text-accent-primary" size={32} />
+              <p className="mt-2 text-slate-400">Loading videos...</p>
             </div>
           ) : playlistItems && playlistItems.length > 0 ? (
-            <div className="divide-y divide-gray-700 max-h-[500px] overflow-y-auto">
+            <div className="divide-y divide-surface-border max-h-[500px] overflow-y-auto">
               {playlistItems.map((video) => (
                 <label
                   key={video.videoId}
-                  className="flex items-center gap-3 p-3 hover:bg-gray-700/50 transition-colors cursor-pointer"
+                  className="flex items-center gap-3 p-3 hover:bg-surface-overlay/50 transition-colors cursor-pointer"
                 >
                   <input
                     type="checkbox"
                     checked={selectedVideos.has(video.videoId)}
                     onChange={() => toggleVideo(video.videoId)}
-                    className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500"
+                    className="w-4 h-4 rounded border-surface-border bg-surface-overlay text-accent-primary focus:ring-accent-primary"
                   />
                   <img
                     src={video.thumbnailUrl}
@@ -183,7 +183,7 @@ export function PlaylistImport({ isAuthenticated, onTracksAdded }: PlaylistImpor
                     <h3 className="font-medium text-white truncate">
                       {video.title}
                     </h3>
-                    <p className="text-sm text-gray-400 truncate">
+                    <p className="text-sm text-slate-400 truncate">
                       {video.channelTitle}
                     </p>
                   </div>
@@ -191,7 +191,7 @@ export function PlaylistImport({ isAuthenticated, onTracksAdded }: PlaylistImpor
               ))}
             </div>
           ) : (
-            <div className="p-8 text-center text-gray-500">
+            <div className="p-8 text-center text-slate-500">
               No videos in this playlist
             </div>
           )}

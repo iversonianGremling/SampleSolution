@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Scissors, Search } from 'lucide-react'
+import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Scissors, Search, ChevronLeft, ChevronRight } from 'lucide-react'
 import type { SliceWithTrackExtended, Tag, Collection } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 import { SliceWaveform, type SliceWaveformRef } from './SliceWaveform'
@@ -17,6 +17,10 @@ interface SourcesDetailModalProps {
   onUpdateName?: (sliceId: number, name: string) => void
   onEdit?: () => void
   onTagClick?: (tagId: number) => void
+  onNext?: () => void
+  onPrevious?: () => void
+  hasNext?: boolean
+  hasPrevious?: boolean
 }
 
 export function SourcesDetailModal({
@@ -32,6 +36,10 @@ export function SourcesDetailModal({
   onUpdateName,
   onEdit,
   onTagClick,
+  onNext,
+  onPrevious,
+  hasNext = false,
+  hasPrevious = false,
 }: SourcesDetailModalProps) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [isWaveformReady, setIsWaveformReady] = useState(false)
@@ -211,7 +219,30 @@ export function SourcesDetailModal({
         >
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-surface-border bg-surface-raised">
-            <h3 className="text-lg font-semibold text-white">Sample Details</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-semibold text-white">Sample Details</h3>
+              {/* Navigation arrows */}
+              {(onPrevious || onNext) && (
+                <div className="flex items-center gap-1 ml-3">
+                  <button
+                    onClick={onPrevious}
+                    disabled={!hasPrevious}
+                    className="p-1.5 text-slate-400 hover:text-white rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-slate-400"
+                    title="Previous sample"
+                  >
+                    <ChevronLeft size={18} />
+                  </button>
+                  <button
+                    onClick={onNext}
+                    disabled={!hasNext}
+                    className="p-1.5 text-slate-400 hover:text-white rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-slate-400"
+                    title="Next sample"
+                  >
+                    <ChevronRight size={18} />
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               onClick={handleClose}
               className="p-2 text-slate-400 hover:text-white rounded transition-colors"

@@ -29,7 +29,7 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
       <form onSubmit={handleSearch} className="flex gap-2 items-center">
         <div className="relative flex-1">
           <Search
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"
             size={18}
           />
           <input
@@ -37,13 +37,13 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search YouTube..."
-            className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+            className="w-full pl-10 pr-4 py-2 bg-surface-raised border border-surface-border rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
           />
         </div>
         <button
           type="submit"
           disabled={!query.trim() || isLoading}
-          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 text-white rounded-lg transition-colors"
+          className="px-4 py-2 bg-accent-primary hover:bg-blue-600 disabled:bg-surface-overlay disabled:text-slate-500 text-white rounded-lg transition-colors"
         >
           {isLoading ? <Loader2 className="animate-spin" size={20} /> : 'Search'}
         </button>
@@ -51,7 +51,7 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
           href="https://console.cloud.google.com/apis/api/youtube.googleapis.com/quotas"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1 px-3 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors whitespace-nowrap"
+          className="flex items-center gap-1 px-3 py-2 text-sm text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap"
           title="View your YouTube API quota usage in Google Cloud Console"
         >
           <ExternalLink size={14} />
@@ -60,8 +60,8 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
       </form>
 
       {/* Results */}
-      <div className="bg-gray-800 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-700">
+      <div className="bg-surface-raised rounded-lg overflow-hidden border border-surface-border">
+        <div className="px-4 py-3 border-b border-surface-border">
           <h2 className="font-semibold text-white">
             {searchTerm ? `Results for "${searchTerm}"` : 'Search Results'}
           </h2>
@@ -72,11 +72,11 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
             Error searching YouTube. Please check your API key.
           </div>
         ) : results && results.length > 0 ? (
-          <div className="divide-y divide-gray-700 max-h-[600px] overflow-y-auto">
+          <div className="divide-y divide-surface-border max-h-[600px] overflow-y-auto">
             {results.map((result) => (
               <div
                 key={result.videoId}
-                className="flex items-center gap-3 p-3 hover:bg-gray-700/50 transition-colors"
+                className="flex items-center gap-3 p-3 hover:bg-surface-overlay/50 transition-colors"
               >
                 {/* Thumbnail */}
                 <img
@@ -90,10 +90,10 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
                   <h3 className="font-medium text-white truncate">
                     {result.title}
                   </h3>
-                  <p className="text-sm text-gray-400 truncate">
+                  <p className="text-sm text-slate-400 truncate">
                     {result.channelTitle}
                   </p>
-                  <p className="text-xs text-gray-500 line-clamp-1">
+                  <p className="text-xs text-slate-500 line-clamp-1">
                     {result.description}
                   </p>
                 </div>
@@ -104,7 +104,7 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
                     href={`https://www.youtube.com/watch?v=${result.videoId}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="p-2 text-gray-400 hover:text-white transition-colors"
+                    className="p-2 text-slate-400 hover:text-white transition-colors"
                     title="Open in YouTube"
                   >
                     <ExternalLink size={16} />
@@ -112,7 +112,7 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
                   <button
                     onClick={() => handleAddTrack(result.videoId)}
                     disabled={addTracks.isPending}
-                    className="p-2 text-gray-400 hover:text-green-400 transition-colors"
+                    className="p-2 text-slate-400 hover:text-green-400 transition-colors"
                     title="Add to tracks"
                   >
                     {addTracks.isPending ? (
@@ -126,11 +126,11 @@ export function YouTubeSearch({ onTrackAdded }: YouTubeSearchProps) {
             ))}
           </div>
         ) : searchTerm ? (
-          <div className="p-8 text-center text-gray-500">
+          <div className="p-8 text-center text-slate-500">
             No results found for "{searchTerm}"
           </div>
         ) : (
-          <div className="p-8 text-center text-gray-500">
+          <div className="p-8 text-center text-slate-500">
             Enter a search term to find YouTube videos
           </div>
         )}

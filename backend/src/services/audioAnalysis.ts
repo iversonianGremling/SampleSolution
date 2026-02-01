@@ -19,6 +19,11 @@ const VENV_PYTHON = path.join(__dirname, '../../venv/bin/python')
 const PYTHON_EXECUTABLE = process.env.PYTHON_PATH || VENV_PYTHON
 
 /**
+ * Analysis level type
+ */
+export type AnalysisLevel = 'quick' | 'standard' | 'advanced'
+
+/**
  * Audio features extracted from analysis
  */
 export interface AudioFeatures {
@@ -58,7 +63,26 @@ export interface AudioFeatures {
     confidence: number
   }>
 
+  // Phase 1: Advanced Timbral Features
+  dissonance?: number
+  inharmonicity?: number
+  tristimulus?: number[]
+  spectralComplexity?: number
+  spectralCrest?: number
+
+  // Phase 1: Perceptual Features (0-1 normalized)
+  brightness?: number
+  warmth?: number
+  hardness?: number
+  roughness?: number
+  sharpness?: number
+
+  // Phase 1: Advanced Spectral
+  melBandsMean?: number[]
+  melBandsStd?: number[]
+
   // Metadata
+  analysisLevel?: AnalysisLevel
   analysisDurationMs: number
 
   // Generated tags
@@ -78,11 +102,20 @@ export interface AnalysisError {
  * Spawns Python process and parses JSON output
  */
 export async function analyzeAudioFeatures(
-  audioPath: string
+  audioPath: string,
+  analysisLevel: AnalysisLevel = 'standard'
 ): Promise<AudioFeatures> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(PYTHON_EXECUTABLE, [PYTHON_SCRIPT, audioPath], {
-      timeout: 60000, // 60 second timeout
+    // Adjust timeout based on analysis level
+    const timeoutMs = analysisLevel === 'advanced' ? 90000 : analysisLevel === 'quick' ? 30000 : 60000
+
+    const args = [PYTHON_SCRIPT, audioPath]
+    if (analysisLevel !== 'standard') {
+      args.push('--level', analysisLevel)
+    }
+
+    const proc = spawn(PYTHON_EXECUTABLE, args, {
+      timeout: timeoutMs,
       stdio: ['ignore', 'pipe', 'pipe'], // Explicitly pipe stdout/stderr
     })
 
@@ -92,8 +125,8 @@ export async function analyzeAudioFeatures(
 
     const timeoutHandle = setTimeout(() => {
       proc.kill()
-      reject(new Error('Audio analysis timeout (>60s)'))
-    }, 60000)
+      reject(new Error(`Audio analysis timeout (>${timeoutMs / 1000}s)`))
+    }, timeoutMs)
 
     proc.stdout.on('data', (data) => {
       const chunk = data.toString()
@@ -207,6 +240,23 @@ export async function analyzeAudioFeatures(
           keyEstimate: result.key_estimate,
           keyStrength: result.key_strength,
           instrumentPredictions: result.instrument_predictions || [],
+          // Phase 1: Timbral features
+          dissonance: result.dissonance,
+          inharmonicity: result.inharmonicity,
+          tristimulus: result.tristimulus,
+          spectralComplexity: result.spectral_complexity,
+          spectralCrest: result.spectral_crest,
+          // Phase 1: Perceptual features
+          brightness: result.brightness,
+          warmth: result.warmth,
+          hardness: result.hardness,
+          roughness: result.roughness,
+          sharpness: result.sharpness,
+          // Phase 1: Advanced spectral
+          melBandsMean: result.mel_bands_mean,
+          melBandsStd: result.mel_bands_std,
+          // Metadata
+          analysisLevel: result.analysis_level,
           analysisDurationMs: result.analysis_duration_ms,
           suggestedTags: result.suggested_tags,
         }
@@ -259,7 +309,24 @@ export async function storeAudioFeatures(
     keyEstimate: features.keyEstimate ?? null,
     keyStrength: features.keyStrength ?? null,
     instrumentPredictions: JSON.stringify(features.instrumentPredictions),
-    analysisVersion: '1.0',
+    // Phase 1: Timbral features
+    dissonance: features.dissonance ?? null,
+    inharmonicity: features.inharmonicity ?? null,
+    tristimulus: features.tristimulus ? JSON.stringify(features.tristimulus) : null,
+    spectralComplexity: features.spectralComplexity ?? null,
+    spectralCrest: features.spectralCrest ?? null,
+    // Phase 1: Perceptual features
+    brightness: features.brightness ?? null,
+    warmth: features.warmth ?? null,
+    hardness: features.hardness ?? null,
+    roughness: features.roughness ?? null,
+    sharpness: features.sharpness ?? null,
+    // Phase 1: Advanced spectral
+    melBandsMean: features.melBandsMean ? JSON.stringify(features.melBandsMean) : null,
+    melBandsStd: features.melBandsStd ? JSON.stringify(features.melBandsStd) : null,
+    // Metadata
+    analysisLevel: features.analysisLevel ?? 'standard',
+    analysisVersion: '1.1', // Updated for Phase 1
     createdAt,
     analysisDurationMs: features.analysisDurationMs,
   }
@@ -317,6 +384,23 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     keyEstimate: row.keyEstimate ?? undefined,
     keyStrength: row.keyStrength ?? undefined,
     instrumentPredictions: JSON.parse(row.instrumentPredictions || '[]'),
+    // Phase 1: Timbral features
+    dissonance: row.dissonance ?? undefined,
+    inharmonicity: row.inharmonicity ?? undefined,
+    tristimulus: row.tristimulus ? JSON.parse(row.tristimulus) : undefined,
+    spectralComplexity: row.spectralComplexity ?? undefined,
+    spectralCrest: row.spectralCrest ?? undefined,
+    // Phase 1: Perceptual features
+    brightness: row.brightness ?? undefined,
+    warmth: row.warmth ?? undefined,
+    hardness: row.hardness ?? undefined,
+    roughness: row.roughness ?? undefined,
+    sharpness: row.sharpness ?? undefined,
+    // Phase 1: Advanced spectral
+    melBandsMean: row.melBandsMean ? JSON.parse(row.melBandsMean) : undefined,
+    melBandsStd: row.melBandsStd ? JSON.parse(row.melBandsStd) : undefined,
+    // Metadata
+    analysisLevel: row.analysisLevel as AnalysisLevel | undefined,
     analysisDurationMs: row.analysisDurationMs || 0,
   }
 }

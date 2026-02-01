@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
-import { GripVertical } from 'lucide-react'
+import { flushSync } from 'react-dom'
+import { ChevronRight, ChevronLeft } from 'lucide-react'
 
 interface WaveformMinimapProps {
   minimapRef: React.RefObject<HTMLDivElement>
@@ -11,7 +12,7 @@ interface WaveformMinimapProps {
 }
 
 const MIN_WIDTH = 0.1
-const ZOOM_SENSITIVITY = 0.004
+const ZOOM_SENSITIVITY = 0.01
 
 export function WaveformMinimap({
   minimapRef,
@@ -23,32 +24,31 @@ export function WaveformMinimap({
 }: WaveformMinimapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [showContent, setShowContent] = useState(false)
-  const rafRef = useRef<number | null>(null)
-  const pendingUpdateRef = useRef<{ start: number; end: number } | null>(null)
 
-  // Throttled update using requestAnimationFrame
-  const throttledSetViewport = (start: number, end: number) => {
-    pendingUpdateRef.current = { start, end }
+  // Optimistic local state for instant visual feedback during dragging
+  const [localStart, setLocalStart] = useState(viewportStart)
+  const [localEnd, setLocalEnd] = useState(viewportEnd)
+  const isDraggingRef = useRef(false)
 
-    if (rafRef.current === null) {
-      rafRef.current = requestAnimationFrame(() => {
-        rafRef.current = null
-        if (pendingUpdateRef.current) {
-          onSetViewport?.(pendingUpdateRef.current.start, pendingUpdateRef.current.end)
-          pendingUpdateRef.current = null
-        }
-      })
-    }
-  }
-
-  // Cleanup RAF on unmount
+  // Sync local state with props when not dragging
   useEffect(() => {
-    return () => {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current)
-      }
+    if (!isDraggingRef.current) {
+      setLocalStart(viewportStart)
+      setLocalEnd(viewportEnd)
     }
-  }, [])
+  }, [viewportStart, viewportEnd])
+
+  // Direct viewport update - no throttling for maximum responsiveness
+  const updateViewport = (start: number, end: number) => {
+    // Force synchronous state update for instant visual feedback
+    flushSync(() => {
+      setLocalStart(start)
+      setLocalEnd(end)
+    })
+
+    // Update parent immediately
+    onSetViewport?.(start, end)
+  }
 
   useEffect(() => {
     if (isReady) {
@@ -59,8 +59,9 @@ export function WaveformMinimap({
 
   // Prevent division by zero
   const safeDuration = duration || 1
-  const leftPercent = (viewportStart / safeDuration) * 100
-  const widthPercent = ((viewportEnd - viewportStart) / safeDuration) * 100
+  // Use local state for visual rendering (instant feedback during drag)
+  const leftPercent = (localStart / safeDuration) * 100
+  const widthPercent = ((localEnd - localStart) / safeDuration) * 100
 
   const clamp = (value: number, min: number, max: number) =>
     Math.max(min, Math.min(max, value))
@@ -69,6 +70,8 @@ export function WaveformMinimap({
   const handleResizeMouseDown = (e: React.MouseEvent, isLeft: boolean) => {
     e.preventDefault()
     e.stopPropagation()
+
+    isDraggingRef.current = true
 
     const startX = e.clientX
     const initStart = viewportStart
@@ -80,14 +83,15 @@ export function WaveformMinimap({
 
       if (isLeft) {
         const newStart = clamp(initStart + dx, 0, initEnd - MIN_WIDTH)
-        throttledSetViewport(newStart, initEnd)
+        updateViewport(newStart, initEnd)
       } else {
         const newEnd = clamp(initEnd + dx, initStart + MIN_WIDTH, duration)
-        throttledSetViewport(initStart, newEnd)
+        updateViewport(initStart, newEnd)
       }
     }
 
     const onMouseUp = () => {
+      isDraggingRef.current = false
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
     }
@@ -107,6 +111,8 @@ export function WaveformMinimap({
 
     if (!duration) return
 
+    isDraggingRef.current = true
+
     const startX = e.clientX
     const startY = e.clientY
     const initStart = viewportStart
@@ -122,7 +128,12 @@ export function WaveformMinimap({
       const containerWidth = containerRef.current.offsetWidth
 
       // ZOOM: vertical movement changes width (down = zoom out, up = zoom in)
-      const widthMultiplier = 1 + dyPixels * ZOOM_SENSITIVITY
+      // Make zoom exponential: smaller selections = more precise, larger = faster
+      // Use current viewport width for adaptive sensitivity
+      const currentWidth = viewportEnd - viewportStart
+      const widthFactor = currentWidth / duration // 0 to 1 range
+      const adjustedSensitivity = ZOOM_SENSITIVITY * (0.5 + widthFactor * 0.5) // 0.5x to 1x sensitivity
+      const widthMultiplier = 1 + dyPixels * adjustedSensitivity
       let newWidth = initWidth * widthMultiplier
       newWidth = Math.max(newWidth, MIN_WIDTH)
 
@@ -148,10 +159,11 @@ export function WaveformMinimap({
         nStart = duration - newWidth
       }
 
-      throttledSetViewport(nStart, nEnd)
+      updateViewport(nStart, nEnd)
     }
 
     const onMouseUp = () => {
+      isDraggingRef.current = false
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
     }
@@ -168,6 +180,8 @@ export function WaveformMinimap({
 
     e.preventDefault()
 
+    isDraggingRef.current = true
+
     const rect = containerRef.current.getBoundingClientRect()
     const currentWidth = viewportEnd - viewportStart
 
@@ -180,14 +194,15 @@ export function WaveformMinimap({
     }
 
     const nStart = getClampedStart(e.clientX)
-    throttledSetViewport(nStart, nStart + currentWidth)
+    updateViewport(nStart, nStart + currentWidth)
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const mStart = getClampedStart(moveEvent.clientX)
-      throttledSetViewport(mStart, mStart + currentWidth)
+      updateViewport(mStart, mStart + currentWidth)
     }
 
     const onMouseUp = () => {
+      isDraggingRef.current = false
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
     }
@@ -239,18 +254,18 @@ export function WaveformMinimap({
           >
             {/* Left resize handle */}
             <div
-              className="resize-handle absolute left-0 top-0 h-full w-3 cursor-ew-resize flex items-center justify-center bg-indigo-500/40 hover:bg-indigo-500/70 transition-colors"
+              className="resize-handle absolute left-0 top-0 h-full w-3 cursor-ew-resize flex items-center justify-center"
               onMouseDown={(e) => handleResizeMouseDown(e, true)}
             >
-              <GripVertical size={12} className="text-white/70" />
+              <ChevronRight size={16} className="text-white/70" />
             </div>
 
             {/* Right resize handle */}
             <div
-              className="resize-handle absolute right-0 top-0 h-full w-3 cursor-ew-resize flex items-center justify-center bg-indigo-500/40 hover:bg-indigo-500/70 transition-colors"
+              className="resize-handle absolute right-0 top-0 h-full w-3 cursor-ew-resize flex items-center justify-center"
               onMouseDown={(e) => handleResizeMouseDown(e, false)}
             >
-              <GripVertical size={12} className="text-white/70" />
+              <ChevronLeft size={16} className="text-white/70" />
             </div>
           </div>
         </div>

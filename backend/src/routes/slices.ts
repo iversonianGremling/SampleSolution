@@ -20,13 +20,23 @@ const DATA_DIR = process.env.DATA_DIR || './data'
 //   tags: comma-separated tag IDs (optional)
 //   search: search term (optional)
 //   favorites: 'true' to show only favorites (optional)
+//   sortBy: 'bpm' | 'key' | 'name' | 'duration' | 'createdAt' (optional)
+//   sortOrder: 'asc' | 'desc' (optional, default: 'asc')
+//   minBpm: minimum BPM (optional)
+//   maxBpm: maximum BPM (optional)
+//   keys: comma-separated key names (optional, e.g., 'C major,D minor')
 router.get('/sources/samples', async (req, res) => {
   try {
-    const { scope = 'all', tags, search, favorites } = req.query as {
+    const { scope = 'all', tags, search, favorites, sortBy, sortOrder = 'asc', minBpm, maxBpm, keys } = req.query as {
       scope?: string
       tags?: string
       search?: string
       favorites?: string
+      sortBy?: string
+      sortOrder?: string
+      minBpm?: string
+      maxBpm?: string
+      keys?: string
     }
 
     // Build base query conditions
@@ -94,16 +104,20 @@ router.get('/sources/samples', async (req, res) => {
         trackSource: schema.tracks.source,
         trackFolderPath: schema.tracks.folderPath,
         trackOriginalPath: schema.tracks.originalPath,
+        // Audio features
+        bpm: schema.audioFeatures.bpm,
+        keyEstimate: schema.audioFeatures.keyEstimate,
       })
       .from(schema.slices)
       .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .leftJoin(schema.audioFeatures, eq(schema.slices.id, schema.audioFeatures.sliceId))
 
     // Apply conditions
     if (conditions.length > 0) {
       slicesQuery = slicesQuery.where(and(...conditions)) as typeof slicesQuery
     }
 
-    let slices = await slicesQuery.orderBy(schema.slices.createdAt)
+    let slices = await slicesQuery
 
     // Handle collection scope (post-filter since it requires join)
     if (scope.startsWith('collection:')) {
@@ -149,6 +163,66 @@ router.get('/sources/samples', async (req, res) => {
       }
     }
 
+    // BPM filter
+    if (minBpm || maxBpm) {
+      const minBpmNum = minBpm ? parseFloat(minBpm) : 0
+      const maxBpmNum = maxBpm ? parseFloat(maxBpm) : Infinity
+      filteredSlices = filteredSlices.filter(slice => {
+        if (slice.bpm === null || slice.bpm === undefined) return false
+        return slice.bpm >= minBpmNum && slice.bpm <= maxBpmNum
+      })
+    }
+
+    // Key filter
+    if (keys && keys.trim()) {
+      const keyList = keys.split(',').map(k => k.trim().toLowerCase())
+      filteredSlices = filteredSlices.filter(slice => {
+        if (!slice.keyEstimate) return false
+        return keyList.includes(slice.keyEstimate.toLowerCase())
+      })
+    }
+
+    // Sorting
+    if (sortBy) {
+      filteredSlices.sort((a, b) => {
+        let aVal: any
+        let bVal: any
+
+        switch (sortBy) {
+          case 'bpm':
+            aVal = a.bpm ?? -1
+            bVal = b.bpm ?? -1
+            break
+          case 'key':
+            aVal = a.keyEstimate ?? ''
+            bVal = b.keyEstimate ?? ''
+            break
+          case 'name':
+            aVal = a.name.toLowerCase()
+            bVal = b.name.toLowerCase()
+            break
+          case 'duration':
+            aVal = a.endTime - a.startTime
+            bVal = b.endTime - b.startTime
+            break
+          case 'createdAt':
+          default:
+            aVal = a.createdAt
+            bVal = b.createdAt
+            break
+        }
+
+        // Handle null/undefined values - always sort them last
+        if (aVal === null || aVal === undefined || aVal === -1) return 1
+        if (bVal === null || bVal === undefined || bVal === -1) return -1
+
+        // Compare values
+        if (aVal < bVal) return sortOrder === 'asc' ? -1 : 1
+        if (aVal > bVal) return sortOrder === 'asc' ? 1 : -1
+        return 0
+      })
+    }
+
     // Get collection memberships for filtered slices
     const filteredSliceIds = filteredSlices.map(s => s.id)
     const collectionLinks = filteredSliceIds.length > 0
@@ -177,6 +251,8 @@ router.get('/sources/samples', async (req, res) => {
       createdAt: slice.createdAt,
       tags: tagsBySlice.get(slice.id) || [],
       collectionIds: collectionsBySlice.get(slice.id) || [],
+      bpm: slice.bpm,
+      keyEstimate: slice.keyEstimate,
       track: {
         title: slice.trackTitle,
         youtubeId: slice.trackYoutubeId,
@@ -197,12 +273,13 @@ router.get('/sources/samples', async (req, res) => {
 })
 
 // Helper function to auto-tag a slice using audio analysis
-async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
+async function autoTagSlice(sliceId: number, audioPath: string, analysisLevel?: 'quick' | 'standard' | 'advanced'): Promise<void> {
   try {
-    console.log(`Running audio analysis on slice ${sliceId}...`)
+    const level = analysisLevel || 'standard'
+    console.log(`Running audio analysis on slice ${sliceId} (level: ${level})...`)
 
     // Analyze audio with Python (Essentia + Librosa)
-    const features = await analyzeAudioFeatures(audioPath)
+    const features = await analyzeAudioFeatures(audioPath, level)
 
     console.log(`Analysis complete for slice ${sliceId}:`, {
       isOneShot: features.isOneShot,
@@ -396,10 +473,11 @@ router.get('/tracks/:trackId/slices', async (req, res) => {
 // Create slice
 router.post('/tracks/:trackId/slices', async (req, res) => {
   const trackId = parseInt(req.params.trackId)
-  const { name, startTime, endTime } = req.body as {
+  const { name, startTime, endTime, analysisLevel } = req.body as {
     name: string
     startTime: number
     endTime: number
+    analysisLevel?: 'quick' | 'standard' | 'advanced'
   }
 
   if (!name || startTime === undefined || endTime === undefined) {
@@ -458,7 +536,7 @@ router.post('/tracks/:trackId/slices', async (req, res) => {
       inserted.filePath = slicePath
 
       // Auto-tag the slice with YAMNet (run in background)
-      autoTagSlice(inserted.id, slicePath).catch(err => {
+      autoTagSlice(inserted.id, slicePath, analysisLevel).catch(err => {
         console.error('Background auto-tagging failed:', err)
       })
     } catch (err) {
@@ -764,6 +842,151 @@ router.post('/slices/batch-delete', async (req, res) => {
   } catch (error) {
     console.error('Error batch deleting slices:', error)
     res.status(500).json({ error: 'Failed to batch delete slices' })
+  }
+})
+
+// POST /api/slices/batch-reanalyze - Re-analyze all or selected slices
+router.post('/slices/batch-reanalyze', async (req, res) => {
+  try {
+    const { sliceIds, analysisLevel } = req.body as {
+      sliceIds?: number[]
+      analysisLevel?: 'quick' | 'standard' | 'advanced'
+    }
+
+    // Get slices to re-analyze
+    const slicesToAnalyze = sliceIds && sliceIds.length > 0
+      ? await db
+          .select()
+          .from(schema.slices)
+          .where(inArray(schema.slices.id, sliceIds))
+      : await db.select().from(schema.slices).all()
+
+    if (slicesToAnalyze.length === 0) {
+      return res.json({
+        total: 0,
+        analyzed: 0,
+        failed: 0,
+        results: [],
+      })
+    }
+
+    // Start background re-analysis
+    // We'll process in chunks to avoid overwhelming the system
+    const CHUNK_SIZE = 5
+    const results: Array<{ sliceId: number; success: boolean; error?: string }> = []
+
+    // Process in chunks
+    for (let i = 0; i < slicesToAnalyze.length; i += CHUNK_SIZE) {
+      const chunk = slicesToAnalyze.slice(i, i + CHUNK_SIZE)
+
+      await Promise.all(
+        chunk.map(async (slice) => {
+          try {
+            if (!slice.filePath) {
+              results.push({
+                sliceId: slice.id,
+                success: false,
+                error: 'No file path',
+              })
+              return
+            }
+
+            // Check if file exists
+            const filePath = path.isAbsolute(slice.filePath)
+              ? slice.filePath
+              : path.join(DATA_DIR, slice.filePath)
+
+            try {
+              await fs.access(filePath)
+            } catch {
+              results.push({
+                sliceId: slice.id,
+                success: false,
+                error: 'File not found',
+              })
+              return
+            }
+
+            // Re-analyze the audio
+            const features = await analyzeAudioFeatures(filePath, analysisLevel)
+
+            // Store updated features
+            await storeAudioFeatures(slice.id, features)
+
+            // Update tags if suggestedTags exist
+            if (features.suggestedTags && features.suggestedTags.length > 0) {
+              // Get or create tags
+              const tagPromises = features.suggestedTags.map(async (tagName: string) => {
+                const existingTag = await db
+                  .select()
+                  .from(schema.tags)
+                  .where(eq(schema.tags.name, tagName))
+                  .get()
+
+                if (existingTag) {
+                  return existingTag
+                }
+
+                // Create new tag
+                const metadata = getTagMetadata(tagName)
+                const result = await db
+                  .insert(schema.tags)
+                  .values({
+                    name: tagName,
+                    color: metadata.color,
+                    category: metadata.category,
+                  })
+                  .returning()
+
+                return result[0]
+              })
+
+              const tags = await Promise.all(tagPromises)
+
+              // Clear existing auto-generated tags (keep user tags)
+              // For simplicity, we'll just add new tags without removing old ones
+              // Link tags to slice
+              for (const tag of tags) {
+                await db
+                  .insert(schema.sliceTags)
+                  .values({
+                    sliceId: slice.id,
+                    tagId: tag.id,
+                  })
+                  .onConflictDoNothing()
+              }
+            }
+
+            results.push({ sliceId: slice.id, success: true })
+          } catch (error) {
+            console.error(`Error re-analyzing slice ${slice.id}:`, error)
+            results.push({
+              sliceId: slice.id,
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            })
+          }
+        })
+      )
+
+      // Small delay between chunks to avoid overwhelming the system
+      if (i + CHUNK_SIZE < slicesToAnalyze.length) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    }
+
+    const analyzed = results.filter((r) => r.success).length
+    const failed = results.filter((r) => !r.success).length
+
+    res.json({
+      total: slicesToAnalyze.length,
+      analyzed,
+      failed,
+      results,
+    })
+  } catch (error) {
+    console.error('Error batch re-analyzing slices:', error)
+    res.status(500).json({ error: 'Failed to batch re-analyze slices' })
   }
 })
 

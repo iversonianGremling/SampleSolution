@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react'
 import {
   Play,
   Pause,
-  Plus,
   Volume2,
+  Repeat,
 } from 'lucide-react'
 import { useWavesurfer } from '../hooks/useWavesurfer'
 import { useSlices, useCreateSlice, useDeleteSlice } from '../hooks/useTracks'
@@ -26,6 +26,8 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
   const [pendingRegion, setPendingRegion] = useState<PendingRegion | null>(null)
   const [sliceName, setSliceName] = useState('')
   const [showContent, setShowContent] = useState(false)
+  const [playingSliceId, setPlayingSliceId] = useState<number | null>(null)
+  const [isLoopEnabled, setIsLoopEnabled] = useState(false)
 
   const { data: slices } = useSlices(track.id)
   const createSlice = useCreateSlice(track.id)
@@ -40,6 +42,9 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
     duration,
     playPause,
     playRegion,
+    playRegionLoop,
+    updatePlayingRegionBounds,
+    pause,
     clearRegions,
     removeRegion,
     viewportStart,
@@ -67,9 +72,35 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
           start: region.start,
           end: region.end,
         })
+        // Update the playing region bounds if currently playing
+        updatePlayingRegionBounds(region.start, region.end, isLoopEnabled)
       }
     },
   })
+
+  // Handle play/pause toggle for a specific slice
+  const handleTogglePlaySlice = (slice: any) => {
+    if (playingSliceId === slice.id && isPlaying) {
+      pause()
+      setPlayingSliceId(null)
+    } else {
+      playRegion(slice.startTime, slice.endTime)
+      setPlayingSliceId(slice.id)
+    }
+  }
+
+  // Handle one-shot play
+  const handleOneShotPlay = (slice: any) => {
+    playRegion(slice.startTime, slice.endTime)
+    setPlayingSliceId(null) // Don't track one-shot plays
+  }
+
+  // Reset playing slice when playback stops
+  useEffect(() => {
+    if (!isPlaying) {
+      setPlayingSliceId(null)
+    }
+  }, [isPlaying])
 
   // Fade in the waveform after a delay once ready
   useEffect(() => {
@@ -102,6 +133,7 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
       })
       setPendingRegion(null)
       setSliceName('')
+      setIsLoopEnabled(false)
     }
   }
 
@@ -112,6 +144,7 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
     }
     setPendingRegion(null)
     setSliceName('')
+    setIsLoopEnabled(false)
   }
 
   const handleWaveformDoubleClick = () => {
@@ -120,6 +153,7 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
       removeRegion(pendingRegion.id)
       setPendingRegion(null)
       setSliceName('')
+      setIsLoopEnabled(false)
     }
   }
 
@@ -148,7 +182,7 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
         <div className="relative">
           <div
             ref={containerRef}
-            className={`bg-surface-base rounded-lg overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] transition-opacity duration-300 ${
+            className={`bg-surface-base rounded-lg overflow-x-auto overflow-y-hidden transition-opacity duration-300 ${
               showContent ? 'opacity-100' : 'opacity-0'
             }`}
             onDoubleClick={handleWaveformDoubleClick}
@@ -188,10 +222,6 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
       {pendingRegion && (
         <div className="px-4 pb-4 bg-surface-raised border-surface-border flex-shrink-0">
           <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Plus className="text-amber-400" size={18} />
-              <span className="font-medium text-amber-400">New Slice</span>
-            </div>
             <div className="flex items-center gap-3">
               <input
                 type="text"
@@ -204,11 +234,35 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
                 {formatTime(pendingRegion.start)} - {formatTime(pendingRegion.end)}
               </span>
               <button
-                onClick={() => playRegion(pendingRegion.start, pendingRegion.end)}
+                onClick={() => {
+                  if (isPlaying) {
+                    pause()
+                  } else {
+                    playRegionLoop(pendingRegion.start, pendingRegion.end, isLoopEnabled)
+                  }
+                }}
                 className="p-2 text-slate-400 hover:text-white hover:bg-surface-base rounded-lg transition-colors"
-                title="Preview"
+                title={isPlaying ? 'Stop' : 'Preview'}
               >
                 <Volume2 size={18} />
+              </button>
+              <button
+                onClick={() => {
+                  const newLoopState = !isLoopEnabled
+                  setIsLoopEnabled(newLoopState)
+                  // If disabling loop while playing, stop playback
+                  if (!newLoopState && isPlaying) {
+                    pause()
+                  }
+                }}
+                className={`p-2 rounded-lg transition-colors ${
+                  isLoopEnabled
+                    ? 'text-accent-primary bg-accent-primary/20 hover:bg-accent-primary/30'
+                    : 'text-slate-400 hover:text-white hover:bg-surface-base'
+                }`}
+                title={isLoopEnabled ? 'Loop enabled' : 'Loop disabled'}
+              >
+                <Repeat size={18} />
               </button>
               <button
                 onClick={handleSaveSlice}
@@ -233,7 +287,9 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
         <SliceList
           slices={slices || []}
           trackId={track.id}
-          onPlay={(slice) => playRegion(slice.startTime, slice.endTime)}
+          playingSliceId={playingSliceId}
+          onTogglePlay={handleTogglePlaySlice}
+          onOneShotPlay={handleOneShotPlay}
           onDelete={(slice) => deleteSlice.mutate(slice.id)}
           formatTime={formatTime}
         />

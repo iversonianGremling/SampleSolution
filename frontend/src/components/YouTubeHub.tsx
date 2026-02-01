@@ -22,41 +22,41 @@ export function YouTubeHub({ onTracksAdded }: YouTubeHubProps) {
       </div>
 
       {/* Divider */}
-      <div className="border-t border-gray-700" />
+      <div className="border-t border-surface-border" />
 
       {/* Search & Playlists Section - Bottom */}
       <div className="flex-1 flex flex-col min-h-0">
         {!authStatus?.authenticated ? (
           /* Not Authenticated - Show Sign In Prompt */
-          <div className="bg-gray-800 rounded-lg p-8 text-center">
+          <div className="bg-surface-raised rounded-lg p-8 text-center">
             <h2 className="text-xl font-semibold text-white mb-4">
               Sign in to Access YouTube Features
             </h2>
-            <p className="text-gray-400 mb-6 max-w-2xl mx-auto">
+            <p className="text-slate-400 mb-6 max-w-2xl mx-auto">
               Sign in with Google to search YouTube and access your playlists, including private ones.
             </p>
 
             <a
               href={getGoogleAuthUrl()}
-              className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors mb-8"
+              className="inline-flex items-center gap-2 px-6 py-3 bg-accent-primary hover:bg-blue-600 text-white rounded-lg transition-colors mb-8"
             >
               <LogIn size={18} />
               Sign in with Google
             </a>
 
             {/* Instructions for Getting YouTube API Tokens */}
-            <div className="bg-gray-900 rounded-lg p-6 text-left max-w-3xl mx-auto">
+            <div className="bg-surface-base rounded-lg p-6 text-left max-w-3xl mx-auto border border-surface-border">
               <h3 className="text-lg font-semibold text-white mb-3">
                 How to Set Up YouTube API Access
               </h3>
-              <ol className="text-sm text-gray-300 space-y-3 list-decimal list-inside">
+              <ol className="text-sm text-slate-300 space-y-3 list-decimal list-inside">
                 <li>
                   Go to the{' '}
                   <a
                     href="https://console.cloud.google.com/"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-400 hover:text-blue-300 inline-flex items-center gap-1"
+                    className="text-accent-primary hover:text-blue-400 inline-flex items-center gap-1"
                   >
                     Google Cloud Console
                     <ExternalLink size={12} />
@@ -69,7 +69,7 @@ export function YouTubeHub({ onTracksAdded }: YouTubeHubProps) {
                     href="https://console.cloud.google.com/apis/library/youtube.googleapis.com"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-400 hover:text-blue-300 inline-flex items-center gap-1"
+                    className="text-accent-primary hover:text-blue-400 inline-flex items-center gap-1"
                   >
                     YouTube Data API v3
                     <ExternalLink size={12} />
@@ -81,7 +81,7 @@ export function YouTubeHub({ onTracksAdded }: YouTubeHubProps) {
                     href="https://console.cloud.google.com/apis/credentials"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-400 hover:text-blue-300 inline-flex items-center gap-1"
+                    className="text-accent-primary hover:text-blue-400 inline-flex items-center gap-1"
                   >
                     Credentials
                     <ExternalLink size={12} />
@@ -93,14 +93,14 @@ export function YouTubeHub({ onTracksAdded }: YouTubeHubProps) {
                       OAuth 2.0 Client ID (for accessing your playlists)
                       <ul className="ml-6 mt-1 space-y-1 list-circle">
                         <li>Application type: Web application</li>
-                        <li>Authorized redirect URI: <code className="text-xs bg-gray-800 px-1 py-0.5 rounded">http://localhost:4000/api/auth/google/callback</code></li>
+                        <li>Authorized redirect URI: <code className="text-xs bg-surface-raised px-1 py-0.5 rounded border border-surface-border">http://localhost:4000/api/auth/google/callback</code></li>
                       </ul>
                     </li>
                   </ul>
                 </li>
                 <li>
-                  Add the credentials to your <code className="text-xs bg-gray-800 px-1 py-0.5 rounded">.env</code> file:
-                  <pre className="mt-2 bg-gray-800 p-3 rounded text-xs overflow-x-auto">
+                  Add the credentials to your <code className="text-xs bg-surface-raised px-1 py-0.5 rounded border border-surface-border">.env</code> file:
+                  <pre className="mt-2 bg-surface-raised p-3 rounded text-xs overflow-x-auto border border-surface-border">
 {`YOUTUBE_API_KEY=your_api_key_here
 GOOGLE_CLIENT_ID=your_client_id_here
 GOOGLE_CLIENT_SECRET=your_client_secret_here
@@ -120,8 +120,8 @@ SESSION_SECRET=your_random_session_secret_here`}
                 onClick={() => setActiveSubTab('search')}
                 className={`px-4 py-2 rounded-lg transition-colors ${
                   activeSubTab === 'search'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                    ? 'bg-accent-primary text-white'
+                    : 'bg-surface-raised text-slate-400 hover:bg-surface-overlay border border-surface-border'
                 }`}
               >
                 Search
@@ -130,8 +130,8 @@ SESSION_SECRET=your_random_session_secret_here`}
                 onClick={() => setActiveSubTab('playlists')}
                 className={`px-4 py-2 rounded-lg transition-colors ${
                   activeSubTab === 'playlists'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                    ? 'bg-accent-primary text-white'
+                    : 'bg-surface-raised text-slate-400 hover:bg-surface-overlay border border-surface-border'
                 }`}
               >
                 Playlists

@@ -37,11 +37,13 @@ const formatTime = (seconds: number) => {
 }
 
 describe('SliceList', () => {
-  const mockOnPlay = vi.fn()
+  const mockOnTogglePlay = vi.fn()
+  const mockOnOneShotPlay = vi.fn()
   const mockOnDelete = vi.fn()
 
   beforeEach(() => {
-    mockOnPlay.mockClear()
+    mockOnTogglePlay.mockClear()
+    mockOnOneShotPlay.mockClear()
     mockOnDelete.mockClear()
   })
 
@@ -50,7 +52,9 @@ describe('SliceList', () => {
       <SliceList
         slices={[]}
         trackId={1}
-        onPlay={mockOnPlay}
+        playingSliceId={null}
+        onTogglePlay={mockOnTogglePlay}
+        onOneShotPlay={mockOnOneShotPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
       />
@@ -66,7 +70,9 @@ describe('SliceList', () => {
       <SliceList
         slices={mockSlices}
         trackId={1}
-        onPlay={mockOnPlay}
+        playingSliceId={null}
+        onTogglePlay={mockOnTogglePlay}
+        onOneShotPlay={mockOnOneShotPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
       />
@@ -81,7 +87,9 @@ describe('SliceList', () => {
       <SliceList
         slices={mockSlices}
         trackId={1}
-        onPlay={mockOnPlay}
+        playingSliceId={null}
+        onTogglePlay={mockOnTogglePlay}
+        onOneShotPlay={mockOnOneShotPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
       />
@@ -95,7 +103,9 @@ describe('SliceList', () => {
       <SliceList
         slices={mockSlices}
         trackId={1}
-        onPlay={mockOnPlay}
+        playingSliceId={null}
+        onTogglePlay={mockOnTogglePlay}
+        onOneShotPlay={mockOnOneShotPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
       />
@@ -112,7 +122,9 @@ describe('SliceList', () => {
       <SliceList
         slices={mockSlices}
         trackId={1}
-        onPlay={mockOnPlay}
+        playingSliceId={null}
+        onTogglePlay={mockOnTogglePlay}
+        onOneShotPlay={mockOnOneShotPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
       />
@@ -127,7 +139,9 @@ describe('SliceList', () => {
       <SliceList
         slices={mockSlices}
         trackId={1}
-        onPlay={mockOnPlay}
+        playingSliceId={null}
+        onTogglePlay={mockOnTogglePlay}
+        onOneShotPlay={mockOnOneShotPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
       />
@@ -136,7 +150,7 @@ describe('SliceList', () => {
     const playButtons = screen.getAllByTitle('Play slice')
     await user.click(playButtons[0])
 
-    expect(mockOnPlay).toHaveBeenCalledWith(mockSlices[0])
+    expect(mockOnTogglePlay).toHaveBeenCalledWith(mockSlices[0])
   })
 
   it('calls onDelete when delete button clicked', async () => {
@@ -145,7 +159,9 @@ describe('SliceList', () => {
       <SliceList
         slices={mockSlices}
         trackId={1}
-        onPlay={mockOnPlay}
+        playingSliceId={null}
+        onTogglePlay={mockOnTogglePlay}
+        onOneShotPlay={mockOnOneShotPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
       />
@@ -162,7 +178,9 @@ describe('SliceList', () => {
       <SliceList
         slices={mockSlices}
         trackId={1}
-        onPlay={mockOnPlay}
+        playingSliceId={null}
+        onTogglePlay={mockOnTogglePlay}
+        onOneShotPlay={mockOnOneShotPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
       />
@@ -178,7 +196,9 @@ describe('SliceList', () => {
       <SliceList
         slices={mockSlices}
         trackId={1}
-        onPlay={mockOnPlay}
+        playingSliceId={null}
+        onTogglePlay={mockOnTogglePlay}
+        onOneShotPlay={mockOnOneShotPlay}
         onDelete={mockOnDelete}
         formatTime={formatTime}
       />

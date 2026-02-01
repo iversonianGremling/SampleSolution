@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Search, Heart, LayoutGrid, List, Sparkles, Play, Repeat1, MousePointerClick, ChevronDown, Repeat } from 'lucide-react'
+import { Search, Heart, LayoutGrid, List, Sparkles, Play, Repeat1, MousePointerClick, ChevronDown, Repeat, Settings } from 'lucide-react'
 import { SourcesTree } from './SourcesTree'
 import { SourcesTagFilter } from './SourcesTagFilter'
 import { SourcesSampleGrid } from './SourcesSampleGrid'
@@ -10,6 +10,8 @@ import { SourcesBatchActions } from './SourcesBatchActions'
 import { SourcesDetailModal } from './SourcesDetailModal'
 import { EditingModal } from './EditingModal'
 import { SampleSpaceView } from './SampleSpaceView'
+import { SourcesSettings } from './SourcesSettings'
+import { SourcesAudioFilter, AudioFilterState } from './SourcesAudioFilter'
 import { useSourceTree } from '../hooks/useSourceTree'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import {
@@ -40,7 +42,7 @@ export function SourcesView() {
   const [searchQuery, setSearchQuery] = useState('')
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
   const [selectedSampleId, setSelectedSampleId] = useState<number | null>(null)
-  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'space'>('grid')
+  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'space' | 'settings'>('grid')
   const [selectedSampleIds, setSelectedSampleIds] = useState<Set<number>>(new Set())
   const [editingTrackId, setEditingTrackId] = useState<number | null>(null)
 
@@ -51,13 +53,29 @@ export function SourcesView() {
   const [playMode, setPlayMode] = useState<PlayMode>('normal')
   const [loopEnabled, setLoopEnabled] = useState(false)
 
+  // Audio feature filters
+  const [audioFilter, setAudioFilter] = useState<AudioFilterState>({
+    sortBy: null,
+    sortOrder: 'asc',
+    minBpm: 0,
+    maxBpm: 300,
+    selectedKeys: []
+  })
+
   // Data queries
   const { data: sourceTree, isLoading: isTreeLoading } = useSourceTree()
   const { data: samplesData, isLoading: isSamplesLoading } = useScopedSamples(
     currentScope,
     selectedTags,
     searchQuery,
-    showFavoritesOnly
+    showFavoritesOnly,
+    {
+      sortBy: audioFilter.sortBy || undefined,
+      sortOrder: audioFilter.sortOrder,
+      minBpm: audioFilter.minBpm > 0 ? audioFilter.minBpm : undefined,
+      maxBpm: audioFilter.maxBpm < 300 ? audioFilter.maxBpm : undefined,
+      keys: audioFilter.selectedKeys.length > 0 ? audioFilter.selectedKeys : undefined
+    }
   )
   const { data: allTags = [] } = useTags()
   const { data: collections = [] } = useCollections()
@@ -92,6 +110,15 @@ export function SourcesView() {
     if (!selectedSampleId) return null
     return samples.find(s => s.id === selectedSampleId) || null
   }, [selectedSampleId, samples])
+
+  // Calculate navigation state for the detail modal
+  const selectedSampleIndex = useMemo(() => {
+    if (!selectedSampleId) return -1
+    return samples.findIndex(s => s.id === selectedSampleId)
+  }, [selectedSampleId, samples])
+
+  const hasNextSample = selectedSampleIndex >= 0 && selectedSampleIndex < samples.length - 1
+  const hasPreviousSample = selectedSampleIndex > 0
 
   // Create filter state for SampleSpaceView
   const spaceViewFilterState = useMemo(() => ({
@@ -175,7 +202,7 @@ export function SourcesView() {
     })
   }
 
-  const handleViewModeChange = (mode: 'grid' | 'list' | 'space') => {
+  const handleViewModeChange = (mode: 'grid' | 'list' | 'space' | 'settings') => {
     setViewMode(mode)
   }
 
@@ -245,6 +272,24 @@ export function SourcesView() {
       if (prev === 'one-shot') return 'reproduce-while-clicking'
       return 'normal'
     })
+  }
+
+  const handleNextSample = () => {
+    if (hasNextSample) {
+      const nextSample = samples[selectedSampleIndex + 1]
+      if (nextSample) {
+        setSelectedSampleId(nextSample.id)
+      }
+    }
+  }
+
+  const handlePreviousSample = () => {
+    if (hasPreviousSample) {
+      const previousSample = samples[selectedSampleIndex - 1]
+      if (previousSample) {
+        setSelectedSampleId(previousSample.id)
+      }
+    }
   }
 
   const getPlayModeIcon = () => {
@@ -351,6 +396,17 @@ export function SourcesView() {
               >
                 <Sparkles size={16} />
               </button>
+              <button
+                onClick={() => handleViewModeChange('settings')}
+                className={`p-1.5 rounded transition-colors ${
+                  viewMode === 'settings'
+                    ? 'bg-accent-primary text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title="Settings"
+              >
+                <Settings size={16} />
+              </button>
             </div>
 
             {/* Favorites toggle */}
@@ -390,7 +446,17 @@ export function SourcesView() {
             </button>
 
             {showAdvanced && (
-              <div className="mt-3 p-2.5 bg-surface-base border border-surface-border rounded-lg">
+              <div className="mt-3 p-3 bg-surface-base border border-surface-border rounded-lg space-y-3">
+                {/* Audio feature filters */}
+                <SourcesAudioFilter
+                  filterState={audioFilter}
+                  onChange={setAudioFilter}
+                  availableKeys={[...new Set(samples.map(s => s.keyEstimate).filter(Boolean) as string[])]}
+                />
+
+                {/* Separator */}
+                <div className="h-px bg-surface-border" />
+
                 <div className="flex items-center gap-4">
                   {/* Duration controls */}
                   <div className="flex items-center gap-3 flex-1 max-w-md">
@@ -554,9 +620,14 @@ export function SourcesView() {
           />
         )}
 
-        {/* Sample grid/list */}
+        {/* Sample grid/list/settings */}
         <div className="flex-1 overflow-hidden">
-          {currentScope.type === 'youtube' ? (
+          {viewMode === 'settings' ? (
+            // Settings view
+            <div className="overflow-y-auto h-full">
+              <SourcesSettings />
+            </div>
+          ) : currentScope.type === 'youtube' ? (
             // YouTube grouped view
             viewMode === 'grid' ? (
               <div className="overflow-y-auto h-full">
@@ -657,6 +728,10 @@ export function SourcesView() {
           onUpdateName={handleUpdateName}
           onEdit={() => setEditingTrackId(selectedSample.trackId)}
           onTagClick={handleTagClick}
+          onNext={handleNextSample}
+          onPrevious={handlePreviousSample}
+          hasNext={hasNextSample}
+          hasPrevious={hasPreviousSample}
         />
       )}
 

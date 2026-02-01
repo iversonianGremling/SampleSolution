@@ -101,9 +101,10 @@ const upload = multer({
 })
 
 // Helper function to auto-tag a slice using audio analysis
-async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
+async function autoTagSlice(sliceId: number, audioPath: string, analysisLevel?: 'quick' | 'standard' | 'advanced'): Promise<void> {
   try {
-    console.log(`Analyzing audio features for slice ${sliceId} from: ${audioPath}`)
+    const level = analysisLevel || 'standard'
+    console.log(`Analyzing audio features for slice ${sliceId} from: ${audioPath} (level: ${level})`)
 
     // Verify file exists before analysis
     try {
@@ -113,7 +114,7 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
     }
 
     // Analyze audio with Python (Essentia + Librosa)
-    const features = await analyzeAudioFeatures(audioPath)
+    const features = await analyzeAudioFeatures(audioPath, level)
 
     console.log(`Analysis complete for slice ${sliceId}:`, {
       isOneShot: features.isOneShot,
@@ -190,8 +191,10 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
     const baseName = path.basename(originalName, path.extname(originalName))
     const uploadedPath = req.file.path
     const importType = req.query?.importType as 'sample' | 'track' | undefined
+    const analysisLevel = req.query?.analysisLevel as 'quick' | 'standard' | 'advanced' | undefined
 
     console.log('[import/file] importType from query:', importType)
+    console.log('[import/file] analysisLevel from query:', analysisLevel)
 
     // Get audio duration
     let duration = 0
@@ -259,7 +262,7 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
     if (importType === 'sample') {
       analysisQueue.add(async () => {
         try {
-          await autoTagSlice(slice.id, slicePath)
+          await autoTagSlice(slice.id, slicePath, analysisLevel)
         } catch (err) {
           console.error('Background audio analysis failed:', err)
         }
@@ -296,8 +299,10 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
   console.log('[import/files] Request files:', req.files)
   const files = req.files as Express.Multer.File[]
   const importType = req.query?.importType as 'sample' | 'track' | undefined
+  const analysisLevel = req.query?.analysisLevel as 'quick' | 'standard' | 'advanced' | undefined
 
   console.log('[import/files] importType from query:', importType)
+  console.log('[import/files] analysisLevel from query:', analysisLevel)
 
   if (!files || files.length === 0) {
     return res.status(400).json({ error: 'No files uploaded' })
@@ -375,7 +380,7 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
       if (importType === 'sample') {
         analysisQueue.add(async () => {
           try {
-            await autoTagSlice(slice.id, slicePath)
+            await autoTagSlice(slice.id, slicePath, analysisLevel)
           } catch (err) {
             console.error('Background audio analysis failed:', err)
           }
@@ -405,7 +410,11 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
 
 // Import from folder path (server-side)
 router.post('/import/folder', async (req, res) => {
-  const { folderPath, importType } = req.body as { folderPath: string; importType?: 'sample' | 'track' }
+  const { folderPath, importType, analysisLevel } = req.body as {
+    folderPath: string
+    importType?: 'sample' | 'track'
+    analysisLevel?: 'quick' | 'standard' | 'advanced'
+  }
 
   if (!folderPath) {
     return res.status(400).json({ error: 'folderPath required' })
@@ -503,7 +512,7 @@ router.post('/import/folder', async (req, res) => {
         if (importType === 'sample') {
           analysisQueue.add(async () => {
             try {
-              await autoTagSlice(slice.id, slicePath)
+              await autoTagSlice(slice.id, slicePath, analysisLevel)
             } catch (err) {
               console.error('Background audio analysis failed:', err)
             }

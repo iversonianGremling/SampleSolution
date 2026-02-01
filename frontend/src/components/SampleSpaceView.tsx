@@ -15,15 +15,37 @@ import AudioManager from '../services/AudioManager'
 import type { FeatureWeights, SamplePoint, SliceFilterState } from '../types'
 
 interface SampleSpaceViewProps {
+  hideFilter?: boolean
   externalFilterState?: SliceFilterState
   selectedSliceId?: number | null
   onSliceSelect?: (id: number | null) => void
+  externalWeights?: FeatureWeights
+  onWeightsChange?: (weights: FeatureWeights) => void
+  externalReductionMethod?: ReductionMethod
+  onReductionMethodChange?: (method: ReductionMethod) => void
+  externalClusterMethod?: ClusterMethod
+  onClusterMethodChange?: (method: ClusterMethod) => void
+  externalClusterCount?: number
+  onClusterCountChange?: (count: number) => void
+  externalDbscanEpsilon?: number
+  onDbscanEpsilonChange?: (epsilon: number) => void
 }
 
 export function SampleSpaceView({
+  hideFilter: _hideFilter,
   externalFilterState,
   selectedSliceId: externalSelectedId,
   onSliceSelect,
+  externalWeights: _externalWeights,
+  onWeightsChange: _onWeightsChange,
+  externalReductionMethod: _externalReductionMethod,
+  onReductionMethodChange: _onReductionMethodChange,
+  externalClusterMethod: _externalClusterMethod,
+  onClusterMethodChange: _onClusterMethodChange,
+  externalClusterCount: _externalClusterCount,
+  onClusterCountChange: _onClusterCountChange,
+  externalDbscanEpsilon: _externalDbscanEpsilon,
+  onDbscanEpsilonChange: _onDbscanEpsilonChange,
 }: SampleSpaceViewProps = {}) {
   // Feature weights state
   const [weights, setWeights] = useState<FeatureWeights>(DEFAULT_WEIGHTS)
