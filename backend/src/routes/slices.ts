@@ -990,4 +990,365 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
   }
 })
 
+// Phase 6: Similarity Detection Endpoints
+
+// Helper function to calculate cosine similarity between two vectors
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0
+
+  const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
+  const magA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
+  const magB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
+
+  if (magA === 0 || magB === 0) return 0
+  return dotProduct / (magA * magB)
+}
+
+// Helper function to calculate Hamming distance between two hex strings
+function hammingDistance(hash1: string, hash2: string): number {
+  if (!hash1 || !hash2 || hash1.length !== hash2.length) return Infinity
+
+  let distance = 0
+  for (let i = 0; i < hash1.length; i++) {
+    const byte1 = parseInt(hash1.substr(i, 2), 16)
+    const byte2 = parseInt(hash2.substr(i, 2), 16)
+
+    // Count differing bits
+    let xor = byte1 ^ byte2
+    while (xor > 0) {
+      distance += xor & 1
+      xor >>= 1
+    }
+    i++ // Skip next char since we processed 2 chars
+  }
+
+  return distance
+}
+
+// GET /api/slices/:id/similar - Find similar samples based on YAMNet embeddings
+router.get('/slices/:id/similar', async (req, res) => {
+  const sliceId = parseInt(req.params.id)
+  const limit = parseInt(req.query.limit as string) || 20
+
+  try {
+    // Get target slice's audio features with embeddings
+    const targetFeatures = await db
+      .select()
+      .from(schema.audioFeatures)
+      .where(eq(schema.audioFeatures.sliceId, sliceId))
+      .limit(1)
+
+    if (targetFeatures.length === 0 || !targetFeatures[0].yamnetEmbeddings) {
+      return res.status(404).json({
+        error: 'No YAMNet embeddings found for this slice. Try re-analyzing with advanced level.'
+      })
+    }
+
+    const targetEmbeddings = JSON.parse(targetFeatures[0].yamnetEmbeddings) as number[]
+
+    // Get all other slices with embeddings
+    const allFeatures = await db
+      .select({
+        sliceId: schema.audioFeatures.sliceId,
+        yamnetEmbeddings: schema.audioFeatures.yamnetEmbeddings,
+      })
+      .from(schema.audioFeatures)
+      .where(sql`${schema.audioFeatures.sliceId} != ${sliceId} AND ${schema.audioFeatures.yamnetEmbeddings} IS NOT NULL`)
+
+    // Calculate similarity scores
+    const similarities = allFeatures
+      .map(f => {
+        const embeddings = JSON.parse(f.yamnetEmbeddings!) as number[]
+        const similarity = cosineSimilarity(targetEmbeddings, embeddings)
+        return { sliceId: f.sliceId, similarity }
+      })
+      .filter(s => s.similarity > 0.5) // Only return reasonably similar samples
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, limit)
+
+    // Get slice details for similar samples
+    const similarSliceIds = similarities.map(s => s.sliceId)
+
+    if (similarSliceIds.length === 0) {
+      return res.json([])
+    }
+
+    const slices = await db
+      .select({
+        id: schema.slices.id,
+        trackId: schema.slices.trackId,
+        name: schema.slices.name,
+        filePath: schema.slices.filePath,
+        trackTitle: schema.tracks.title,
+        trackYoutubeId: schema.tracks.youtubeId,
+      })
+      .from(schema.slices)
+      .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .where(inArray(schema.slices.id, similarSliceIds))
+
+    // Map similarity scores to slices
+    const results = slices.map(slice => {
+      const sim = similarities.find(s => s.sliceId === slice.id)
+      return {
+        ...slice,
+        similarity: sim?.similarity || 0,
+        track: {
+          title: slice.trackTitle,
+          youtubeId: slice.trackYoutubeId,
+        },
+      }
+    }).sort((a, b) => b.similarity - a.similarity)
+
+    res.json(results)
+  } catch (error) {
+    console.error('Error finding similar slices:', error)
+    res.status(500).json({ error: 'Failed to find similar slices' })
+  }
+})
+
+// GET /api/slices/duplicates - Find potential duplicate samples based on perceptual hash
+router.get('/slices/duplicates', async (_req, res) => {
+  try {
+    // Get all slices with similarity hashes
+    const allFeatures = await db
+      .select({
+        sliceId: schema.audioFeatures.sliceId,
+        similarityHash: schema.audioFeatures.similarityHash,
+        chromaprintFingerprint: schema.audioFeatures.chromaprintFingerprint,
+      })
+      .from(schema.audioFeatures)
+      .where(sql`${schema.audioFeatures.similarityHash} IS NOT NULL`)
+
+    if (allFeatures.length === 0) {
+      return res.json({ groups: [], total: 0 })
+    }
+
+    // Group by exact hash match first
+    const exactGroups = new Map<string, number[]>()
+
+    for (const feature of allFeatures) {
+      const hash = feature.similarityHash!
+      if (!exactGroups.has(hash)) {
+        exactGroups.set(hash, [])
+      }
+      exactGroups.get(hash)!.push(feature.sliceId)
+    }
+
+    // Find near-duplicates using Hamming distance
+    const nearDuplicateGroups: Array<{
+      sliceIds: number[]
+      matchType: 'exact' | 'near'
+      hashSimilarity: number
+    }> = []
+
+    // Process exact matches
+    for (const [hash, sliceIds] of exactGroups.entries()) {
+      if (sliceIds.length > 1) {
+        nearDuplicateGroups.push({
+          sliceIds,
+          matchType: 'exact',
+          hashSimilarity: 1.0,
+        })
+      }
+    }
+
+    // Find near duplicates (Hamming distance < threshold)
+    const HAMMING_THRESHOLD = 5 // Allow up to 5 bits difference
+    const processed = new Set<number>()
+
+    for (let i = 0; i < allFeatures.length; i++) {
+      if (processed.has(allFeatures[i].sliceId)) continue
+
+      const group: number[] = [allFeatures[i].sliceId]
+      processed.add(allFeatures[i].sliceId)
+
+      for (let j = i + 1; j < allFeatures.length; j++) {
+        if (processed.has(allFeatures[j].sliceId)) continue
+
+        const distance = hammingDistance(
+          allFeatures[i].similarityHash!,
+          allFeatures[j].similarityHash!
+        )
+
+        if (distance <= HAMMING_THRESHOLD) {
+          group.push(allFeatures[j].sliceId)
+          processed.add(allFeatures[j].sliceId)
+        }
+      }
+
+      if (group.length > 1) {
+        // Check if already in exact match group
+        const isInExactGroup = nearDuplicateGroups.some(g =>
+          g.matchType === 'exact' && g.sliceIds.some(id => group.includes(id))
+        )
+
+        if (!isInExactGroup) {
+          nearDuplicateGroups.push({
+            sliceIds: group,
+            matchType: 'near',
+            hashSimilarity: 0.9, // Approximate
+          })
+        }
+      }
+    }
+
+    // Get slice details for all duplicates
+    const allDuplicateIds = new Set<number>()
+    nearDuplicateGroups.forEach(g => g.sliceIds.forEach(id => allDuplicateIds.add(id)))
+
+    const slices = await db
+      .select({
+        id: schema.slices.id,
+        name: schema.slices.name,
+        filePath: schema.slices.filePath,
+        trackTitle: schema.tracks.title,
+      })
+      .from(schema.slices)
+      .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .where(inArray(schema.slices.id, Array.from(allDuplicateIds)))
+
+    const sliceMap = new Map(slices.map(s => [s.id, s]))
+
+    // Build response
+    const groups = nearDuplicateGroups.map(g => ({
+      matchType: g.matchType,
+      hashSimilarity: g.hashSimilarity,
+      samples: g.sliceIds.map(id => sliceMap.get(id)!).filter(Boolean),
+    }))
+
+    res.json({
+      groups,
+      total: groups.length,
+    })
+  } catch (error) {
+    console.error('Error finding duplicate slices:', error)
+    res.status(500).json({ error: 'Failed to find duplicate slices' })
+  }
+})
+
+// GET /api/slices/hierarchy - Build similarity-based hierarchy using clustering
+router.get('/slices/hierarchy', async (_req, res) => {
+  try {
+    // Get all slices with YAMNet embeddings
+    const allFeatures = await db
+      .select({
+        sliceId: schema.audioFeatures.sliceId,
+        yamnetEmbeddings: schema.audioFeatures.yamnetEmbeddings,
+      })
+      .from(schema.audioFeatures)
+      .where(sql`${schema.audioFeatures.yamnetEmbeddings} IS NOT NULL`)
+
+    if (allFeatures.length === 0) {
+      return res.json({ hierarchy: null, message: 'No embeddings available for clustering' })
+    }
+
+    // Parse embeddings
+    const samples = allFeatures.map(f => ({
+      sliceId: f.sliceId,
+      embeddings: JSON.parse(f.yamnetEmbeddings!) as number[],
+    }))
+
+    // Simple agglomerative clustering
+    // Start with each sample as its own cluster
+    interface Cluster {
+      id: string
+      sliceIds: number[]
+      centroid: number[]
+      children?: Cluster[]
+    }
+
+    let clusters: Cluster[] = samples.map((s, i) => ({
+      id: `sample_${s.sliceId}`,
+      sliceIds: [s.sliceId],
+      centroid: s.embeddings,
+    }))
+
+    // Merge clusters until we have a reasonable number of top-level groups (e.g., 5-10)
+    const TARGET_CLUSTERS = Math.min(10, Math.max(5, Math.floor(samples.length / 20)))
+
+    while (clusters.length > TARGET_CLUSTERS) {
+      // Find two closest clusters
+      let minDist = Infinity
+      let mergeI = 0
+      let mergeJ = 1
+
+      for (let i = 0; i < clusters.length; i++) {
+        for (let j = i + 1; j < clusters.length; j++) {
+          const dist = 1 - cosineSimilarity(clusters[i].centroid, clusters[j].centroid)
+          if (dist < minDist) {
+            minDist = dist
+            mergeI = i
+            mergeJ = j
+          }
+        }
+      }
+
+      // Merge clusters
+      const merged: Cluster = {
+        id: `cluster_${clusters[mergeI].id}_${clusters[mergeJ].id}`,
+        sliceIds: [...clusters[mergeI].sliceIds, ...clusters[mergeJ].sliceIds],
+        centroid: clusters[mergeI].centroid.map((v, i) =>
+          (v + clusters[mergeJ].centroid[i]) / 2
+        ),
+        children: [clusters[mergeI], clusters[mergeJ]],
+      }
+
+      // Replace with merged cluster
+      clusters = [
+        ...clusters.slice(0, mergeI),
+        ...clusters.slice(mergeI + 1, mergeJ),
+        ...clusters.slice(mergeJ + 1),
+        merged,
+      ]
+    }
+
+    // Get slice details
+    const allSliceIds = samples.map(s => s.sliceId)
+    const slices = await db
+      .select({
+        id: schema.slices.id,
+        name: schema.slices.name,
+        filePath: schema.slices.filePath,
+        trackTitle: schema.tracks.title,
+      })
+      .from(schema.slices)
+      .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .where(inArray(schema.slices.id, allSliceIds))
+
+    const sliceMap = new Map(slices.map(s => [s.id, s]))
+
+    // Build hierarchy response
+    const buildNode = (cluster: Cluster): any => {
+      if (cluster.children) {
+        return {
+          type: 'cluster',
+          id: cluster.id,
+          size: cluster.sliceIds.length,
+          children: cluster.children.map(buildNode),
+        }
+      } else {
+        const slice = sliceMap.get(cluster.sliceIds[0])
+        return {
+          type: 'sample',
+          id: cluster.id,
+          sliceId: cluster.sliceIds[0],
+          name: slice?.name,
+          trackTitle: slice?.trackTitle,
+        }
+      }
+    }
+
+    const hierarchy = clusters.map(buildNode)
+
+    res.json({
+      hierarchy,
+      totalClusters: TARGET_CLUSTERS,
+      totalSamples: samples.length,
+    })
+  } catch (error) {
+    console.error('Error building hierarchy:', error)
+    res.status(500).json({ error: 'Failed to build hierarchy' })
+  }
+})
+
 export default router

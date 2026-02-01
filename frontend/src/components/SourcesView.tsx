@@ -59,7 +59,16 @@ export function SourcesView() {
     sortOrder: 'asc',
     minBpm: 0,
     maxBpm: 300,
-    selectedKeys: []
+    selectedKeys: [],
+    selectedEnvelopeTypes: [],
+    minBrightness: 0,
+    maxBrightness: 1,
+    minWarmth: 0,
+    maxWarmth: 1,
+    minHardness: 0,
+    maxHardness: 1,
+    selectedInstruments: [],
+    selectedGenres: []
   })
 
   // Data queries
@@ -98,13 +107,43 @@ export function SourcesView() {
   const allSamples = samplesData?.samples || []
   const totalCount = samplesData?.total || 0
 
-  // Filter samples by duration
+  // Filter samples by duration and advanced features
   const samples = useMemo(() => {
     return allSamples.filter(sample => {
+      // Duration filter
       const duration = sample.endTime - sample.startTime
-      return duration >= minDuration && (maxDuration >= 600 || duration <= maxDuration)
+      if (duration < minDuration || (maxDuration < 600 && duration > maxDuration)) {
+        return false
+      }
+
+      // Envelope type filter
+      if (audioFilter.selectedEnvelopeTypes.length > 0) {
+        if (!sample.envelopeType || !audioFilter.selectedEnvelopeTypes.includes(sample.envelopeType)) {
+          return false
+        }
+      }
+
+      // Instrument filter
+      if (audioFilter.selectedInstruments.length > 0) {
+        if (!sample.instrumentPrimary || !audioFilter.selectedInstruments.includes(sample.instrumentPrimary)) {
+          return false
+        }
+      }
+
+      // Genre filter
+      if (audioFilter.selectedGenres.length > 0) {
+        if (!sample.genrePrimary || !audioFilter.selectedGenres.includes(sample.genrePrimary)) {
+          return false
+        }
+      }
+
+      // Note: Perceptual features (brightness, warmth, hardness) filtering
+      // would require fetching full AudioFeatures data, which is not available
+      // on the SliceWithTrackExtended type. This can be added when needed.
+
+      return true
     })
-  }, [allSamples, minDuration, maxDuration])
+  }, [allSamples, minDuration, maxDuration, audioFilter])
 
   const selectedSample = useMemo<SliceWithTrackExtended | null>(() => {
     if (!selectedSampleId) return null
@@ -452,6 +491,9 @@ export function SourcesView() {
                   filterState={audioFilter}
                   onChange={setAudioFilter}
                   availableKeys={[...new Set(samples.map(s => s.keyEstimate).filter(Boolean) as string[])]}
+                  availableEnvelopeTypes={[...new Set(samples.map(s => s.envelopeType).filter(Boolean) as string[])]}
+                  availableInstruments={[...new Set(samples.map(s => s.instrumentPrimary).filter(Boolean) as string[])]}
+                  availableGenres={[...new Set(samples.map(s => s.genrePrimary).filter(Boolean) as string[])]}
                 />
 
                 {/* Separator */}

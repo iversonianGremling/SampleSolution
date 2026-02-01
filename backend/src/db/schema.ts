@@ -128,6 +128,32 @@ export const audioFeatures = sqliteTable('audio_features', {
   percussiveEnergy: real('percussive_energy'),
   harmonicCentroid: real('harmonic_centroid'),
   percussiveCentroid: real('percussive_centroid'),
+  // Phase 3: Advanced Rhythm Features
+  onsetRate: real('onset_rate'),
+  beatStrength: real('beat_strength'),
+  rhythmicRegularity: real('rhythmic_regularity'),
+  danceability: real('danceability'),
+  // Phase 3: ADSR Envelope Features
+  decayTime: real('decay_time'),
+  sustainLevel: real('sustain_level'),
+  releaseTime: real('release_time'),
+  envelopeType: text('envelope_type'),
+  // Phase 4: ML-Based Classification
+  instrumentClasses: text('instrument_classes'), // JSON: [{class, confidence}, ...]
+  genreClasses: text('genre_classes'), // JSON: [{genre, confidence}, ...]
+  genrePrimary: text('genre_primary'),
+  yamnetEmbeddings: text('yamnet_embeddings'), // JSON: 1024-dim array for similarity
+  moodClasses: text('mood_classes'), // JSON: [{mood, confidence}, ...]
+  // Phase 5: EBU R128 Loudness & Sound Event Detection
+  loudnessIntegrated: real('loudness_integrated'), // LUFS
+  loudnessRange: real('loudness_range'), // LU
+  loudnessMomentaryMax: real('loudness_momentary_max'),
+  truePeak: real('true_peak'), // dBTP
+  eventCount: integer('event_count'),
+  eventDensity: real('event_density'),
+  // Phase 6: Audio Fingerprinting & Similarity Detection
+  chromaprintFingerprint: text('chromaprint_fingerprint'),
+  similarityHash: text('similarity_hash'),
   // Metadata
   analysisLevel: text('analysis_level', {
     enum: ['quick', 'standard', 'advanced'],

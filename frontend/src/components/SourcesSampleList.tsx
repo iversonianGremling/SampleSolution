@@ -307,6 +307,11 @@ export function SourcesSampleList({
             {getSortIcon('key')}
           </button>
 
+          {/* Envelope Type column */}
+          <span className="hidden xl:flex w-20 flex-shrink-0 justify-center text-xs font-semibold text-slate-400 uppercase">
+            Envelope
+          </span>
+
           {/* Duration column with sort */}
           <button
             onClick={() => handleSortClick('duration')}

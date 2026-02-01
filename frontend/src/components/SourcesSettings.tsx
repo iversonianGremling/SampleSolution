@@ -1,11 +1,120 @@
 import { useState, useEffect } from 'react'
-import { RefreshCw, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { RefreshCw, AlertCircle, CheckCircle2, Copy } from 'lucide-react'
 import * as api from '../api/client'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AnalysisLevelSelector } from './AnalysisLevelSelector'
 import type { AnalysisLevel } from '../types'
 
 const ANALYSIS_LEVEL_KEY = 'defaultAnalysisLevel'
+
+interface DuplicateGroup {
+  matchType: 'exact' | 'near'
+  hashSimilarity: number
+  samples: Array<{
+    id: number
+    name: string
+    trackTitle: string
+  }>
+}
+
+function FindDuplicatesSection() {
+  const { data: duplicates, isLoading, refetch } = useQuery<{
+    groups: DuplicateGroup[]
+    total: number
+  }>({
+    queryKey: ['duplicates'],
+    queryFn: async () => {
+      const res = await fetch('/api/slices/duplicates')
+      if (!res.ok) throw new Error('Failed to fetch duplicates')
+      return res.json()
+    },
+    enabled: false, // Don't auto-fetch
+  })
+
+  const handleFindDuplicates = () => {
+    refetch()
+  }
+
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="flex-1">
+        <h4 className="text-sm font-medium text-white mb-2">Find Duplicate Samples</h4>
+        <p className="text-sm text-slate-400 mb-4">
+          Scan your library for duplicate or very similar audio files based on perceptual fingerprinting.
+          This can help you clean up your sample library.
+        </p>
+
+        {isLoading && (
+          <div className="mb-4 p-4 bg-accent-primary/10 rounded-lg border border-accent-primary/30">
+            <div className="flex items-center gap-3 text-sm">
+              <RefreshCw size={20} className="text-accent-primary flex-shrink-0 animate-spin" />
+              <div>
+                <div className="text-white font-medium">Scanning for duplicates...</div>
+                <div className="text-slate-400 text-xs">Analyzing audio fingerprints</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!isLoading && duplicates && duplicates.total > 0 && (
+          <div className="mb-4 space-y-2">
+            <div className="p-3 bg-surface-base rounded-lg border border-surface-border">
+              <div className="flex items-center gap-2 text-sm mb-3">
+                <Copy size={16} className="text-amber-400 flex-shrink-0" />
+                <span className="text-white font-medium">
+                  Found {duplicates.total} duplicate group{duplicates.total !== 1 ? 's' : ''}
+                </span>
+              </div>
+
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {duplicates.groups.map((group, idx) => (
+                  <div key={idx} className="p-2 bg-surface-raised rounded border border-surface-border">
+                    <div className="text-xs text-slate-400 mb-1">
+                      {group.matchType === 'exact' ? 'Exact match' : 'Similar'}
+                      {' '}({Math.round(group.hashSimilarity * 100)}%)
+                    </div>
+                    <div className="space-y-1">
+                      {group.samples.map((sample) => (
+                        <div key={sample.id} className="text-xs text-slate-300 truncate">
+                          • {sample.name}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!isLoading && duplicates && duplicates.total === 0 && (
+          <div className="mb-4 p-3 bg-surface-base rounded-lg border border-surface-border">
+            <div className="flex items-center gap-2 text-sm">
+              <CheckCircle2 size={16} className="text-green-400 flex-shrink-0" />
+              <span className="text-white">No duplicates found in your library</span>
+            </div>
+          </div>
+        )}
+
+        <button
+          onClick={handleFindDuplicates}
+          disabled={isLoading}
+          className={`
+            inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors
+            ${
+              isLoading
+                ? 'bg-surface-base text-slate-400 cursor-not-allowed'
+                : 'bg-accent-primary hover:bg-accent-primary/90 text-white'
+            }
+          `}
+        >
+          <Copy size={16} />
+          {isLoading ? 'Scanning...' : 'Find Duplicates'}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export function SourcesSettings() {
   const [isReanalyzing, setIsReanalyzing] = useState(false)
@@ -80,6 +189,12 @@ export function SourcesSettings() {
         <div>
           <h3 className="text-lg font-medium text-white mb-4">Advanced</h3>
 
+          {/* Find Duplicates */}
+          <div className="bg-surface-raised border border-surface-border rounded-lg p-6 mb-4">
+            <FindDuplicatesSection />
+          </div>
+
+          {/* Re-analyze All */}
           <div className="bg-surface-raised border border-surface-border rounded-lg p-6">
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">

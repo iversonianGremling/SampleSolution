@@ -27,6 +27,9 @@ export interface Slice {
   tags: Tag[]
   bpm?: number | null
   keyEstimate?: string | null
+  envelopeType?: string | null
+  genrePrimary?: string | null
+  instrumentPrimary?: string | null
 }
 
 export interface SliceWithTrack extends Slice {
@@ -142,6 +145,42 @@ export interface AudioFeatures {
   percussiveEnergy?: number | null
   harmonicCentroid?: number | null
   percussiveCentroid?: number | null
+  // Phase 3: Advanced Rhythm Features
+  onsetRate?: number | null
+  beatStrength?: number | null
+  rhythmicRegularity?: number | null
+  danceability?: number | null
+  // Phase 3: ADSR Envelope Features
+  decayTime?: number | null
+  sustainLevel?: number | null
+  releaseTime?: number | null
+  envelopeType?: string | null
+  // Phase 4: ML-Based Classification
+  instrumentClasses?: Array<{
+    class: string
+    confidence: number
+  }> | null
+  genreClasses?: Array<{
+    genre: string
+    confidence: number
+  }> | null
+  genrePrimary?: string | null
+  yamnetEmbeddings?: number[] | null // 1024-dim array for similarity
+  moodClasses?: Array<{
+    mood: string
+    confidence: number
+  }> | null
+  // Phase 5: EBU R128 Loudness
+  loudnessIntegrated?: number | null // LUFS
+  loudnessRange?: number | null // LU
+  loudnessMomentaryMax?: number | null
+  truePeak?: number | null // dBTP
+  // Phase 5: Sound Event Detection
+  eventCount?: number | null
+  eventDensity?: number | null // Events per second
+  // Phase 6: Audio Fingerprinting & Similarity Detection
+  chromaprintFingerprint?: string | null
+  similarityHash?: string | null
   // Metadata
   analysisLevel?: AnalysisLevel | null
 }
@@ -183,6 +222,23 @@ export interface FeatureWeights {
   percussiveEnergy: number
   harmonicCentroid: number
   percussiveCentroid: number
+  // Phase 3: Advanced Rhythm features
+  onsetRate: number
+  beatStrength: number
+  rhythmicRegularity: number
+  danceability: number
+  // Phase 3: ADSR Envelope features
+  decayTime: number
+  sustainLevel: number
+  releaseTime: number
+  // Phase 5: EBU R128 Loudness features
+  loudnessIntegrated: number
+  loudnessRange: number
+  loudnessMomentaryMax: number
+  truePeak: number
+  // Phase 5: Sound Event Detection features
+  eventCount: number
+  eventDensity: number
 }
 
 export interface SamplePoint {

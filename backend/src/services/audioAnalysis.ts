@@ -81,6 +81,47 @@ export interface AudioFeatures {
   melBandsMean?: number[]
   melBandsStd?: number[]
 
+  // Phase 2: Stereo Analysis
+  stereoWidth?: number
+  panningCenter?: number
+  stereoImbalance?: number
+
+  // Phase 2: Harmonic/Percussive Separation
+  harmonicPercussiveRatio?: number
+  harmonicEnergy?: number
+  percussiveEnergy?: number
+  harmonicCentroid?: number
+  percussiveCentroid?: number
+
+  // Phase 3: Advanced Rhythm Features
+  onsetRate?: number
+  beatStrength?: number
+  rhythmicRegularity?: number
+  danceability?: number
+
+  // Phase 3: ADSR Envelope Features
+  attackTime?: number
+  decayTime?: number
+  sustainLevel?: number
+  releaseTime?: number
+  envelopeType?: string
+
+  // Phase 4: ML-Based Classification
+  instrumentClasses?: Array<{
+    class: string
+    confidence: number
+  }>
+  genreClasses?: Array<{
+    genre: string
+    confidence: number
+  }>
+  genrePrimary?: string
+  yamnetEmbeddings?: number[] // 1024-dim array for similarity
+  moodClasses?: Array<{
+    mood: string
+    confidence: number
+  }>
+
   // Metadata
   analysisLevel?: AnalysisLevel
   analysisDurationMs: number
@@ -107,7 +148,8 @@ export async function analyzeAudioFeatures(
 ): Promise<AudioFeatures> {
   return new Promise((resolve, reject) => {
     // Adjust timeout based on analysis level
-    const timeoutMs = analysisLevel === 'advanced' ? 90000 : analysisLevel === 'quick' ? 30000 : 60000
+    // Advanced mode uses ML models (YAMNet) which require more time
+    const timeoutMs = analysisLevel === 'advanced' ? 120000 : analysisLevel === 'quick' ? 30000 : 60000
 
     const args = [PYTHON_SCRIPT, audioPath]
     if (analysisLevel !== 'standard') {
@@ -255,6 +297,33 @@ export async function analyzeAudioFeatures(
           // Phase 1: Advanced spectral
           melBandsMean: result.mel_bands_mean,
           melBandsStd: result.mel_bands_std,
+          // Phase 2: Stereo analysis
+          stereoWidth: result.stereo_width,
+          panningCenter: result.panning_center,
+          stereoImbalance: result.stereo_imbalance,
+          // Phase 2: Harmonic/Percussive separation
+          harmonicPercussiveRatio: result.harmonic_percussive_ratio,
+          harmonicEnergy: result.harmonic_energy,
+          percussiveEnergy: result.percussive_energy,
+          harmonicCentroid: result.harmonic_centroid,
+          percussiveCentroid: result.percussive_centroid,
+          // Phase 3: Advanced Rhythm features
+          onsetRate: result.onset_rate,
+          beatStrength: result.beat_strength,
+          rhythmicRegularity: result.rhythmic_regularity,
+          danceability: result.danceability,
+          // Phase 3: ADSR Envelope features
+          attackTime: result.attack_time,
+          decayTime: result.decay_time,
+          sustainLevel: result.sustain_level,
+          releaseTime: result.release_time,
+          envelopeType: result.envelope_type,
+          // Phase 4: ML-Based Classification
+          instrumentClasses: result.instrument_classes,
+          genreClasses: result.genre_classes,
+          genrePrimary: result.genre_primary,
+          yamnetEmbeddings: result.yamnet_embeddings,
+          moodClasses: result.mood_classes,
           // Metadata
           analysisLevel: result.analysis_level,
           analysisDurationMs: result.analysis_duration_ms,
@@ -324,9 +393,36 @@ export async function storeAudioFeatures(
     // Phase 1: Advanced spectral
     melBandsMean: features.melBandsMean ? JSON.stringify(features.melBandsMean) : null,
     melBandsStd: features.melBandsStd ? JSON.stringify(features.melBandsStd) : null,
+    // Phase 2: Stereo analysis
+    stereoWidth: features.stereoWidth ?? null,
+    panningCenter: features.panningCenter ?? null,
+    stereoImbalance: features.stereoImbalance ?? null,
+    // Phase 2: Harmonic/Percussive separation
+    harmonicPercussiveRatio: features.harmonicPercussiveRatio ?? null,
+    harmonicEnergy: features.harmonicEnergy ?? null,
+    percussiveEnergy: features.percussiveEnergy ?? null,
+    harmonicCentroid: features.harmonicCentroid ?? null,
+    percussiveCentroid: features.percussiveCentroid ?? null,
+    // Phase 3: Advanced Rhythm features
+    onsetRate: features.onsetRate ?? null,
+    beatStrength: features.beatStrength ?? null,
+    rhythmicRegularity: features.rhythmicRegularity ?? null,
+    danceability: features.danceability ?? null,
+    // Phase 3: ADSR Envelope features
+    attackTime: features.attackTime ?? null,
+    decayTime: features.decayTime ?? null,
+    sustainLevel: features.sustainLevel ?? null,
+    releaseTime: features.releaseTime ?? null,
+    envelopeType: features.envelopeType ?? null,
+    // Phase 4: ML-Based Classification
+    instrumentClasses: features.instrumentClasses ? JSON.stringify(features.instrumentClasses) : null,
+    genreClasses: features.genreClasses ? JSON.stringify(features.genreClasses) : null,
+    genrePrimary: features.genrePrimary ?? null,
+    yamnetEmbeddings: features.yamnetEmbeddings ? JSON.stringify(features.yamnetEmbeddings) : null,
+    moodClasses: features.moodClasses ? JSON.stringify(features.moodClasses) : null,
     // Metadata
     analysisLevel: features.analysisLevel ?? 'standard',
-    analysisVersion: '1.1', // Updated for Phase 1
+    analysisVersion: '1.4', // Updated for Phase 4
     createdAt,
     analysisDurationMs: features.analysisDurationMs,
   }
@@ -399,6 +495,33 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     // Phase 1: Advanced spectral
     melBandsMean: row.melBandsMean ? JSON.parse(row.melBandsMean) : undefined,
     melBandsStd: row.melBandsStd ? JSON.parse(row.melBandsStd) : undefined,
+    // Phase 2: Stereo analysis
+    stereoWidth: row.stereoWidth ?? undefined,
+    panningCenter: row.panningCenter ?? undefined,
+    stereoImbalance: row.stereoImbalance ?? undefined,
+    // Phase 2: Harmonic/Percussive separation
+    harmonicPercussiveRatio: row.harmonicPercussiveRatio ?? undefined,
+    harmonicEnergy: row.harmonicEnergy ?? undefined,
+    percussiveEnergy: row.percussiveEnergy ?? undefined,
+    harmonicCentroid: row.harmonicCentroid ?? undefined,
+    percussiveCentroid: row.percussiveCentroid ?? undefined,
+    // Phase 3: Advanced Rhythm features
+    onsetRate: row.onsetRate ?? undefined,
+    beatStrength: row.beatStrength ?? undefined,
+    rhythmicRegularity: row.rhythmicRegularity ?? undefined,
+    danceability: row.danceability ?? undefined,
+    // Phase 3: ADSR Envelope features
+    attackTime: row.attackTime ?? undefined,
+    decayTime: row.decayTime ?? undefined,
+    sustainLevel: row.sustainLevel ?? undefined,
+    releaseTime: row.releaseTime ?? undefined,
+    envelopeType: row.envelopeType ?? undefined,
+    // Phase 4: ML-Based Classification
+    instrumentClasses: row.instrumentClasses ? JSON.parse(row.instrumentClasses) : undefined,
+    genreClasses: row.genreClasses ? JSON.parse(row.genreClasses) : undefined,
+    genrePrimary: row.genrePrimary ?? undefined,
+    yamnetEmbeddings: row.yamnetEmbeddings ? JSON.parse(row.yamnetEmbeddings) : undefined,
+    moodClasses: row.moodClasses ? JSON.parse(row.moodClasses) : undefined,
     // Metadata
     analysisLevel: row.analysisLevel as AnalysisLevel | undefined,
     analysisDurationMs: row.analysisDurationMs || 0,

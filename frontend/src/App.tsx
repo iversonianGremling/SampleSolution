@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { Music, FileUp, LogOut } from 'lucide-react'
+import { Music, FileUp, LogOut, Settings } from 'lucide-react'
 import { YouTubeHub } from './components/YouTubeHub'
 import { SourcesView } from './components/SourcesView'
+import { SourcesSettings } from './components/SourcesSettings'
 import { useAuthStatus } from './hooks/useTracks'
 import { logout } from './api/client'
 
-type Tab = 'sources' | 'youtube'
+type Tab = 'sources' | 'youtube' | 'settings'
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('sources')
@@ -19,6 +20,7 @@ function App() {
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'sources', label: 'Sources', icon: <Music size={18} /> },
     { id: 'youtube', label: 'Import', icon: <FileUp size={18} /> },
+    { id: 'settings', label: 'Settings', icon: <Settings size={18} /> },
   ]
 
   return (
@@ -82,6 +84,7 @@ function App() {
         {activeTab === 'youtube' && (
           <YouTubeHub onTracksAdded={() => setActiveTab('sources')} />
         )}
+        {activeTab === 'settings' && <SourcesSettings />}
       </main>
     </div>
   )

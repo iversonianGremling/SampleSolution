@@ -1,8 +1,175 @@
 import { useState, useRef, useEffect } from 'react'
-import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Scissors, Search, ChevronLeft, ChevronRight } from 'lucide-react'
-import type { SliceWithTrackExtended, Tag, Collection } from '../types'
+import { useQuery } from '@tanstack/react-query'
+import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Scissors, Search, ChevronLeft, ChevronRight, Sparkles, Activity } from 'lucide-react'
+import type { SliceWithTrackExtended, Tag, Collection, AudioFeatures } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 import { SliceWaveform, type SliceWaveformRef } from './SliceWaveform'
+
+// Helper component to display a feature value
+function FeatureItem({
+  label,
+  value,
+  unit,
+  decimals = 2,
+  isText = false
+}: {
+  label: string
+  value: number | string | null | undefined
+  unit?: string
+  decimals?: number
+  isText?: boolean
+}) {
+  if (value === null || value === undefined) {
+    return (
+      <div>
+        <div className="text-xs text-slate-500">{label}</div>
+        <div className="text-sm text-slate-600">-</div>
+      </div>
+    )
+  }
+
+  const displayValue = isText
+    ? String(value)
+    : typeof value === 'number'
+    ? value.toFixed(decimals)
+    : value
+
+  return (
+    <div>
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="text-sm text-white font-mono">
+        {displayValue}
+        {unit && <span className="text-slate-400 ml-1">{unit}</span>}
+      </div>
+    </div>
+  )
+}
+
+interface SimilarSample {
+  id: number
+  name: string
+  filePath: string
+  similarity: number
+  track: {
+    title: string
+  }
+}
+
+function SimilarSamplesSection({ sampleId }: { sampleId: number }) {
+  const [hoveredSample, setHoveredSample] = useState<number | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  const { data: similarSamples, isLoading } = useQuery<SimilarSample[]>({
+    queryKey: ['similar-samples', sampleId],
+    queryFn: async () => {
+      const res = await fetch(`/api/slices/${sampleId}/similar?limit=6`)
+      if (!res.ok) {
+        if (res.status === 404) return []
+        throw new Error('Failed to fetch similar samples')
+      }
+      return res.json()
+    },
+  })
+
+  const handleMouseEnter = (sample: SimilarSample) => {
+    setHoveredSample(sample.id)
+    if (audioRef.current) {
+      audioRef.current.pause()
+    }
+    audioRef.current = new Audio(getSliceDownloadUrl(sample.id))
+    audioRef.current.volume = 0.5
+    audioRef.current.play().catch(() => {
+      // Ignore play errors (e.g., user hasn't interacted with page yet)
+    })
+  }
+
+  const handleMouseLeave = () => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    setHoveredSample(null)
+  }
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+    }
+  }, [])
+
+  if (isLoading) {
+    return (
+      <div>
+        <label className="text-sm font-medium text-slate-400 flex items-center gap-2 mb-2">
+          <Sparkles size={14} />
+          Similar Samples
+        </label>
+        <div className="text-sm text-slate-500">Loading...</div>
+      </div>
+    )
+  }
+
+  if (!similarSamples || similarSamples.length === 0) {
+    return null
+  }
+
+  return (
+    <div>
+      <label className="text-sm font-medium text-slate-400 flex items-center gap-2 mb-2">
+        <Sparkles size={14} />
+        Similar Samples
+      </label>
+      <div className="grid grid-cols-3 gap-2">
+        {similarSamples.map((sample) => (
+          <button
+            key={sample.id}
+            onMouseEnter={() => handleMouseEnter(sample)}
+            onMouseLeave={handleMouseLeave}
+            onClick={() => {
+              // Navigate to this sample - will be handled by parent
+              window.location.hash = `sample-${sample.id}`
+            }}
+            className={`group relative p-3 rounded-lg border transition-all ${
+              hoveredSample === sample.id
+                ? 'border-accent-primary bg-accent-primary/10 scale-105'
+                : 'border-surface-border bg-surface-base hover:border-slate-600'
+            }`}
+          >
+            {/* Similarity badge */}
+            <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-900/90 text-slate-300">
+              {Math.round(sample.similarity * 100)}%
+            </div>
+
+            {/* Content */}
+            <div className="flex items-center gap-2 mb-1">
+              <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
+                hoveredSample === sample.id ? 'bg-accent-primary' : 'bg-slate-700'
+              }`}>
+                {hoveredSample === sample.id ? (
+                  <Pause size={12} className="text-white" />
+                ) : (
+                  <Play size={12} className="text-white ml-0.5" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0 text-left">
+                <div className="text-xs font-medium text-white truncate">
+                  {sample.name}
+                </div>
+              </div>
+            </div>
+            <div className="text-[10px] text-slate-500 truncate text-left">
+              {sample.track.title}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 interface SourcesDetailModalProps {
   sample: SliceWithTrackExtended | null
@@ -53,11 +220,23 @@ export function SourcesDetailModal({
   const [collectionDropdownPosition, setCollectionDropdownPosition] = useState<{ top: number; left: number } | null>(null)
   const [tagSearchQuery, setTagSearchQuery] = useState('')
   const [collectionSearchQuery, setCollectionSearchQuery] = useState('')
+  const [activeTab, setActiveTab] = useState<'details' | 'advanced'>('details')
   const waveformRef = useRef<SliceWaveformRef>(null)
   const tagDropdownRef = useRef<HTMLDivElement>(null)
   const collectionDropdownRef = useRef<HTMLDivElement>(null)
   const tagButtonRef = useRef<HTMLButtonElement>(null)
   const collectionButtonRef = useRef<HTMLButtonElement>(null)
+
+  // Fetch audio features for the advanced tab
+  const { data: audioFeatures } = useQuery<AudioFeatures>({
+    queryKey: ['audioFeatures', sample?.id],
+    queryFn: async () => {
+      const res = await fetch(`/api/slices/${sample?.id}/features`)
+      if (!res.ok) throw new Error('Failed to fetch audio features')
+      return res.json()
+    },
+    enabled: !!sample && activeTab === 'advanced',
+  })
 
   // Entrance animation
   useEffect(() => {
@@ -251,10 +430,37 @@ export function SourcesDetailModal({
             </button>
           </div>
 
+          {/* Tabs */}
+          <div className="flex border-b border-surface-border bg-surface-raised px-4">
+            <button
+              onClick={() => setActiveTab('details')}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${
+                activeTab === 'details'
+                  ? 'text-white border-accent-primary'
+                  : 'text-slate-400 border-transparent hover:text-slate-300'
+              }`}
+            >
+              Details
+            </button>
+            <button
+              onClick={() => setActiveTab('advanced')}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 flex items-center gap-2 ${
+                activeTab === 'advanced'
+                  ? 'text-white border-accent-primary'
+                  : 'text-slate-400 border-transparent hover:text-slate-300'
+              }`}
+            >
+              <Activity size={14} />
+              Advanced Features
+            </button>
+          </div>
+
           {/* Content */}
           <div className="flex-1 overflow-y-auto px-4 pt-4 pb-2 space-y-4">
-            {/* Waveform */}
-            <SliceWaveform
+            {activeTab === 'details' && (
+              <>
+                {/* Waveform */}
+                <SliceWaveform
               ref={waveformRef}
               sliceId={sample.id}
               height={80}
@@ -453,6 +659,191 @@ export function SourcesDetailModal({
                 )}
               </div>
             </div>
+
+            {/* Similar Samples */}
+            <SimilarSamplesSection sampleId={sample.id} />
+              </>
+            )}
+
+            {/* Advanced Features Tab */}
+            {activeTab === 'advanced' && (
+              <div className="space-y-4">
+                {!audioFeatures ? (
+                  <div className="flex items-center justify-center py-12 text-slate-400">
+                    Loading audio features...
+                  </div>
+                ) : (
+                  <>
+                    {/* Spectral Features */}
+                    <div className="bg-surface-base rounded-lg p-4">
+                      <h4 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                        <Activity size={14} className="text-accent-primary" />
+                        Spectral Features
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <FeatureItem label="Spectral Centroid" value={audioFeatures.spectralCentroid} unit="Hz" decimals={0} />
+                        <FeatureItem label="Spectral Rolloff" value={audioFeatures.spectralRolloff} unit="Hz" decimals={0} />
+                        <FeatureItem label="Spectral Bandwidth" value={audioFeatures.spectralBandwidth} unit="Hz" decimals={0} />
+                        <FeatureItem label="Spectral Contrast" value={audioFeatures.spectralContrast} decimals={3} />
+                        <FeatureItem label="Spectral Flux" value={audioFeatures.spectralFlux} decimals={3} />
+                        <FeatureItem label="Spectral Flatness" value={audioFeatures.spectralFlatness} decimals={3} />
+                        <FeatureItem label="Spectral Crest" value={audioFeatures.spectralCrest} decimals={3} />
+                        <FeatureItem label="Zero Crossing Rate" value={audioFeatures.zeroCrossingRate} decimals={3} />
+                      </div>
+                    </div>
+
+                    {/* Energy & Dynamics */}
+                    <div className="bg-surface-base rounded-lg p-4">
+                      <h4 className="text-sm font-semibold text-white mb-3">Energy & Dynamics</h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <FeatureItem label="RMS Energy" value={audioFeatures.rmsEnergy} decimals={4} />
+                        <FeatureItem label="Loudness" value={audioFeatures.loudness} unit="dB" decimals={2} />
+                        <FeatureItem label="Dynamic Range" value={audioFeatures.dynamicRange} unit="dB" decimals={2} />
+                        <FeatureItem label="Integrated Loudness" value={audioFeatures.loudnessIntegrated} unit="LUFS" decimals={2} />
+                        <FeatureItem label="Loudness Range" value={audioFeatures.loudnessRange} unit="LU" decimals={2} />
+                        <FeatureItem label="True Peak" value={audioFeatures.truePeak} unit="dBTP" decimals={2} />
+                      </div>
+                    </div>
+
+                    {/* Rhythm & Temporal */}
+                    <div className="bg-surface-base rounded-lg p-4">
+                      <h4 className="text-sm font-semibold text-white mb-3">Rhythm & Temporal</h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <FeatureItem label="BPM" value={audioFeatures.bpm} decimals={1} />
+                        <FeatureItem label="Onset Count" value={audioFeatures.onsetCount} decimals={0} />
+                        <FeatureItem label="Onset Rate" value={audioFeatures.onsetRate} unit="/s" decimals={2} />
+                        <FeatureItem label="Beat Strength" value={audioFeatures.beatStrength} decimals={3} />
+                        <FeatureItem label="Rhythmic Regularity" value={audioFeatures.rhythmicRegularity} decimals={3} />
+                        <FeatureItem label="Danceability" value={audioFeatures.danceability} decimals={3} />
+                        <FeatureItem label="Attack Time" value={audioFeatures.attackTime} unit="s" decimals={3} />
+                        <FeatureItem label="Kurtosis" value={audioFeatures.kurtosis} decimals={3} />
+                      </div>
+                    </div>
+
+                    {/* Perceptual Features */}
+                    {(audioFeatures.brightness !== null || audioFeatures.warmth !== null || audioFeatures.hardness !== null) && (
+                      <div className="bg-surface-base rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-white mb-3">Perceptual Features</h4>
+                        <div className="grid grid-cols-2 gap-3">
+                          <FeatureItem label="Brightness" value={audioFeatures.brightness} decimals={3} />
+                          <FeatureItem label="Warmth" value={audioFeatures.warmth} decimals={3} />
+                          <FeatureItem label="Hardness" value={audioFeatures.hardness} decimals={3} />
+                          <FeatureItem label="Roughness" value={audioFeatures.roughness} decimals={3} />
+                          <FeatureItem label="Sharpness" value={audioFeatures.sharpness} decimals={3} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Timbral Features */}
+                    {(audioFeatures.dissonance !== null || audioFeatures.inharmonicity !== null) && (
+                      <div className="bg-surface-base rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-white mb-3">Timbral Features</h4>
+                        <div className="grid grid-cols-2 gap-3">
+                          <FeatureItem label="Dissonance" value={audioFeatures.dissonance} decimals={3} />
+                          <FeatureItem label="Inharmonicity" value={audioFeatures.inharmonicity} decimals={3} />
+                          <FeatureItem label="Spectral Complexity" value={audioFeatures.spectralComplexity} decimals={3} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Envelope (ADSR) */}
+                    {audioFeatures.envelopeType && (
+                      <div className="bg-surface-base rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-white mb-3">Envelope (ADSR)</h4>
+                        <div className="grid grid-cols-2 gap-3">
+                          <FeatureItem label="Type" value={audioFeatures.envelopeType} isText />
+                          <FeatureItem label="Decay Time" value={audioFeatures.decayTime} unit="s" decimals={3} />
+                          <FeatureItem label="Sustain Level" value={audioFeatures.sustainLevel} decimals={3} />
+                          <FeatureItem label="Release Time" value={audioFeatures.releaseTime} unit="s" decimals={3} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Harmonic/Percussive */}
+                    {audioFeatures.harmonicPercussiveRatio !== null && (
+                      <div className="bg-surface-base rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-white mb-3">Harmonic / Percussive</h4>
+                        <div className="grid grid-cols-2 gap-3">
+                          <FeatureItem label="H/P Ratio" value={audioFeatures.harmonicPercussiveRatio} decimals={3} />
+                          <FeatureItem label="Harmonic Energy" value={audioFeatures.harmonicEnergy} decimals={4} />
+                          <FeatureItem label="Percussive Energy" value={audioFeatures.percussiveEnergy} decimals={4} />
+                          <FeatureItem label="Harmonic Centroid" value={audioFeatures.harmonicCentroid} unit="Hz" decimals={0} />
+                          <FeatureItem label="Percussive Centroid" value={audioFeatures.percussiveCentroid} unit="Hz" decimals={0} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Stereo Analysis */}
+                    {audioFeatures.stereoWidth !== null && (
+                      <div className="bg-surface-base rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-white mb-3">Stereo Analysis</h4>
+                        <div className="grid grid-cols-2 gap-3">
+                          <FeatureItem label="Stereo Width" value={audioFeatures.stereoWidth} decimals={3} />
+                          <FeatureItem label="Panning Center" value={audioFeatures.panningCenter} decimals={3} />
+                          <FeatureItem label="Stereo Imbalance" value={audioFeatures.stereoImbalance} decimals={3} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Key Detection */}
+                    {audioFeatures.keyEstimate && (
+                      <div className="bg-surface-base rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-white mb-3">Key Detection</h4>
+                        <div className="grid grid-cols-2 gap-3">
+                          <FeatureItem label="Key" value={audioFeatures.keyEstimate} isText />
+                          <FeatureItem label="Key Strength" value={audioFeatures.keyStrength} decimals={3} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ML Classifications */}
+                    {(audioFeatures.instrumentClasses || audioFeatures.genreClasses) && (
+                      <div className="bg-surface-base rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-white mb-3">ML Classifications</h4>
+                        {audioFeatures.instrumentClasses && audioFeatures.instrumentClasses.length > 0 && (
+                          <div className="mb-3">
+                            <div className="text-xs text-slate-400 mb-1.5">Instruments:</div>
+                            <div className="space-y-1">
+                              {audioFeatures.instrumentClasses.slice(0, 5).map((inst, idx) => (
+                                <div key={idx} className="flex items-center gap-2">
+                                  <div className="flex-1 h-1.5 bg-surface-raised rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full bg-accent-primary rounded-full"
+                                      style={{ width: `${inst.confidence * 100}%` }}
+                                    />
+                                  </div>
+                                  <span className="text-xs text-slate-300 w-20 capitalize">{inst.class}</span>
+                                  <span className="text-xs text-slate-500 w-10 text-right">{Math.round(inst.confidence * 100)}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {audioFeatures.genreClasses && audioFeatures.genreClasses.length > 0 && (
+                          <div>
+                            <div className="text-xs text-slate-400 mb-1.5">Genres:</div>
+                            <div className="space-y-1">
+                              {audioFeatures.genreClasses.slice(0, 5).map((genre, idx) => (
+                                <div key={idx} className="flex items-center gap-2">
+                                  <div className="flex-1 h-1.5 bg-surface-raised rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full bg-accent-primary rounded-full"
+                                      style={{ width: `${genre.confidence * 100}%` }}
+                                    />
+                                  </div>
+                                  <span className="text-xs text-slate-300 w-20 capitalize">{genre.genre}</span>
+                                  <span className="text-xs text-slate-500 w-10 text-right">{Math.round(genre.confidence * 100)}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -38,6 +38,23 @@ export const DEFAULT_WEIGHTS: FeatureWeights = {
   percussiveEnergy: 1,
   harmonicCentroid: 1,
   percussiveCentroid: 1,
+  // Phase 3: Advanced Rhythm features
+  onsetRate: 1,
+  beatStrength: 1,
+  rhythmicRegularity: 1,
+  danceability: 1,
+  // Phase 3: ADSR Envelope features
+  decayTime: 1,
+  sustainLevel: 1,
+  releaseTime: 1,
+  // Phase 5: EBU R128 Loudness features
+  loudnessIntegrated: 1,
+  loudnessRange: 1,
+  loudnessMomentaryMax: 1,
+  truePeak: 1,
+  // Phase 5: Sound Event Detection features
+  eventCount: 1,
+  eventDensity: 1,
 }
 
 // Feature groups for the UI
@@ -48,7 +65,7 @@ export const FEATURE_GROUPS = {
   },
   energy: {
     label: 'Energy/Dynamics',
-    features: ['rmsEnergy', 'loudness', 'dynamicRange', 'attackTime'],
+    features: ['rmsEnergy', 'loudness', 'dynamicRange', 'loudnessIntegrated', 'loudnessRange', 'loudnessMomentaryMax', 'truePeak'],
   },
   texture: {
     label: 'Texture',
@@ -56,7 +73,7 @@ export const FEATURE_GROUPS = {
   },
   rhythm: {
     label: 'Rhythm',
-    features: ['bpm', 'onsetCount'],
+    features: ['bpm', 'onsetCount', 'onsetRate', 'beatStrength', 'rhythmicRegularity', 'danceability', 'eventCount', 'eventDensity'],
   },
   tonal: {
     label: 'Tonal',
@@ -77,6 +94,10 @@ export const FEATURE_GROUPS = {
   harmonic: {
     label: 'Harmonic/Percussive (Advanced)',
     features: ['harmonicPercussiveRatio', 'harmonicEnergy', 'percussiveEnergy', 'harmonicCentroid', 'percussiveCentroid'],
+  },
+  envelope: {
+    label: 'Envelope (Advanced)',
+    features: ['attackTime', 'decayTime', 'sustainLevel', 'releaseTime'],
   },
 } as const
 
@@ -118,6 +139,23 @@ export const FEATURE_LABELS: Record<keyof FeatureWeights, string> = {
   percussiveEnergy: 'Percussive Energy',
   harmonicCentroid: 'Harmonic Brightness',
   percussiveCentroid: 'Percussive Brightness',
+  // Phase 3: Advanced Rhythm features
+  onsetRate: 'Onset Rate',
+  beatStrength: 'Beat Strength',
+  rhythmicRegularity: 'Rhythmic Regularity',
+  danceability: 'Danceability',
+  // Phase 3: ADSR Envelope features
+  decayTime: 'Decay Time',
+  sustainLevel: 'Sustain Level',
+  releaseTime: 'Release Time',
+  // Phase 5: EBU R128 Loudness features
+  loudnessIntegrated: 'Integrated Loudness (LUFS)',
+  loudnessRange: 'Loudness Range (LU)',
+  loudnessMomentaryMax: 'Max Momentary Loudness',
+  truePeak: 'True Peak (dBTP)',
+  // Phase 5: Sound Event Detection features
+  eventCount: 'Event Count',
+  eventDensity: 'Event Density',
 }
 
 // Normalize a value to 0-1 range using min-max scaling
@@ -197,6 +235,36 @@ function getFeatureValue(sample: AudioFeatures, feature: keyof FeatureWeights): 
       return sample.harmonicCentroid ?? null
     case 'percussiveCentroid':
       return sample.percussiveCentroid ?? null
+    // Phase 3: Advanced Rhythm features
+    case 'onsetRate':
+      return sample.onsetRate ?? null
+    case 'beatStrength':
+      return sample.beatStrength ?? null
+    case 'rhythmicRegularity':
+      return sample.rhythmicRegularity ?? null
+    case 'danceability':
+      return sample.danceability ?? null
+    // Phase 3: ADSR Envelope features
+    case 'decayTime':
+      return sample.decayTime ?? null
+    case 'sustainLevel':
+      return sample.sustainLevel ?? null
+    case 'releaseTime':
+      return sample.releaseTime ?? null
+    // Phase 5: EBU R128 Loudness features
+    case 'loudnessIntegrated':
+      return sample.loudnessIntegrated ?? null
+    case 'loudnessRange':
+      return sample.loudnessRange ?? null
+    case 'loudnessMomentaryMax':
+      return sample.loudnessMomentaryMax ?? null
+    case 'truePeak':
+      return sample.truePeak ?? null
+    // Phase 5: Sound Event Detection features
+    case 'eventCount':
+      return sample.eventCount ?? null
+    case 'eventDensity':
+      return sample.eventDensity ?? null
     default:
       return null
   }

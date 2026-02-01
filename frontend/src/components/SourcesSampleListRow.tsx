@@ -288,6 +288,13 @@ export function SourcesSampleListRow({
           </span>
         </div>
 
+        {/* Envelope Type (hidden on small screens) */}
+        <div className="hidden xl:flex w-20 flex-shrink-0 justify-center">
+          <span className="text-xs text-slate-400 capitalize">
+            {sample.envelopeType || '-'}
+          </span>
+        </div>
+
         {/* Duration */}
         <div className="w-16 sm:w-20 flex-shrink-0 text-right">
           <span className="text-xs text-slate-400">

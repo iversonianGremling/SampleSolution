@@ -1,4 +1,5 @@
-import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { ArrowUpDown, ArrowUp, ArrowDown, ChevronDown, ChevronRight } from 'lucide-react'
+import { useState } from 'react'
 
 export interface AudioFilterState {
   sortBy: 'bpm' | 'key' | 'name' | 'duration' | 'createdAt' | null
@@ -6,12 +7,26 @@ export interface AudioFilterState {
   minBpm: number
   maxBpm: number
   selectedKeys: string[]
+  selectedEnvelopeTypes: string[]
+  // Perceptual features (0-1 range)
+  minBrightness: number
+  maxBrightness: number
+  minWarmth: number
+  maxWarmth: number
+  minHardness: number
+  maxHardness: number
+  // ML classifications (when available)
+  selectedInstruments: string[]
+  selectedGenres: string[]
 }
 
 interface SourcesAudioFilterProps {
   filterState: AudioFilterState
   onChange: (state: AudioFilterState) => void
   availableKeys: string[]
+  availableEnvelopeTypes?: string[]
+  availableInstruments?: string[]
+  availableGenres?: string[]
 }
 
 const COMMON_KEYS = [
@@ -24,7 +39,16 @@ const COMMON_KEYS = [
   'B major', 'B minor'
 ]
 
-export function SourcesAudioFilter({ filterState, onChange, availableKeys }: SourcesAudioFilterProps) {
+export function SourcesAudioFilter({
+  filterState,
+  onChange,
+  availableKeys,
+  availableEnvelopeTypes = [],
+  availableInstruments = [],
+  availableGenres = []
+}: SourcesAudioFilterProps) {
+  const [showPerceptual, setShowPerceptual] = useState(false)
+  const [showClassification, setShowClassification] = useState(false)
   const handleSortChange = (field: AudioFilterState['sortBy']) => {
     if (filterState.sortBy === field) {
       // Toggle order or clear
@@ -51,6 +75,51 @@ export function SourcesAudioFilter({ filterState, onChange, availableKeys }: Sou
 
   const clearKeyFilter = () => {
     onChange({ ...filterState, selectedKeys: [] })
+  }
+
+  const handleEnvelopeTypeToggle = (type: string) => {
+    const newTypes = filterState.selectedEnvelopeTypes.includes(type)
+      ? filterState.selectedEnvelopeTypes.filter(t => t !== type)
+      : [...filterState.selectedEnvelopeTypes, type]
+    onChange({ ...filterState, selectedEnvelopeTypes: newTypes })
+  }
+
+  const handlePerceptualRangeChange = (
+    feature: 'brightness' | 'warmth' | 'hardness',
+    minOrMax: 'min' | 'max',
+    value: number
+  ) => {
+    const clamped = Math.max(0, Math.min(1, value))
+    if (feature === 'brightness') {
+      onChange({
+        ...filterState,
+        [minOrMax === 'min' ? 'minBrightness' : 'maxBrightness']: clamped
+      })
+    } else if (feature === 'warmth') {
+      onChange({
+        ...filterState,
+        [minOrMax === 'min' ? 'minWarmth' : 'maxWarmth']: clamped
+      })
+    } else if (feature === 'hardness') {
+      onChange({
+        ...filterState,
+        [minOrMax === 'min' ? 'minHardness' : 'maxHardness']: clamped
+      })
+    }
+  }
+
+  const handleInstrumentToggle = (instrument: string) => {
+    const newInstruments = filterState.selectedInstruments.includes(instrument)
+      ? filterState.selectedInstruments.filter(i => i !== instrument)
+      : [...filterState.selectedInstruments, instrument]
+    onChange({ ...filterState, selectedInstruments: newInstruments })
+  }
+
+  const handleGenreToggle = (genre: string) => {
+    const newGenres = filterState.selectedGenres.includes(genre)
+      ? filterState.selectedGenres.filter(g => g !== genre)
+      : [...filterState.selectedGenres, genre]
+    onChange({ ...filterState, selectedGenres: newGenres })
   }
 
   const getSortIcon = (field: AudioFilterState['sortBy']) => {
@@ -206,6 +275,238 @@ export function SourcesAudioFilter({ filterState, onChange, availableKeys }: Sou
           )}
         </div>
       </div>
+
+      {/* Envelope Type filter */}
+      {availableEnvelopeTypes.length > 0 && (
+        <div className="flex items-start gap-3">
+          <span className="text-xs text-slate-400 whitespace-nowrap pt-1">Envelope:</span>
+          <div className="flex-1">
+            <div className="flex flex-wrap gap-1">
+              {availableEnvelopeTypes.map((type) => (
+                <button
+                  key={type}
+                  onClick={() => handleEnvelopeTypeToggle(type)}
+                  className={`px-2 py-0.5 text-xs rounded capitalize transition-colors ${
+                    filterState.selectedEnvelopeTypes.includes(type)
+                      ? 'bg-accent-primary text-white'
+                      : 'bg-surface-base text-slate-400 hover:text-white hover:bg-surface-raised'
+                  }`}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+            {filterState.selectedEnvelopeTypes.length > 0 && (
+              <button
+                onClick={() => onChange({ ...filterState, selectedEnvelopeTypes: [] })}
+                className="text-xs text-slate-400 hover:text-white transition-colors mt-1"
+              >
+                Clear ({filterState.selectedEnvelopeTypes.length} selected)
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Perceptual features - collapsible */}
+      <div className="border-t border-surface-border pt-3">
+        <button
+          onClick={() => setShowPerceptual(!showPerceptual)}
+          className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors w-full"
+        >
+          {showPerceptual ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <span className="font-medium">Perceptual Features</span>
+        </button>
+
+        {showPerceptual && (
+          <div className="mt-3 space-y-3 pl-5">
+            {/* Brightness */}
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400 w-20">Brightness:</span>
+              <div className="flex-1 flex items-center gap-2">
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={filterState.minBrightness}
+                  onChange={(e) => handlePerceptualRangeChange('brightness', 'min', parseFloat(e.target.value))}
+                  className="flex-1 h-1 accent-accent-primary"
+                />
+                <span className="text-xs text-slate-500 w-8">{filterState.minBrightness.toFixed(2)}</span>
+                <span className="text-xs text-slate-500">-</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={filterState.maxBrightness}
+                  onChange={(e) => handlePerceptualRangeChange('brightness', 'max', parseFloat(e.target.value))}
+                  className="flex-1 h-1 accent-accent-primary"
+                />
+                <span className="text-xs text-slate-500 w-8">{filterState.maxBrightness.toFixed(2)}</span>
+              </div>
+            </div>
+
+            {/* Warmth */}
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400 w-20">Warmth:</span>
+              <div className="flex-1 flex items-center gap-2">
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={filterState.minWarmth}
+                  onChange={(e) => handlePerceptualRangeChange('warmth', 'min', parseFloat(e.target.value))}
+                  className="flex-1 h-1 accent-accent-primary"
+                />
+                <span className="text-xs text-slate-500 w-8">{filterState.minWarmth.toFixed(2)}</span>
+                <span className="text-xs text-slate-500">-</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={filterState.maxWarmth}
+                  onChange={(e) => handlePerceptualRangeChange('warmth', 'max', parseFloat(e.target.value))}
+                  className="flex-1 h-1 accent-accent-primary"
+                />
+                <span className="text-xs text-slate-500 w-8">{filterState.maxWarmth.toFixed(2)}</span>
+              </div>
+            </div>
+
+            {/* Hardness */}
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400 w-20">Hardness:</span>
+              <div className="flex-1 flex items-center gap-2">
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={filterState.minHardness}
+                  onChange={(e) => handlePerceptualRangeChange('hardness', 'min', parseFloat(e.target.value))}
+                  className="flex-1 h-1 accent-accent-primary"
+                />
+                <span className="text-xs text-slate-500 w-8">{filterState.minHardness.toFixed(2)}</span>
+                <span className="text-xs text-slate-500">-</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={filterState.maxHardness}
+                  onChange={(e) => handlePerceptualRangeChange('hardness', 'max', parseFloat(e.target.value))}
+                  className="flex-1 h-1 accent-accent-primary"
+                />
+                <span className="text-xs text-slate-500 w-8">{filterState.maxHardness.toFixed(2)}</span>
+              </div>
+            </div>
+
+            {/* Reset button */}
+            {(filterState.minBrightness > 0 || filterState.maxBrightness < 1 ||
+              filterState.minWarmth > 0 || filterState.maxWarmth < 1 ||
+              filterState.minHardness > 0 || filterState.maxHardness < 1) && (
+              <button
+                onClick={() => onChange({
+                  ...filterState,
+                  minBrightness: 0,
+                  maxBrightness: 1,
+                  minWarmth: 0,
+                  maxWarmth: 1,
+                  minHardness: 0,
+                  maxHardness: 1,
+                })}
+                className="text-xs text-slate-400 hover:text-white transition-colors"
+              >
+                Reset perceptual filters
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ML Classification - collapsible (only show if data available) */}
+      {(availableInstruments.length > 0 || availableGenres.length > 0) && (
+        <div className="border-t border-surface-border pt-3">
+          <button
+            onClick={() => setShowClassification(!showClassification)}
+            className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors w-full"
+          >
+            {showClassification ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            <span className="font-medium">Classification</span>
+          </button>
+
+          {showClassification && (
+            <div className="mt-3 space-y-3 pl-5">
+              {/* Instruments */}
+              {availableInstruments.length > 0 && (
+                <div className="flex items-start gap-3">
+                  <span className="text-xs text-slate-400 whitespace-nowrap pt-1">Instruments:</span>
+                  <div className="flex-1">
+                    <div className="flex flex-wrap gap-1">
+                      {availableInstruments.map((instrument) => (
+                        <button
+                          key={instrument}
+                          onClick={() => handleInstrumentToggle(instrument)}
+                          className={`px-2 py-0.5 text-xs rounded capitalize transition-colors ${
+                            filterState.selectedInstruments.includes(instrument)
+                              ? 'bg-accent-primary text-white'
+                              : 'bg-surface-base text-slate-400 hover:text-white hover:bg-surface-raised'
+                          }`}
+                        >
+                          {instrument}
+                        </button>
+                      ))}
+                    </div>
+                    {filterState.selectedInstruments.length > 0 && (
+                      <button
+                        onClick={() => onChange({ ...filterState, selectedInstruments: [] })}
+                        className="text-xs text-slate-400 hover:text-white transition-colors mt-1"
+                      >
+                        Clear ({filterState.selectedInstruments.length} selected)
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Genres */}
+              {availableGenres.length > 0 && (
+                <div className="flex items-start gap-3">
+                  <span className="text-xs text-slate-400 whitespace-nowrap pt-1">Genres:</span>
+                  <div className="flex-1">
+                    <div className="flex flex-wrap gap-1">
+                      {availableGenres.map((genre) => (
+                        <button
+                          key={genre}
+                          onClick={() => handleGenreToggle(genre)}
+                          className={`px-2 py-0.5 text-xs rounded capitalize transition-colors ${
+                            filterState.selectedGenres.includes(genre)
+                              ? 'bg-accent-primary text-white'
+                              : 'bg-surface-base text-slate-400 hover:text-white hover:bg-surface-raised'
+                          }`}
+                        >
+                          {genre}
+                        </button>
+                      ))}
+                    </div>
+                    {filterState.selectedGenres.length > 0 && (
+                      <button
+                        onClick={() => onChange({ ...filterState, selectedGenres: [] })}
+                        className="text-xs text-slate-400 hover:text-white transition-colors mt-1"
+                      >
+                        Clear ({filterState.selectedGenres.length} selected)
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

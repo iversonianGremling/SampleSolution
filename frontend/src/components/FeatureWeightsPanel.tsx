@@ -59,6 +59,10 @@ const PRESETS: Preset[] = [
       ...DEFAULT_WEIGHTS,
       bpm: 2,
       onsetCount: 2,
+      onsetRate: 2,
+      beatStrength: 1.8,
+      rhythmicRegularity: 1.5,
+      danceability: 1.5,
       attackTime: 1.5,
       spectralFlux: 1.5,
       spectralCentroid: 0.5,
@@ -75,9 +79,51 @@ const PRESETS: Preset[] = [
       rmsEnergy: 2,
       loudness: 2,
       dynamicRange: 2,
+      loudnessIntegrated: 1.8,
+      loudnessRange: 1.5,
+      truePeak: 1.5,
       attackTime: 1.5,
       spectralCentroid: 0.5,
       spectralRolloff: 0.5,
+    },
+  },
+  {
+    id: 'perceptual',
+    name: 'Perceptual',
+    description: 'Brightness, warmth & feel',
+    weights: {
+      ...DEFAULT_WEIGHTS,
+      brightness: 2,
+      warmth: 2,
+      hardness: 2,
+      roughness: 1.8,
+      sharpness: 1.8,
+      spectralCentroid: 1.5,
+      spectralRolloff: 1.5,
+      dissonance: 1.5,
+      bpm: 0.3,
+      onsetCount: 0.3,
+    },
+  },
+  {
+    id: 'spectral',
+    name: 'Spectral',
+    description: 'Advanced spectral analysis',
+    weights: {
+      ...DEFAULT_WEIGHTS,
+      spectralCentroid: 2,
+      spectralRolloff: 2,
+      spectralBandwidth: 2,
+      spectralContrast: 2,
+      spectralFlux: 2,
+      spectralFlatness: 2,
+      spectralCrest: 2,
+      spectralComplexity: 1.8,
+      zeroCrossingRate: 1.5,
+      inharmonicity: 1.5,
+      dissonance: 1.5,
+      bpm: 0.2,
+      loudness: 0.3,
     },
   },
 ]
@@ -149,7 +195,7 @@ export function FeatureWeightsPanel({
             <button
               key={preset.id}
               onClick={() => handlePresetChange(preset)}
-              className={`px-2.5 py-2 rounded text-left transition-all ${
+              className={`px-2.5 py-1.5 rounded text-left transition-all ${
                 activePreset === preset.id
                   ? 'bg-accent-primary/15 border border-accent-primary/50 text-white'
                   : 'bg-surface-raised border border-transparent text-slate-400 hover:text-white hover:bg-surface-base'

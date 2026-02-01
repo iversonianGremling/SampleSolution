@@ -209,6 +209,71 @@ function initDatabase() {
     `)
   }
 
+  // Migration: Add Phase 3 features (advanced rhythm, ADSR envelope)
+  const audioFeaturesPhase3 = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasOnsetRate = audioFeaturesPhase3.some(col => col.name === 'onset_rate')
+  if (!hasOnsetRate) {
+    console.log('[DB] Migrating: Adding Phase 3 audio features (advanced rhythm, ADSR envelope)')
+    sqlite.exec(`
+      -- Advanced Rhythm features
+      ALTER TABLE audio_features ADD COLUMN onset_rate REAL;
+      ALTER TABLE audio_features ADD COLUMN beat_strength REAL;
+      ALTER TABLE audio_features ADD COLUMN rhythmic_regularity REAL;
+      ALTER TABLE audio_features ADD COLUMN danceability REAL;
+
+      -- ADSR Envelope features
+      ALTER TABLE audio_features ADD COLUMN decay_time REAL;
+      ALTER TABLE audio_features ADD COLUMN sustain_level REAL;
+      ALTER TABLE audio_features ADD COLUMN release_time REAL;
+      ALTER TABLE audio_features ADD COLUMN envelope_type TEXT;
+    `)
+  }
+
+  // Migration: Add Phase 4 features (ML-based instrument & genre classification)
+  const audioFeaturesPhase4 = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasInstrumentClasses = audioFeaturesPhase4.some(col => col.name === 'instrument_classes')
+  if (!hasInstrumentClasses) {
+    console.log('[DB] Migrating: Adding Phase 4 audio features (ML instrument & genre classification)')
+    sqlite.exec(`
+      -- ML Classification features
+      ALTER TABLE audio_features ADD COLUMN instrument_classes TEXT;
+      ALTER TABLE audio_features ADD COLUMN genre_classes TEXT;
+      ALTER TABLE audio_features ADD COLUMN genre_primary TEXT;
+      ALTER TABLE audio_features ADD COLUMN yamnet_embeddings TEXT;
+      ALTER TABLE audio_features ADD COLUMN mood_classes TEXT;
+    `)
+  }
+
+  // Migration: Add Phase 5 features (EBU R128 loudness & sound event detection)
+  const audioFeaturesPhase5 = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasLoudnessIntegrated = audioFeaturesPhase5.some(col => col.name === 'loudness_integrated')
+  if (!hasLoudnessIntegrated) {
+    console.log('[DB] Migrating: Adding Phase 5 audio features (EBU R128 loudness & sound events)')
+    sqlite.exec(`
+      -- EBU R128 Loudness features
+      ALTER TABLE audio_features ADD COLUMN loudness_integrated REAL;
+      ALTER TABLE audio_features ADD COLUMN loudness_range REAL;
+      ALTER TABLE audio_features ADD COLUMN loudness_momentary_max REAL;
+      ALTER TABLE audio_features ADD COLUMN true_peak REAL;
+
+      -- Sound Event Detection features
+      ALTER TABLE audio_features ADD COLUMN event_count INTEGER;
+      ALTER TABLE audio_features ADD COLUMN event_density REAL;
+    `)
+  }
+
+  // Migration: Add Phase 6 features (Audio fingerprinting & similarity detection)
+  const audioFeaturesPhase6 = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasChromaprintFingerprint = audioFeaturesPhase6.some(col => col.name === 'chromaprint_fingerprint')
+  if (!hasChromaprintFingerprint) {
+    console.log('[DB] Migrating: Adding Phase 6 audio features (fingerprinting & similarity detection)')
+    sqlite.exec(`
+      -- Fingerprinting features
+      ALTER TABLE audio_features ADD COLUMN chromaprint_fingerprint TEXT;
+      ALTER TABLE audio_features ADD COLUMN similarity_hash TEXT;
+    `)
+  }
+
   return drizzleDb
 }
 
