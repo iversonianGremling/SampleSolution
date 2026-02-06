@@ -13,6 +13,7 @@ import type {
   AudioFeatures,
   SourceTree,
   SourcesSamplesResponse,
+  SyncConfig,
 } from '../types'
 
 const api = axios.create({
@@ -37,7 +38,7 @@ export const addTracks = (urls: string[]) =>
 
 export const deleteTrack = (id: number) => api.delete(`/tracks/${id}`)
 
-export const updateTrack = (id: number, data: { title?: string }) =>
+export const updateTrack = (id: number, data: { title?: string; artist?: string; album?: string }) =>
   api.put<Track>(`/tracks/${id}`, data).then((r) => r.data)
 
 export const getTrackAudioUrl = (id: number) => `/api/tracks/${id}/audio`
@@ -275,5 +276,20 @@ export interface BatchReanalyzeResponse {
   results: Array<{ sliceId: number; success: boolean; error?: string }>
 }
 
-export const batchReanalyzeSamples = (sliceIds?: number[], analysisLevel?: 'quick' | 'standard' | 'advanced') =>
-  api.post<BatchReanalyzeResponse>('/slices/batch-reanalyze', { sliceIds, analysisLevel }).then((r) => r.data)
+export const batchReanalyzeSamples = (
+  sliceIds?: number[],
+  analysisLevel?: 'quick' | 'standard' | 'advanced',
+  concurrency?: number,
+  includeFilenameTags?: boolean
+) =>
+  api.post<BatchReanalyzeResponse>('/slices/batch-reanalyze', { sliceIds, analysisLevel, concurrency, includeFilenameTags }).then((r) => r.data)
+
+// Sync configs
+export const getSyncConfigs = () =>
+  api.get<SyncConfig[]>('/sync-configs').then((r) => r.data)
+
+export const createSyncConfig = (data: { tagId: number; collectionId: number; direction: string }) =>
+  api.post<SyncConfig>('/sync-configs', data).then((r) => r.data)
+
+export const deleteSyncConfig = (id: number) =>
+  api.delete(`/sync-configs/${id}`)

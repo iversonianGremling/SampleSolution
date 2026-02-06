@@ -3,6 +3,13 @@ import { eq, inArray, and } from 'drizzle-orm'
 import fs from 'fs/promises'
 import path from 'path'
 import { db, schema } from '../db/index.js'
+import {
+  onCollectionSliceAdded,
+  onCollectionSliceRemoved,
+  createSyncLink,
+  removeSyncLink,
+  getAllSyncConfigs,
+} from '../services/tagCollectionSync.js'
 
 const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
@@ -127,6 +134,9 @@ router.post('/collections/:id/slices', async (req, res) => {
       .values({ collectionId, sliceId })
       .onConflictDoNothing()
 
+    // Trigger tag-collection sync
+    onCollectionSliceAdded(collectionId, sliceId).catch(err => console.error('Sync error (slice added):', err))
+
     res.json({ success: true })
   } catch (error) {
     console.error('Error adding slice to collection:', error)
@@ -148,6 +158,9 @@ router.delete('/collections/:id/slices/:sliceId', async (req, res) => {
           eq(schema.collectionSlices.sliceId, sliceId)
         )
       )
+
+    // Trigger tag-collection sync
+    onCollectionSliceRemoved(collectionId, sliceId).catch(err => console.error('Sync error (slice removed):', err))
 
     res.json({ success: true })
   } catch (error) {
@@ -345,6 +358,53 @@ router.post('/slices/export', async (req, res) => {
   } catch (error) {
     console.error('Error exporting slices:', error)
     res.status(500).json({ error: 'Failed to export slices' })
+  }
+})
+
+// --- Sync Config Routes ---
+
+// Get all sync configs
+router.get('/sync-configs', async (_req, res) => {
+  try {
+    const configs = await getAllSyncConfigs()
+    res.json(configs)
+  } catch (error) {
+    console.error('Error fetching sync configs:', error)
+    res.status(500).json({ error: 'Failed to fetch sync configs' })
+  }
+})
+
+// Create sync config
+router.post('/sync-configs', async (req, res) => {
+  const { tagId, collectionId, direction } = req.body as {
+    tagId: number
+    collectionId: number
+    direction: 'tag-to-collection' | 'collection-to-tag' | 'bidirectional'
+  }
+
+  if (!tagId || !collectionId || !direction) {
+    return res.status(400).json({ error: 'tagId, collectionId, and direction are required' })
+  }
+
+  try {
+    const config = await createSyncLink(tagId, collectionId, direction)
+    res.json(config)
+  } catch (error) {
+    console.error('Error creating sync config:', error)
+    res.status(500).json({ error: 'Failed to create sync config' })
+  }
+})
+
+// Delete sync config
+router.delete('/sync-configs/:id', async (req, res) => {
+  const id = parseInt(req.params.id)
+
+  try {
+    await removeSyncLink(id)
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Error deleting sync config:', error)
+    res.status(500).json({ error: 'Failed to delete sync config' })
   }
 })
 

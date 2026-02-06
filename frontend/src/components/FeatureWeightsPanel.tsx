@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, RotateCcw, Settings2 } from 'lucide-react'
-import { useState, useEffect } from 'react'
-import type { FeatureWeights } from '../types'
+import { useState, useEffect, useMemo } from 'react'
+import type { FeatureWeights, NormalizationMethod } from '../types'
 import { FEATURE_GROUPS, FEATURE_LABELS, DEFAULT_WEIGHTS } from '../utils/featureMatrix'
 import type { ReductionMethod } from '../hooks/useDimensionReduction'
 import type { ClusterMethod } from '../hooks/useClustering'
@@ -16,6 +16,11 @@ interface FeatureWeightsPanelProps {
   onClusterCountChange: (count: number) => void
   dbscanEpsilon: number
   onDbscanEpsilonChange: (epsilon: number) => void
+  normalizationMethod?: NormalizationMethod
+  onNormalizationMethodChange?: (method: NormalizationMethod) => void
+  hdbscanMinClusterSize?: number
+  onHdbscanMinClusterSizeChange?: (size: number) => void
+  learnedWeights?: FeatureWeights | null
 }
 
 interface Preset {
@@ -139,6 +144,11 @@ export function FeatureWeightsPanel({
   onClusterCountChange,
   dbscanEpsilon,
   onDbscanEpsilonChange,
+  normalizationMethod = 'robust',
+  onNormalizationMethodChange,
+  hdbscanMinClusterSize = 5,
+  onHdbscanMinClusterSizeChange,
+  learnedWeights,
 }: FeatureWeightsPanelProps) {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [activePreset, setActivePreset] = useState<string | null>('balanced')
@@ -169,9 +179,23 @@ export function FeatureWeightsPanel({
     onWeightsChange(preset.weights)
   }
 
+  // Build presets list including ML Optimized if learned weights are available
+  const allPresets = useMemo(() => {
+    if (!learnedWeights) return PRESETS
+    return [
+      ...PRESETS,
+      {
+        id: 'ml-optimized',
+        name: 'ML Optimized',
+        description: 'Learned from labeled samples',
+        weights: learnedWeights,
+      },
+    ]
+  }, [learnedWeights])
+
   // Detect if weights match a preset
   useEffect(() => {
-    const matchingPreset = PRESETS.find((p) =>
+    const matchingPreset = allPresets.find((p) =>
       Object.keys(p.weights).every(
         (k) =>
           Math.abs(
@@ -180,7 +204,7 @@ export function FeatureWeightsPanel({
       )
     )
     setActivePreset(matchingPreset?.id ?? null)
-  }, [weights])
+  }, [weights, allPresets])
 
   return (
     <div className="space-y-3">
@@ -191,7 +215,7 @@ export function FeatureWeightsPanel({
           Feature Presets
         </label>
         <div className="grid grid-cols-2 gap-1.5">
-          {PRESETS.map((preset) => (
+          {allPresets.map((preset) => (
             <button
               key={preset.id}
               onClick={() => handlePresetChange(preset)}
@@ -243,6 +267,28 @@ export function FeatureWeightsPanel({
             </button>
           </div>
 
+          {/* Normalization Method */}
+          <div className="border border-surface-border rounded p-2.5">
+            <label className="text-xs font-medium text-slate-400 block mb-1.5">
+              Normalization
+            </label>
+            <div className="flex gap-1">
+              {(['minmax', 'robust', 'zscore'] as NormalizationMethod[]).map((method) => (
+                <button
+                  key={method}
+                  onClick={() => onNormalizationMethodChange?.(method)}
+                  className={`flex-1 px-1.5 py-1 text-xs rounded transition-colors ${
+                    normalizationMethod === method
+                      ? 'bg-accent-primary text-white'
+                      : 'bg-surface-raised text-slate-400 hover:bg-surface-base hover:text-white'
+                  }`}
+                >
+                  {method === 'minmax' ? 'Min-Max' : method === 'robust' ? 'Robust' : 'Z-Score'}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Projection Method */}
           <div className="border border-surface-border rounded p-2.5">
             <label className="text-xs font-medium text-slate-400 block mb-1.5">
@@ -271,7 +317,7 @@ export function FeatureWeightsPanel({
               Clustering
             </label>
             <div className="flex gap-1 mb-2">
-              {(['dbscan', 'kmeans'] as ClusterMethod[]).map((method) => (
+              {(['dbscan', 'kmeans', 'hdbscan'] as ClusterMethod[]).map((method) => (
                 <button
                   key={method}
                   onClick={() => onClusterMethodChange(method)}
@@ -281,32 +327,36 @@ export function FeatureWeightsPanel({
                       : 'bg-surface-raised text-slate-400 hover:bg-surface-base hover:text-white'
                   }`}
                 >
-                  {method === 'dbscan' ? 'DBSCAN' : 'K-Means'}
+                  {method === 'dbscan' ? 'DBSCAN' : method === 'kmeans' ? 'K-Means' : 'HDBSCAN'}
                 </button>
               ))}
             </div>
             <div>
               <label className="text-xs font-medium text-slate-400 block mb-1.5">
-                {clusterMethod === 'kmeans' ? 'Clusters' : 'Density'}
+                {clusterMethod === 'kmeans' ? 'Clusters' : clusterMethod === 'hdbscan' ? 'Min Cluster Size' : 'Density'}
               </label>
               <div className="flex items-center gap-1.5">
                 <input
                   type="range"
-                  min={clusterMethod === 'kmeans' ? 2 : 0.05}
-                  max={clusterMethod === 'kmeans' ? 12 : 0.5}
-                  step={clusterMethod === 'kmeans' ? 1 : 0.01}
-                  value={clusterMethod === 'kmeans' ? clusterCount : dbscanEpsilon}
+                  min={clusterMethod === 'kmeans' ? 2 : clusterMethod === 'hdbscan' ? 2 : 0.05}
+                  max={clusterMethod === 'kmeans' ? 12 : clusterMethod === 'hdbscan' ? 20 : 0.5}
+                  step={clusterMethod === 'kmeans' || clusterMethod === 'hdbscan' ? 1 : 0.01}
+                  value={clusterMethod === 'kmeans' ? clusterCount : clusterMethod === 'hdbscan' ? hdbscanMinClusterSize : dbscanEpsilon}
                   onChange={(e) =>
                     clusterMethod === 'kmeans'
                       ? onClusterCountChange(parseInt(e.target.value))
-                      : onDbscanEpsilonChange(parseFloat(e.target.value))
+                      : clusterMethod === 'hdbscan'
+                        ? onHdbscanMinClusterSizeChange?.(parseInt(e.target.value))
+                        : onDbscanEpsilonChange(parseFloat(e.target.value))
                   }
                   className="flex-1 h-1 accent-accent-primary"
                 />
                 <span className="text-xs text-slate-300 w-7 text-right font-mono">
                   {clusterMethod === 'kmeans'
                     ? clusterCount
-                    : dbscanEpsilon.toFixed(2)}
+                    : clusterMethod === 'hdbscan'
+                      ? hdbscanMinClusterSize
+                      : dbscanEpsilon.toFixed(2)}
                 </span>
               </div>
             </div>

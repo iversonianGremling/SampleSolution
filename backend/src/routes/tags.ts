@@ -7,6 +7,7 @@ import {
   getTagMetadata,
   storeAudioFeatures,
 } from '../services/audioAnalysis.js'
+import { onTagAdded, onTagRemoved } from '../services/tagCollectionSync.js'
 
 const router = Router()
 
@@ -117,6 +118,9 @@ router.post('/slices/:sliceId/tags', async (req, res) => {
       .values({ sliceId, tagId })
       .onConflictDoNothing()
 
+    // Trigger tag-collection sync
+    onTagAdded(sliceId, tagId).catch(err => console.error('Sync error (tag added):', err))
+
     res.json({ success: true })
   } catch (error) {
     console.error('Error adding tag to slice:', error)
@@ -138,6 +142,9 @@ router.delete('/slices/:sliceId/tags/:tagId', async (req, res) => {
           eq(schema.sliceTags.tagId, tagId)
         )
       )
+
+    // Trigger tag-collection sync
+    onTagRemoved(sliceId, tagId).catch(err => console.error('Sync error (tag removed):', err))
 
     res.json({ success: true })
   } catch (error) {

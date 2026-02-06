@@ -43,10 +43,13 @@ export interface AudioFeatures {
   spectralRolloff: number
   spectralBandwidth: number
   spectralContrast: number
+  spectralFlux?: number
+  spectralFlatness?: number
 
   // Timbral features
   zeroCrossingRate: number
   mfccMean: number[]
+  kurtosis?: number
 
   // Energy/Dynamics
   rmsEnergy: number
@@ -122,6 +125,13 @@ export interface AudioFeatures {
     confidence: number
   }>
 
+  // New analysis features
+  temporalCentroid?: number
+  crestFactor?: number
+  transientSpectralCentroid?: number
+  transientSpectralFlatness?: number
+  sampleTypeConfidence?: number
+
   // Metadata
   analysisLevel?: AnalysisLevel
   analysisDurationMs: number
@@ -149,12 +159,17 @@ export async function analyzeAudioFeatures(
   return new Promise((resolve, reject) => {
     // Adjust timeout based on analysis level
     // Advanced mode uses ML models (YAMNet) which require more time
-    const timeoutMs = analysisLevel === 'advanced' ? 120000 : analysisLevel === 'quick' ? 30000 : 60000
+    // First run needs extra time for model download (~60-90s) + analysis (~60-90s)
+    const timeoutMs = analysisLevel === 'advanced' ? 300000 : analysisLevel === 'quick' ? 30000 : 60000
 
     const args = [PYTHON_SCRIPT, audioPath]
     if (analysisLevel !== 'standard') {
       args.push('--level', analysisLevel)
     }
+
+    // Pass original filename for filename-based detection
+    const basename = path.basename(audioPath)
+    args.push('--filename', basename)
 
     const proc = spawn(PYTHON_EXECUTABLE, args, {
       timeout: timeoutMs,
@@ -274,8 +289,11 @@ export async function analyzeAudioFeatures(
           spectralRolloff: result.spectral_rolloff,
           spectralBandwidth: result.spectral_bandwidth,
           spectralContrast: result.spectral_contrast,
+          spectralFlux: result.spectral_flux,
+          spectralFlatness: result.spectral_flatness,
           zeroCrossingRate: result.zero_crossing_rate,
           mfccMean: result.mfcc_mean,
+          kurtosis: result.kurtosis,
           rmsEnergy: result.rms_energy,
           loudness: result.loudness,
           dynamicRange: result.dynamic_range,
@@ -324,6 +342,12 @@ export async function analyzeAudioFeatures(
           genrePrimary: result.genre_primary,
           yamnetEmbeddings: result.yamnet_embeddings,
           moodClasses: result.mood_classes,
+          // New analysis features
+          temporalCentroid: result.temporal_centroid,
+          crestFactor: result.crest_factor,
+          transientSpectralCentroid: result.transient_spectral_centroid,
+          transientSpectralFlatness: result.transient_spectral_flatness,
+          sampleTypeConfidence: result.sample_type_confidence,
           // Metadata
           analysisLevel: result.analysis_level,
           analysisDurationMs: result.analysis_duration_ms,
@@ -349,6 +373,79 @@ export async function analyzeAudioFeatures(
 }
 
 /**
+ * Derive a canonical instrument type from YAMNet classes and filename hints
+ */
+export function deriveInstrumentType(
+  instrumentClasses: Array<{ class: string; confidence: number }> | undefined,
+  filename?: string
+): string | null {
+  const YAMNET_MAP: Record<string, string> = {
+    'bass drum': 'kick', 'kick drum': 'kick', 'kick': 'kick',
+    'snare drum': 'snare', 'snare': 'snare', 'rimshot': 'snare',
+    'hi-hat': 'hihat', 'hihat': 'hihat', 'hi hat': 'hihat',
+    'clap': 'clap', 'hand clap': 'clap', 'handclap': 'clap',
+    'shaker': 'shaker', 'maraca': 'shaker', 'maracas': 'shaker',
+    'cymbal': 'cymbal', 'crash cymbal': 'cymbal', 'ride cymbal': 'cymbal', 'splash cymbal': 'cymbal',
+    'tom': 'tom', 'tom-tom drum': 'tom', 'floor tom': 'tom',
+    'bass': 'bass', 'bass guitar': 'bass', 'electric bass': 'bass', 'sub bass': 'bass',
+    'synthesizer': 'pad', 'pad': 'pad', 'ambient': 'pad',
+    'lead': 'lead', 'synth lead': 'lead',
+    'singing': 'vocal', 'voice': 'vocal', 'vocal': 'vocal', 'speech': 'vocal', 'rap': 'vocal',
+    'sound effect': 'fx', 'noise': 'fx', 'whoosh': 'fx', 'explosion': 'fx', 'riser': 'fx',
+    'drum': 'percussion', 'percussion': 'percussion', 'bongo': 'percussion', 'conga': 'percussion',
+    'tambourine': 'percussion', 'cowbell': 'percussion', 'woodblock': 'percussion', 'timbales': 'percussion',
+    'piano': 'keys', 'keyboard': 'keys', 'organ': 'keys', 'rhodes': 'keys', 'electric piano': 'keys',
+    'guitar': 'guitar', 'acoustic guitar': 'guitar', 'electric guitar': 'guitar',
+    'violin': 'strings', 'cello': 'strings', 'viola': 'strings', 'string': 'strings', 'orchestra': 'strings',
+    'brass': 'other', 'flute': 'other', 'saxophone': 'other', 'trumpet': 'other', 'trombone': 'other',
+  }
+
+  // First try from ML classes
+  if (instrumentClasses && instrumentClasses.length > 0) {
+    for (const cls of instrumentClasses) {
+      if (cls.confidence < 0.3) continue
+      const lower = cls.class.toLowerCase()
+      for (const [pattern, type] of Object.entries(YAMNET_MAP)) {
+        if (lower.includes(pattern)) {
+          return type
+        }
+      }
+    }
+  }
+
+  // Fallback: try filename
+  if (filename) {
+    const lower = filename.toLowerCase()
+    const FILENAME_MAP: Record<string, string> = {
+      kick: 'kick', '808': 'kick', bd: 'kick', bassdrum: 'kick',
+      snare: 'snare', sd: 'snare', snr: 'snare', rim: 'snare',
+      hihat: 'hihat', hh: 'hihat', hat: 'hihat',
+      clap: 'clap', clp: 'clap',
+      shaker: 'shaker',
+      cymbal: 'cymbal', crash: 'cymbal', ride: 'cymbal',
+      tom: 'tom',
+      bass: 'bass', sub: 'bass',
+      pad: 'pad',
+      lead: 'lead',
+      vocal: 'vocal', vox: 'vocal', voice: 'vocal',
+      fx: 'fx', riser: 'fx', sweep: 'fx', impact: 'fx',
+      perc: 'percussion',
+      piano: 'keys', keys: 'keys', rhodes: 'keys',
+      guitar: 'guitar', gtr: 'guitar',
+      strings: 'strings', violin: 'strings', cello: 'strings',
+    }
+    const tokens = lower.replace(/[_\-.\s]/g, ' ').split(' ')
+    for (const token of tokens) {
+      if (FILENAME_MAP[token]) {
+        return FILENAME_MAP[token]
+      }
+    }
+  }
+
+  return null
+}
+
+/**
  * Store audio features in database
  */
 export async function storeAudioFeatures(
@@ -357,8 +454,12 @@ export async function storeAudioFeatures(
 ): Promise<void> {
   const createdAt = new Date().toISOString()
 
+  // Derive instrument type from ML classes and/or filename
+  const instrumentType = deriveInstrumentType(features.instrumentClasses)
+
   const values = {
     sliceId,
+    instrumentType: instrumentType ?? null,
     duration: features.duration,
     sampleRate: features.sampleRate,
     isOneShot: features.isOneShot ? 1 : 0,
@@ -370,8 +471,11 @@ export async function storeAudioFeatures(
     spectralRolloff: features.spectralRolloff,
     spectralBandwidth: features.spectralBandwidth,
     spectralContrast: features.spectralContrast,
+    spectralFlux: features.spectralFlux ?? null,
+    spectralFlatness: features.spectralFlatness ?? null,
     zeroCrossingRate: features.zeroCrossingRate,
     mfccMean: JSON.stringify(features.mfccMean),
+    kurtosis: features.kurtosis ?? null,
     rmsEnergy: features.rmsEnergy,
     loudness: features.loudness,
     dynamicRange: features.dynamicRange,
@@ -420,6 +524,12 @@ export async function storeAudioFeatures(
     genrePrimary: features.genrePrimary ?? null,
     yamnetEmbeddings: features.yamnetEmbeddings ? JSON.stringify(features.yamnetEmbeddings) : null,
     moodClasses: features.moodClasses ? JSON.stringify(features.moodClasses) : null,
+    // New analysis features
+    temporalCentroid: features.temporalCentroid ?? null,
+    crestFactor: features.crestFactor ?? null,
+    transientSpectralCentroid: features.transientSpectralCentroid ?? null,
+    transientSpectralFlatness: features.transientSpectralFlatness ?? null,
+    sampleTypeConfidence: features.sampleTypeConfidence ?? null,
     // Metadata
     analysisLevel: features.analysisLevel ?? 'standard',
     analysisVersion: '1.4', // Updated for Phase 4
@@ -472,8 +582,11 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     spectralRolloff: row.spectralRolloff || 0,
     spectralBandwidth: row.spectralBandwidth || 0,
     spectralContrast: row.spectralContrast || 0,
+    spectralFlux: row.spectralFlux ?? undefined,
+    spectralFlatness: row.spectralFlatness ?? undefined,
     zeroCrossingRate: row.zeroCrossingRate || 0,
     mfccMean: JSON.parse(row.mfccMean || '[]'),
+    kurtosis: row.kurtosis ?? undefined,
     rmsEnergy: row.rmsEnergy || 0,
     loudness: row.loudness || 0,
     dynamicRange: row.dynamicRange || 0,
@@ -522,10 +635,71 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     genrePrimary: row.genrePrimary ?? undefined,
     yamnetEmbeddings: row.yamnetEmbeddings ? JSON.parse(row.yamnetEmbeddings) : undefined,
     moodClasses: row.moodClasses ? JSON.parse(row.moodClasses) : undefined,
+    // New analysis features
+    temporalCentroid: row.temporalCentroid ?? undefined,
+    crestFactor: row.crestFactor ?? undefined,
+    transientSpectralCentroid: row.transientSpectralCentroid ?? undefined,
+    transientSpectralFlatness: row.transientSpectralFlatness ?? undefined,
+    sampleTypeConfidence: row.sampleTypeConfidence ?? undefined,
     // Metadata
     analysisLevel: row.analysisLevel as AnalysisLevel | undefined,
     analysisDurationMs: row.analysisDurationMs || 0,
   }
+}
+
+/**
+ * Parse filename and folder path to extract tags
+ */
+export function parseFilenameTags(
+  filename: string,
+  folderPath: string | null
+): Array<{ tag: string; confidence: number; source: 'filename' | 'folder'; category: string }> {
+  const tags: Array<{ tag: string; confidence: number; source: 'filename' | 'folder'; category: string }> = []
+
+  const KEYWORD_CATEGORIES: Record<string, string[]> = {
+    percussion: ['kick', '808', 'bd', 'bassdrum', 'snare', 'sd', 'snr', 'clap', 'clp', 'rim', 'rimshot', 'hihat', 'hh', 'hat', 'hi-hat', 'ride', 'crash', 'perc', 'percussion', 'tom', 'shaker', 'tambourine', 'cowbell', 'conga', 'bongo', 'woodblock'],
+    melodic: ['piano', 'keys', 'rhodes', 'synth', 'synthesizer', 'pad', 'lead', 'pluck', 'chord', 'chrd', 'stab', 'arp', 'arpeggio', 'bass', 'sub', 'guitar', 'gtr', 'strings', 'violin', 'cello', 'brass', 'horn', 'flute', 'sax', 'organ', 'bell', 'marimba', 'vibes'],
+    vocal: ['vocal', 'vox', 'voice', 'acapella', 'spoken', 'chant', 'choir', 'adlib'],
+    fx: ['riser', 'rise', 'sweep', 'impact', 'hit', 'noise', 'texture', 'atmosphere', 'atmos', 'ambience', 'foley', 'whoosh', 'boom', 'swell', 'transition', 'downlifter', 'uplifter'],
+    processing: ['tape', 'vinyl', 'lo-fi', 'lofi', 'distorted', 'saturated', 'filtered', 'processed', 'dry', 'wet', 'reverb', 'delay', 'compressed'],
+    character: ['dark', 'bright', 'warm', 'cold', 'hard', 'soft', 'dirty', 'clean', 'analog', 'analogue', 'digital', 'vintage', 'modern', 'fat', 'thin', 'crispy'],
+    type: ['loop', 'beat', 'groove', 'pattern', 'one-shot', 'oneshot', 'one_shot', 'hit', 'shot', 'single', 'fill', 'break', 'top'],
+  }
+
+  function tokenize(str: string): string[] {
+    return str
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+      .split(/[_\-\s.]+/)
+      .map(t => t.toLowerCase())
+      .filter(t => t.length > 1)
+  }
+
+  function matchTokens(tokens: string[], source: 'filename' | 'folder') {
+    const confidence = source === 'filename' ? 0.90 : 0.85
+    const seen = new Set<string>()
+
+    for (const token of tokens) {
+      for (const [_category, keywords] of Object.entries(KEYWORD_CATEGORIES)) {
+        if (keywords.includes(token) && !seen.has(token)) {
+          seen.add(token)
+          tags.push({ tag: token, confidence, source, category: 'filename' })
+        }
+      }
+    }
+  }
+
+  const baseName = filename.replace(/\.[^.]+$/, '')
+  matchTokens(tokenize(baseName), 'filename')
+
+  if (folderPath) {
+    const folderParts = folderPath.split(/[/\\]/)
+    for (const part of folderParts) {
+      matchTokens(tokenize(part), 'folder')
+    }
+  }
+
+  return tags
 }
 
 /**
@@ -589,11 +763,11 @@ export function featuresToTags(features: AudioFeatures): string[] {
  */
 export function getTagMetadata(
   tagName: string
-): { color: string; category: 'type' | 'tempo' | 'spectral' | 'energy' | 'instrument' | 'general' } {
+): { color: string; category: 'type' | 'tempo' | 'spectral' | 'energy' | 'instrument' | 'general' | 'filename' } {
   const lowerTag = tagName.toLowerCase()
 
   // Category determination
-  let category: 'type' | 'tempo' | 'spectral' | 'energy' | 'instrument' | 'general' =
+  let category: 'type' | 'tempo' | 'spectral' | 'energy' | 'instrument' | 'general' | 'filename' =
     'general'
 
   if (
@@ -637,6 +811,7 @@ export function getTagMetadata(
     energy: '#f59e0b', // Amber
     instrument: '#22c55e', // Green
     general: '#6366f1', // Indigo
+    filename: '#f472b6', // Pink
   }
 
   return {

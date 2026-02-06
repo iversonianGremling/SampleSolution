@@ -12,6 +12,8 @@ export const tracks = sqliteTable('tracks', {
   status: text('status', { enum: ['pending', 'downloading', 'ready', 'error'] })
     .notNull()
     .default('pending'),
+  artist: text('artist'),
+  album: text('album'),
   source: text('source', { enum: ['youtube', 'local'] })
     .notNull()
     .default('youtube'),
@@ -42,7 +44,7 @@ export const tags = sqliteTable('tags', {
   name: text('name').notNull().unique(),
   color: text('color').notNull(),
   category: text('category', {
-    enum: ['general', 'type', 'tempo', 'spectral', 'energy', 'instrument'],
+    enum: ['general', 'type', 'tempo', 'spectral', 'energy', 'instrument', 'filename'],
   })
     .notNull()
     .default('general'),
@@ -153,7 +155,14 @@ export const audioFeatures = sqliteTable('audio_features', {
   eventDensity: real('event_density'),
   // Phase 6: Audio Fingerprinting & Similarity Detection
   chromaprintFingerprint: text('chromaprint_fingerprint'),
-  similarityHash: text('similarity_hash'),
+  // Derived instrument type (canonical: kick, snare, hihat, clap, shaker, cymbal, tom, bass, pad, lead, vocal, fx, percussion, keys, guitar, strings, other)
+  instrumentType: text('instrument_type'),
+  // New analysis features
+  temporalCentroid: real('temporal_centroid'),
+  crestFactor: real('crest_factor'),
+  transientSpectralCentroid: real('transient_spectral_centroid'),
+  transientSpectralFlatness: real('transient_spectral_flatness'),
+  sampleTypeConfidence: real('sample_type_confidence'),
   // Metadata
   analysisLevel: text('analysis_level', {
     enum: ['quick', 'standard', 'advanced'],
@@ -182,4 +191,21 @@ export const collectionSlices = sqliteTable('collection_slices', {
   sliceId: integer('slice_id')
     .notNull()
     .references(() => slices.id, { onDelete: 'cascade' }),
+})
+
+export const syncConfigs = sqliteTable('sync_configs', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  tagId: integer('tag_id')
+    .notNull()
+    .references(() => tags.id, { onDelete: 'cascade' }),
+  collectionId: integer('collection_id')
+    .notNull()
+    .references(() => collections.id, { onDelete: 'cascade' }),
+  syncDirection: text('sync_direction', {
+    enum: ['tag-to-collection', 'collection-to-tag', 'bidirectional'],
+  }).notNull().default('bidirectional'),
+  enabled: integer('enabled').notNull().default(1),
+  createdAt: text('created_at')
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
 })

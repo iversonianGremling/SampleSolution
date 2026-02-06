@@ -9,6 +9,7 @@ import {
   featuresToTags,
   getTagMetadata,
   storeAudioFeatures,
+  parseFilenameTags,
 } from '../services/audioAnalysis.js'
 import { v4 as uuidv4 } from 'uuid'
 import { eq } from 'drizzle-orm'
@@ -258,6 +259,26 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
       })
       .returning()
 
+    // Apply filename-based tags immediately (no Python dependency)
+    try {
+      const filenameTags = parseFilenameTags(originalName, null)
+      for (const ft of filenameTags) {
+        const lowerTag = ft.tag.toLowerCase()
+        let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
+        if (tag.length === 0) {
+          const [newTag] = await db.insert(schema.tags).values({
+            name: lowerTag,
+            color: '#f472b6',
+            category: 'filename' as any,
+          }).returning()
+          tag = [newTag]
+        }
+        await db.insert(schema.sliceTags).values({ sliceId: slice.id, tagId: tag[0].id }).onConflictDoNothing()
+      }
+    } catch (err) {
+      console.error('Filename tagging failed:', err)
+    }
+
     // If importing as sample, automatically analyze audio features (queued)
     if (importType === 'sample') {
       analysisQueue.add(async () => {
@@ -375,6 +396,26 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
           filePath: slicePath,
         })
         .returning()
+
+      // Apply filename-based tags immediately
+      try {
+        const filenameTags = parseFilenameTags(originalName, null)
+        for (const ft of filenameTags) {
+          const lowerTag = ft.tag.toLowerCase()
+          let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
+          if (tag.length === 0) {
+            const [newTag] = await db.insert(schema.tags).values({
+              name: lowerTag,
+              color: '#f472b6',
+              category: 'filename' as any,
+            }).returning()
+            tag = [newTag]
+          }
+          await db.insert(schema.sliceTags).values({ sliceId: slice.id, tagId: tag[0].id }).onConflictDoNothing()
+        }
+      } catch (err) {
+        console.error('Filename tagging failed:', err)
+      }
 
       // If importing as sample, automatically analyze audio features (queued)
       if (importType === 'sample') {
@@ -507,6 +548,26 @@ router.post('/import/folder', async (req, res) => {
             filePath: slicePath,
           })
           .returning()
+
+        // Apply filename-based tags immediately
+        try {
+          const filenameTags = parseFilenameTags(originalName, folderPath)
+          for (const ft of filenameTags) {
+            const lowerTag = ft.tag.toLowerCase()
+            let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
+            if (tag.length === 0) {
+              const [newTag] = await db.insert(schema.tags).values({
+                name: lowerTag,
+                color: '#f472b6',
+                category: 'filename' as any,
+              }).returning()
+              tag = [newTag]
+            }
+            await db.insert(schema.sliceTags).values({ sliceId: slice.id, tagId: tag[0].id }).onConflictDoNothing()
+          }
+        } catch (err) {
+          console.error('Filename tagging failed:', err)
+        }
 
         // If importing as sample, automatically analyze audio features (queued)
         if (importType === 'sample') {

@@ -12,7 +12,7 @@ import { useAllSlices } from '../hooks/useTracks'
 import { enrichAudioFeatures } from '../utils/enrichAudioFeatures'
 import { applySliceFilters } from '../utils/sliceFilters'
 import AudioManager from '../services/AudioManager'
-import type { FeatureWeights, SamplePoint, SliceFilterState } from '../types'
+import type { FeatureWeights, NormalizationMethod, SamplePoint, SliceFilterState } from '../types'
 
 interface SampleSpaceViewProps {
   hideFilter?: boolean
@@ -53,6 +53,8 @@ export function SampleSpaceView({
   const [clusterMethod, setClusterMethod] = useState<ClusterMethod>('kmeans')
   const [clusterCount, setClusterCount] = useState(7)
   const [dbscanEpsilon, setDbscanEpsilon] = useState(0.15)
+  const [normalizationMethod, setNormalizationMethod] = useState<NormalizationMethod>('robust')
+  const [hdbscanMinClusterSize, setHdbscanMinClusterSize] = useState(5)
 
   // Selection state
   const [selectedPoint, setSelectedPoint] = useState<SamplePoint | null>(null)
@@ -68,6 +70,18 @@ export function SampleSpaceView({
   // Container sizing
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 600, height: 500 })
+
+  // Fetch learned weights for ML Optimized preset
+  const { data: learnedWeightsData } = useQuery({
+    queryKey: ['learnedWeights'],
+    queryFn: async () => {
+      const res = await fetch('/api/weights/learned')
+      if (!res.ok) return null
+      const data = await res.json()
+      return data.weights as FeatureWeights
+    },
+    retry: false,
+  })
 
   // Fetch audio features
   const { data: features, isLoading, error } = useQuery({
@@ -112,8 +126,8 @@ export function SampleSpaceView({
       return { matrix: [], validIndices: [] }
     }
     // Cast back to AudioFeatures for buildFeatureMatrix
-    return buildFeatureMatrix(filteredFeatures as any, weights)
-  }, [filteredFeatures, weights])
+    return buildFeatureMatrix(filteredFeatures as any, weights, normalizationMethod)
+  }, [filteredFeatures, weights, normalizationMethod])
 
   // Run dimensionality reduction
   const { points: reducedPoints, isComputing: isReducing, error: reduceError } = useDimensionReduction(
@@ -128,6 +142,7 @@ export function SampleSpaceView({
       method: clusterMethod,
       k: clusterCount,
       epsilon: dbscanEpsilon,
+      minClusterSize: hdbscanMinClusterSize,
     }
   )
 
@@ -317,7 +332,7 @@ export function SampleSpaceView({
                 {actualClusterCount > 8 && (
                   <span className="text-slate-500 text-xs whitespace-nowrap">+{actualClusterCount - 8}</span>
                 )}
-                {clusterMethod === 'dbscan' && samplePoints.some((p) => p.cluster < 0) && (
+                {(clusterMethod === 'dbscan' || clusterMethod === 'hdbscan') && samplePoints.some((p) => p.cluster < 0) && (
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <span
                       className="w-2 h-2 rounded-full"
@@ -387,6 +402,11 @@ export function SampleSpaceView({
             onClusterCountChange={setClusterCount}
             dbscanEpsilon={dbscanEpsilon}
             onDbscanEpsilonChange={setDbscanEpsilon}
+            normalizationMethod={normalizationMethod}
+            onNormalizationMethodChange={setNormalizationMethod}
+            hdbscanMinClusterSize={hdbscanMinClusterSize}
+            onHdbscanMinClusterSizeChange={setHdbscanMinClusterSize}
+            learnedWeights={learnedWeightsData ?? null}
           />
         </div>
       </div>

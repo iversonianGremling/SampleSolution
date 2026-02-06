@@ -1,0 +1,531 @@
+# Order
+- Load audio (75). It's presupposing that the audio is 44.1k or uses it for compatibility. Also it loads it on mono so no stereo information
+- Calculates if it's a oneshot or a loop
+- Extracts spectral features
+- Extracts energy features
+- Extracts key features (only if advanced)
+- Extract tempo (here it checks if it's a loop, probably more readable if we do all of the on loop actions in the same place)
+- Detect instruments
+- Basic features atm:
+features = {
+            'duration': float(duration),
+            'sample_rate': int(sr),
+            'is_one_shot': bool(is_one_shot),
+            'is_loop': bool(is_loop),
+            'onset_count': int(count_onsets(y, sr)), //Here for some reason it's using the function inside the features json file, preventing its usage somewhere else or not being very clean
+            'analysis_level': analysis_level,
+            # Spectral //Wouldn't it be better to return all of them as spectral: {}?
+            'spectral_centroid': float(spectral_features['spectral_centroid']), 
+            'spectral_rolloff': float(spectral_features['spectral_rolloff']),
+            'spectral_bandwidth': float(spectral_features['spectral_bandwidth']),
+            'spectral_contrast': float(spectral_features['spectral_contrast']),
+            'zero_crossing_rate': float(spectral_features['zero_crossing_rate']),
+            'mfcc_mean': spectral_features['mfcc_mean'],
+            # Energy //Same shit
+            'rms_energy': float(energy_features['rms_energy']),
+            'loudness': float(energy_features['loudness']),
+            'dynamic_range': float(energy_features['dynamic_range']),
+            # Key Detection //Same
+            'key_estimate': key_features['key_estimate'],
+            'key_strength': key_features['key_strength'],
+            # Tempo (optional) //Maybe put it along with all of the loop features (if any)
+            'bpm': tempo_features.get('bpm'),
+            'beats_count': tempo_features.get('beats_count'),
+            # Instruments
+            'instrument_predictions': instrument_predictions,
+        }
+
+- Checks if there's 'mel_bands_mean' inside of features and if it does it does this: 
+                features['mel_bands_mean'] = spectral_features['mel_bands_mean']
+                features['mel_bands_std'] = spectral_features['mel_bands_std']
+  // ??
+- extract_perceptual_features()
+- Stereo analysis 
+- Harmonic/Percussive separation (might be better to do this at another point since it seems interesting for discerning between different samples)
+- Rhythm features
+- ADSR Envelope (Doesn't check if it's a one shot, maybe it can work on loops (?) who knows)
+- ML Instrument classification
+- Genre/mood classification. Takes advantage of other precomputed characteristics and calculates all of that jazz. Idk if it's putting everything that we calculate so check that out 
+- Sound event Detection
+- Audio fingerprinting and similarity detection 
+- Generate tags from features 
+
+
+# Detect sample type (one-shot/loop)
+- If duration >= 1.5 checks for onset density and defines it as a loop or one-shot depending on that. Tbh Idk if this is remotely correct, maybe "multiple layered claps" can give false positives easily. I'd increase the duration threshold
+- If duration > 3.0 -> Loop. Not so sure about this chief.
+- Very little onsets -> One-shot. What if it's a pad loop (?) What's an onset (?)
+- Calculates the decay ratio for percussive one-shots. Nope, it should include spectral information as well.
+# count_onsets(y,sr)
+- Uses librosa, nothing to say here 
+# extract_tempo_features
+- Uses essentia and returns bpm and beats count. Idc that much about this one if it's accurate enough, check if it's accurate enough 
+- Fallback to librosa if it fails
+- estimates tempo from onset strength 
+- autocorrelation for tempo estimation 
+- uses that info for librosa if tempogram.shape[1] > 0 and passes the onset_env as an argument
+# extract_spectral_features(y, sr, level='standard')
+- uses librosa to get this:
+
+    result = {
+        'spectral_centroid': float(np.mean(centroid)),
+        'spectral_rolloff': float(np.mean(rolloff)),
+        'spectral_bandwidth': float(np.mean(bandwidth)),
+        'spectral_contrast': float(np.mean(contrast)),
+        'zero_crossing_rate': float(np.mean(zcr)),
+        'mfcc_mean': [float(x) for x in np.mean(mfcc, axis=1)],
+    }
+- I don't have a problem if it works correctly
+- if advanced:
+    if level == 'advanced':
+        mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=40)
+        mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+        result['mel_bands_mean'] = [float(x) for x in np.mean(mel_spec_db, axis=1)]
+        result['mel_bands_std'] = [float(x) for x in np.std(mel_spec_db, axis=1)]
+
+- No idea about how much time it takes it to compute any of this so might be worth analyzing
+# Extract energy 
+- Uses librosa to get these:
+    return {
+        'rms_energy': rms_mean,
+        'loudness': loudness_mean,
+        'dynamic_range': dynamic_range,
+        'onset_strength': onset_strength,
+    }
+  onset_strength might fail apparently bc onset_env might also fail, onset_strength is calculated as the mean between the onset_env values, Idk how accurate this is
+# Extract key features 
+- Doesn't use sr (???)
+- Checks if we have essentia
+- Computes key, scale and strength with "key_extractor(y)"
+# Extract timbral features 
+- Checks for essentia 
+- Uses a hann window
+- gets spectrum, spectral peaks, dissonance, inharmonicity and tristimulus (!!!) from it, same with spectral crest tho it calculate sit later for some reason
+- take a look if tristimulus vs the hash that it computes and see how long it takes to compute them as they are basically used for the same purpose
+# extract_perceptual_features
+- Brightness
+    features['brightness'] = min(max((centroid - 500) / 7500, 0.0), 1.0)
+- Calculates rolloff 
+- Warmth
+    warmth_raw = 1.0 - min(max((rolloff - 1000) / 11000, 0.0), 1.0)
+- Hardness
+    features['hardness'] = (features['brightness'] * 0.6 + rms_norm * 0.4)
+- Normalizes RMS and uses brightness through basic linear operations (High energy + high brightness = hard sound)
+- Roughness (based on disonnance)
+- Absurdly correlated with dissonance
+        features['roughness'] = min(max(timbral_features['dissonance'], 0.0), 1.0)
+- Uses ZCR as a fallback
+        features['roughness'] = min(max(zcr / 0.3, 0.0), 1.0)
+- Sharpness:
+    features['sharpness'] = min(max((centroid - 2000) / 6000, 0.0), 1.0)
+#extract_stereo_features() 
+- Loads the audio in stereo. Seems like the right approach (?)
+- If mono -> zero (obv)
+- Correlation (seems right)
+- Panning center (I'd like to test this one)
+- Stereo imbalance (same)
+#extract_hpss_features (percussive/harmonic)
+- It just calculates the energy using this: 
+        harmonic_energy = float(np.sum(y_harmonic ** 2))
+- and the centroids using  librosa
+- Then it comes up with a conclusion based on those (?). Seems pretty bare bones.
+#Extract rhythm features
+- Extracts onset_frames and onset_times using librosa 
+- Beat strength is calculated as the mean of onset_env
+- # Rhythmic Regularity: Variance in onset intervals (lower = more regular)
+        # We use coefficient of variation (std/mean) to normalize across different tempos
+        if len(onset_times) > 2:
+            intervals = np.diff(onset_times)
+            if len(intervals) > 0 and np.mean(intervals) > 0:
+                # Coefficient of variation (inverted and clamped to 0-1)
+                cv = np.std(intervals) / np.mean(intervals)
+                # Convert to regularity score: lower variance = higher regularity
+                regularity = max(0.0, 1.0 - min(cv, 1.0))
+                features['rhythmic_regularity'] = float(regularity)
+            else:
+                features['rhythmic_regularity'] = 0.0
+        else:
+            features['rhythmic_regularity'] = 0.0
+- Gets danceability
+            danceability = (
+                bpm_score * 0.4 +
+                beat_strength_score * 0.3 +
+                features['rhythmic_regularity'] * 0.3
+            )
+            features['danceability'] = float(min(max(danceability, 0.0), 1.0))
+        else:
+            features['danceability'] = None
+- bpm score, beat strength
+       bpm_score = 0.0
+            if 100 <= bpm <= 140:
+                bpm_score = 1.0  # Optimal range
+            elif 80 <= bpm < 100:
+                bpm_score = 0.5 + (bpm - 80) / 40  # 0.5 to 1.0
+            elif 140 < bpm <= 180:
+                bpm_score = 1.0 - (bpm - 140) / 80  # 1.0 to 0.5
+            elif bpm < 80:
+                bpm_score = bpm / 80  # 0 to 0.5
+            else:
+                bpm_score = max(0.0, 0.5 - (bpm - 180) / 180)  # Decreasing after 180
+         beat_strength_score = min(features['beat_strength'] / 3.0, 1.0) if features['beat_strength'] else 0.0
+- Extract ADSR envelope (not good at all)
+- Gets the RMS, smooths it using a gaussian filter with sigma=2, finds the peak (maximum)
+- Attack time = time of 10% of peak value - time of peak value (Idk if this is a good way of doing that)
+- Decay and Sustain. Finds it arbitrarily 
+            tail_mid_start = int(len(tail) * 0.4)
+            tail_mid_end = int(len(tail) * 0.8)
+
+            if tail_mid_end > tail_mid_start:
+                sustain_level = np.mean(tail[tail_mid_start:tail_mid_end])
+            else:
+                sustain_level = tail[-1] if len(tail) > 0 else peak_value * 0.1
+
+            # Normalize sustain level relative to peak
+            features['sustain_level'] = float(sustain_level / peak_value)
+
+
+- Release: time from sustain to 10% of the peak
+- Other features
+        if attack is not None and sustain is not None:
+            # Percussive: Fast attack, low sustain, fast decay
+            if attack < 0.01 and sustain < 0.2 and decay < 0.1:
+                features['envelope_type'] = 'percussive'
+            # Plucked: Fast attack, medium decay, low sustain
+            elif attack < 0.02 and sustain < 0.4 and decay < 0.3:
+                features['envelope_type'] = 'plucked'
+            # Sustained: Slow attack or high sustain level
+            elif attack > 0.05 or sustain > 0.6:
+                features['envelope_type'] = 'sustained'
+            # Pad: Very slow attack and/or very slow release
+            elif attack > 0.1 or (release is not None and release > 0.5):
+                features['envelope_type'] = 'pad'
+            else:
+                features['envelope_type'] = 'hybrid'
+
+- Loads yamnnet model
+- Extract instrument class
+- For some reason it's limiting it to this:
+        instrument_keywords = [
+            'music', 'guitar', 'drum', 'bass', 'piano', 'keyboard', 'synth',
+            'violin', 'brass', 'trumpet', 'saxophone', 'flute', 'organ',
+            'vocal', 'singing', 'speech', 'voice', 'percussion', 'cymbal',
+            'snare', 'kick', 'hi-hat', 'tom', 'clap', 'cowbell', 'shaker',
+            'tambourine', 'bell', 'chime', 'pluck', 'strum', 'string'
+        ]
+- It should probably only send the highest one if it's labeled as monophonic which we never do
+# Extract genre 
+- Recalculates some basic stuff
+# Map YAMNet classes to genre hints
+                if any(x in class_name for x in ['techno', 'electronic', 'synthesizer', 'synth']):
+                    yamnet_genre_hints['electronic'] = yamnet_genre_hints.get('electronic', 0) + confidence * 0.3
+                if any(x in class_name for x in ['rock', 'guitar', 'electric guitar', 'distortion']):
+                    yamnet_genre_hints['rock'] = yamnet_genre_hints.get('rock', 0) + confidence * 0.3
+                if any(x in class_name for x in ['hip hop', 'rap', 'trap']):
+                    yamnet_genre_hints['hip-hop'] = yamnet_genre_hints.get('hip-hop', 0) + confidence * 0.3
+                if any(x in class_name for x in ['jazz', 'saxophone', 'trumpet', 'brass']):
+                    yamnet_genre_hints['jazz'] = yamnet_genre_hints.get('jazz', 0) + confidence * 0.3
+                if any(x in class_name for x in ['classical', 'orchestra', 'violin', 'cello', 'piano']):
+                    yamnet_genre_hints['classical'] = yamnet_genre_hints.get('classical', 0) + confidence * 0.3
+                if any(x in class_name for x in ['house', 'disco']):
+                    yamnet_genre_hints['house'] = yamnet_genre_hints.get('house', 0) + confidence * 0.3
+                if any(x in class_name for x in ['drum and bass', 'jungle']):
+                    yamnet_genre_hints['drum-and-bass'] = yamnet_genre_hints.get('drum-and-bass', 0) + confidence * 0.3
+                if any(x in class_name for x in ['dubstep', 'bass music']):
+                    yamnet_genre_hints['dubstep'] = yamnet_genre_hints.get('dubstep', 0) + confidence * 0.3
+                if any(x in class_name for x in ['ambient', 'drone']):
+                    yamnet_genre_hints['ambient'] = yamnet_genre_hints.get('ambient', 0) + confidence * 0.3
+
+        # Electronic/EDM: High energy, strong percussive, 120-140 BPM, bright
+        if 100 <= tempo <= 140 and spectral_centroid > 2000 and hp_ratio < 1.5:
+            genre_scores['electronic'] = 0.7 + min((rms_mean / 0.3) * 0.2, 0.2)
+
+        # Hip-Hop/Trap: 60-100 BPM, strong bass, percussive
+        if 60 <= tempo <= 100 and spectral_rolloff < 3000 and hp_ratio < 1.0:
+            # Use inverse hp_ratio as percussiveness metric
+            percussiveness_score = 1.0 / (hp_ratio + 0.1) if hp_ratio > 0 else 1.0
+            genre_scores['hip-hop'] = 0.65 + min(percussiveness_score * 0.15, 0.25)
+
+        # House/Techno: 120-130 BPM, 4/4 kick pattern, repetitive
+        if 118 <= tempo <= 132 and hp_ratio < 0.8 and rms_mean > 0.1:
+            genre_scores['house'] = 0.6 + min((130 - abs(tempo - 125)) / 30, 0.3)
+
+        # Drum & Bass: 160-180 BPM, very percussive, high energy
+        if 160 <= tempo <= 185 and hp_ratio < 0.5 and rms_mean > 0.15:
+            genre_scores['drum-and-bass'] = 0.75
+
+        # Ambient/Downtempo: Slow, low energy, harmonic, sustained
+        if tempo < 100 and hp_ratio > 2.0 and loudness < -20:
+            genre_scores['ambient'] = 0.6 + min((hp_ratio / 5.0) * 0.3, 0.3)
+
+        # Rock/Metal: Mid-high energy, distorted (high ZCR), 100-160 BPM
+        if 100 <= tempo <= 160 and zero_crossing_rate > 0.1 and dynamic_range > 20:
+            genre_scores['rock'] = 0.55 + min((zero_crossing_rate / 0.2) * 0.25, 0.25)
+
+        # Jazz/Funk: Complex rhythms, harmonic, 80-140 BPM, dynamic
+        if 80 <= tempo <= 140 and hp_ratio > 1.2 and dynamic_range > 25:
+            genre_scores['jazz'] = 0.5 + min((dynamic_range / 40) * 0.3, 0.3)
+
+        # Pop: Moderate everything, 100-130 BPM, balanced
+        if 100 <= tempo <= 130 and 0.8 < hp_ratio < 1.5 and -20 < loudness < -5:
+            genre_scores['pop'] = 0.5
+
+        # Classical: Very harmonic, wide dynamic range, variable tempo
+        if hp_ratio > 3.0 and dynamic_range > 30:
+            genre_scores['classical'] = 0.65
+
+        # Dubstep: 140 BPM (half-time 70), very bass-heavy, dynamic
+        if 135 <= tempo <= 145 and spectral_rolloff < 2500 and dynamic_range > 25:
+            genre_scores['dubstep'] = 0.7
+
+        # Boost scores with YAMNet instrument hints
+        for genre, boost in yamnet_genre_hints.items():
+            if genre in genre_scores:
+                genre_scores[genre] = min(genre_scores[genre] + boost, 0.95)
+            else:
+                # YAMNet detected instruments for a genre we didn't score
+                genre_scores[genre] = boost
+
+        # Create genre classes list
+        if genre_scores:
+            genre_classes = [
+                {'genre': genre, 'confidence': float(confidence)}
+                for genre, confidence in sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+            ]
+            features['genre_classes'] = genre_classes[:5]  # Top 5
+            features['genre_primary'] = genre_classes[0]['genre'] if genre_classes else None
+
+- Pretty "trust me bro"
+# Extract instrument precition 
+- Brute forces predictions based on centroid, rolloff, zcr, rms and onset_strength, the confidence values seem low but Idk if that's right (?)
+# Extract loudness ebu
+- Uses pyloudnorm
+    features = {
+        'loudness_integrated': None,
+        'loudness_range': None,
+        'loudness_momentary_max': None,
+        'true_peak': None,
+    }
+- I'll just presuppose that it's calculating it right, Idc that much about them atm
+# Detect sound events
+- Uses onset_frames as a way to find how many events they are, basically each one is considered as an event 
+- Event density is just the event_count/duration
+- If onsets are very close (<100ms) they are grouped together (not bad but needs refinement)
+# Fingerprint
+- Uses chromaprint and a hash
+#Generate tags (one of the main problems is that it doesn't have a middle point for a lot of tags and they are calculated in an extremely simple manner, needs to be fully rewritten or investigated)
+- BPM makes sense, would probably add more categories if we are dealing with song samples or similar
+- Bases brilliance tags on centroid (might be redundant)
+- Uses rolloff to check if it's "bass-heavy" or "high-freq"
+- Uses onset strength to determine if it's punchy or soft
+- Uses dynamic range to see if it's dynamic or compressed 
+- Uses ZFC to see if it's noisy or smooth (!!!)
+- Instrument tags. Adds everything with confidence > 0.55 (undesirable)
+- Brightness. Uses extremes to check it out (same for other)
+        # Tempo categories
+        if bpm < 80:
+            tags.extend(['slow', '60-80bpm'])
+        elif bpm < 100:
+            tags.extend(['downtempo', '80-100bpm'])
+        elif bpm < 120:
+            tags.extend(['midtempo', '100-120bpm'])
+        elif bpm < 140:
+            tags.extend(['uptempo', '120-140bpm'])
+        else:
+            tags.extend(['fast', '140+bpm'])
+
+    # Spectral tags (brightness/frequency content)
+    centroid = features['spectral_centroid']
+    rolloff = features['spectral_rolloff']
+
+    if centroid > 3500:
+        tags.append('bright')
+    elif centroid > 1500:
+        tags.append('mid-range')
+    else:
+        tags.append('dark')
+
+    if rolloff < 2000:
+        tags.append('bass-heavy')
+    elif rolloff > 8000:
+        tags.append('high-freq')
+
+    # Energy/dynamics tags
+    loudness = features['loudness']
+    onset_strength = features['rms_energy']
+    dynamic_range = features['dynamic_range']
+
+    # Punch and softness
+    if features['is_one_shot'] and onset_strength > 0.1:
+        tags.append('punchy')
+    elif onset_strength < 0.05:
+        tags.append('soft')
+
+    # Overall energy
+    if loudness > -10:
+        tags.append('aggressive')
+    elif loudness < -30:
+        tags.append('ambient')
+
+    # Dynamics
+    if dynamic_range > 30:
+        tags.append('dynamic')
+    elif dynamic_range < 10:
+        tags.append('compressed')
+
+    # Texture tags (based on zero crossing rate)
+    zcr = features['zero_crossing_rate']
+    if zcr > 0.12:
+        tags.append('noisy')
+    elif zcr < 0.05:
+        tags.append('smooth')
+
+    # Instrument tags (high confidence only)
+    for pred in features.get('instrument_predictions', []):
+        if pred['confidence'] > 0.55:
+            tags.append(pred['name'])
+
+    # Perceptual tags (Phase 1 - advanced level only)
+    if features.get('brightness') is not None:
+        brightness = features['brightness']
+        if brightness > 0.7:
+            tags.append('bright')
+        elif brightness < 0.3:
+            tags.append('dull')
+
+    if features.get('warmth') is not None:
+        warmth = features['warmth']
+        if warmth > 0.7:
+            tags.append('warm')
+        elif warmth < 0.3:
+            tags.append('cold')
+
+    if features.get('hardness') is not None:
+        hardness = features['hardness']
+        if hardness > 0.7:
+            tags.append('hard')
+        elif hardness < 0.3:
+            tags.append('soft-timbre')
+
+    if features.get('roughness') is not None:
+        roughness = features['roughness']
+        if roughness > 0.6:
+            tags.append('rough')
+
+    if features.get('sharpness') is not None:
+        sharpness = features['sharpness']
+        if sharpness > 0.7:
+            tags.append('sharp')
+
+    # Timbral tags (Phase 1)
+    if features.get('dissonance') is not None and features['dissonance'] > 0.6:
+        tags.append('dissonant')
+
+    if features.get('spectral_complexity') is not None and features['spectral_complexity'] > 0.7:
+        tags.append('complex')
+
+    # Stereo tags (Phase 2)
+    if features.get('stereo_width') is not None:
+        stereo_width = features['stereo_width']
+        if stereo_width > 0.6:
+            tags.append('wide-stereo')
+        elif stereo_width < 0.2:
+            tags.append('mono')
+
+    # Harmonic/Percussive tags (Phase 2)
+    if features.get('harmonic_percussive_ratio') is not None:
+        hp_ratio = features['harmonic_percussive_ratio']
+        if hp_ratio > 3.0:
+            tags.append('harmonic')
+        elif hp_ratio < 0.3:
+            tags.append('percussive')
+
+    # Rhythm tags (Phase 3)
+    if features.get('danceability') is not None:
+        danceability = features['danceability']
+        if danceability > 0.7:
+            tags.append('danceable')
+        elif danceability < 0.3:
+            tags.append('non-danceable')
+
+    if features.get('rhythmic_regularity') is not None:
+        regularity = features['rhythmic_regularity']
+        if regularity > 0.7:
+            tags.append('rhythmic')
+        elif regularity < 0.3:
+            tags.append('irregular')
+
+    # Envelope tags (Phase 3)
+    if features.get('envelope_type') is not None:
+        envelope_type = features['envelope_type']
+        if envelope_type == 'percussive':
+            tags.append('percussive-envelope')
+        elif envelope_type == 'plucked':
+            tags.append('plucked')
+        elif envelope_type == 'sustained':
+            tags.append('sustained')
+        elif envelope_type == 'pad':
+            tags.append('pad')
+
+    # ML Instrument tags (Phase 4)
+    # Use ML predictions instead of heuristics if available
+    if features.get('instrument_classes') is not None:
+        for instrument in features['instrument_classes']:
+            if instrument['confidence'] >= 0.6:  # 60% threshold
+                # Clean up class name for tagging
+                class_name = instrument['class'].lower()
+                # Remove common prefixes/suffixes
+                class_name = class_name.replace('musical instrument, ', '')
+                class_name = class_name.replace('music, ', '')
+                # Add as tag
+                tags.append(class_name)
+
+    # Genre tags (Phase 4)
+    if features.get('genre_primary') is not None:
+        tags.append(features['genre_primary'].lower())
+
+    if features.get('genre_classes') is not None:
+        for genre in features['genre_classes']:
+            if genre['confidence'] >= 0.6:  # 60% threshold
+                tags.append(genre['genre'].lower())
+
+    # Mood tags (Phase 4)
+    if features.get('mood_classes') is not None:
+        for mood in features['mood_classes']:
+            if mood['confidence'] >= 0.6:  # 60% threshold
+                tags.append(mood['mood'].lower())
+
+    # EBU R128 Loudness tags (Phase 5)
+    if features.get('loudness_integrated') is not None:
+        loudness_integrated = features['loudness_integrated']
+        # LUFS ranges: -23 is broadcast standard, -14 is streaming standard
+        if loudness_integrated > -10:
+            tags.append('very-loud')
+        elif loudness_integrated > -14:
+            tags.append('loud')
+        elif loudness_integrated > -23:
+            tags.append('moderate-loudness')
+        else:
+            tags.append('quiet')
+
+    if features.get('loudness_range') is not None:
+        loudness_range = features['loudness_range']
+        # Loudness Range in LU: >20 = very dynamic, <5 = very compressed
+        if loudness_range > 20:
+            tags.append('very-dynamic')
+        elif loudness_range > 10:
+            tags.append('dynamic-loudness')
+        elif loudness_range < 5:
+            tags.append('compressed-loudness')
+
+    # Event Detection tags (Phase 5)
+    if features.get('event_density') is not None:
+        event_density = features['event_density']
+        # Events per second
+        if event_density > 5:
+            tags.append('event-dense')
+        elif event_density > 2:
+            tags.append('multi-event')
+        elif event_density < 0.5:
+            tags.append('single-event')
+
+

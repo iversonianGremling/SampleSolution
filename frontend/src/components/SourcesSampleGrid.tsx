@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { Play, Pause, Heart, GripVertical, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
+import { InstrumentIcon } from './InstrumentIcon'
 import type { SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 
@@ -21,6 +22,7 @@ interface SourcesSampleGridProps {
   isLoading?: boolean
   playMode?: PlayMode
   loopEnabled?: boolean
+  scaleDegreeGroups?: Map<string, SliceWithTrackExtended[]> | null
 }
 
 export function SourcesSampleGrid({
@@ -35,6 +37,7 @@ export function SourcesSampleGrid({
   isLoading = false,
   playMode = 'normal',
   loopEnabled = false,
+  scaleDegreeGroups = null,
 }: SourcesSampleGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -289,50 +292,7 @@ export function SourcesSampleGrid({
   const selectAllIndeterminate = selectedIds.size > 0 && selectedIds.size < sortedSamples.length
   const selectAllChecked = selectedIds.size === sortedSamples.length && sortedSamples.length > 0
 
-  return (
-    <div className="flex flex-col">
-      {/* Sort controls */}
-      <div className="flex items-center gap-2 px-4 pt-4 pb-2">
-        {onToggleSelect && onToggleSelectAll && (
-          <>
-            <CustomCheckbox
-              checked={selectAllChecked}
-              indeterminate={selectAllIndeterminate}
-              onChange={onToggleSelectAll}
-              className="flex-shrink-0"
-              title="Select all samples"
-            />
-            <div className="w-px h-5 bg-surface-border" />
-          </>
-        )}
-        <span className="text-sm text-slate-400">Sort by:</span>
-        <button
-          onClick={() => handleSortClick('name')}
-          className={`flex items-center px-3 py-1.5 text-sm rounded transition-colors ${
-            sortField === 'name'
-              ? 'bg-accent-primary text-white'
-              : 'bg-surface-raised text-slate-300 hover:bg-surface-base'
-          }`}
-        >
-          Name
-          {getSortIcon('name')}
-        </button>
-        <button
-          onClick={() => handleSortClick('duration')}
-          className={`flex items-center px-3 py-1.5 text-sm rounded transition-colors ${
-            sortField === 'duration'
-              ? 'bg-accent-primary text-white'
-              : 'bg-surface-raised text-slate-300 hover:bg-surface-base'
-          }`}
-        >
-          Duration
-          {getSortIcon('duration')}
-        </button>
-      </div>
-
-      {/* Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 p-4">
-        {sortedSamples.map(sample => {
+  const renderSampleCard = (sample: SliceWithTrackExtended) => {
         const isSelected = selectedId === sample.id
         const isChecked = selectedIds.has(sample.id)
         const isPlaying = playingId === sample.id
@@ -448,9 +408,16 @@ export function SourcesSampleGrid({
               )}
 
               {/* Duration badge */}
-              <span className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 text-[10px] font-medium bg-black/60 rounded text-white">
+              <span className="absolute bottom-1.5 right-1.5 px-1.5 py-0 text-[10px] font-medium bg-black/60 rounded text-white inline-block">
                 {formatDuration(sample.startTime, sample.endTime)}
               </span>
+
+              {/* Instrument type badge */}
+              {(sample.instrumentType || sample.instrumentPrimary) && (
+                <div className="absolute bottom-1.5 left-1.5 p-1 bg-black/60 rounded text-slate-300" title={sample.instrumentType || sample.instrumentPrimary || ''}>
+                  <InstrumentIcon type={sample.instrumentType || sample.instrumentPrimary || 'other'} size={12} />
+                </div>
+              )}
             </div>
 
             {/* Info */}
@@ -461,7 +428,7 @@ export function SourcesSampleGrid({
 
               {/* Tags preview */}
               {sample.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-1.5">
+                <div className="flex flex-wrap gap-1 mt-1.5 items-center">
                   {sample.tags.slice(0, 2).map(tag => (
                     <span
                       key={tag.id}
@@ -471,7 +438,7 @@ export function SourcesSampleGrid({
                           onTagClick(tag.id)
                         }
                       }}
-                      className={`px-1.5 py-0.5 text-[10px] rounded-full ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                      className={`inline-block px-1.5 py-0 text-[10px] rounded-full ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
                       style={{
                         backgroundColor: tag.color + '25',
                         color: tag.color,
@@ -488,7 +455,7 @@ export function SourcesSampleGrid({
                       onMouseEnter={() => handleTagPopupOpen(sample.id)}
                       onMouseLeave={handleTagPopupClose}
                     >
-                      <span className="px-1.5 py-0.5 text-[10px] text-slate-500 cursor-default">
+                      <span className="inline-block px-1.5 py-0 text-[10px] text-slate-500 cursor-default leading-none">
                         +{sample.tags.length - 2}
                       </span>
                       {tagPopupId === sample.id && popupPosition[sample.id] && (
@@ -518,7 +485,7 @@ export function SourcesSampleGrid({
                                     }
                                   }
                                 }}
-                                className={`px-1.5 py-0.5 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                                className={`inline-block px-1.5 py-0 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
                                 style={{
                                   backgroundColor: tag.color + '25',
                                   color: tag.color,
@@ -538,8 +505,71 @@ export function SourcesSampleGrid({
             </div>
           </div>
         )
-      })}
+  }
+
+  const gridClass = "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 p-4"
+
+  return (
+    <div className="flex flex-col">
+      {/* Sort controls */}
+      <div className="flex items-center gap-2 px-4 pt-4 pb-2">
+        {onToggleSelect && onToggleSelectAll && (
+          <>
+            <CustomCheckbox
+              checked={selectAllChecked}
+              indeterminate={selectAllIndeterminate}
+              onChange={onToggleSelectAll}
+              className="flex-shrink-0"
+              title="Select all samples"
+            />
+            <div className="w-px h-5 bg-surface-border" />
+          </>
+        )}
+        <span className="text-sm text-slate-400">Sort by:</span>
+        <button
+          onClick={() => handleSortClick('name')}
+          className={`flex items-center px-3 py-1.5 text-sm rounded transition-colors ${
+            sortField === 'name'
+              ? 'bg-accent-primary text-white'
+              : 'bg-surface-raised text-slate-300 hover:bg-surface-base'
+          }`}
+        >
+          Name
+          {getSortIcon('name')}
+        </button>
+        <button
+          onClick={() => handleSortClick('duration')}
+          className={`flex items-center px-3 py-1.5 text-sm rounded transition-colors ${
+            sortField === 'duration'
+              ? 'bg-accent-primary text-white'
+              : 'bg-surface-raised text-slate-300 hover:bg-surface-base'
+          }`}
+        >
+          Duration
+          {getSortIcon('duration')}
+        </button>
       </div>
+
+      {/* Grid - grouped or flat */}
+      {scaleDegreeGroups ? (
+        <div className="px-4 pb-4">
+          {Array.from(scaleDegreeGroups.entries()).map(([degree, groupSamples]) => (
+            <div key={degree} className="mb-4">
+              <h3 className="text-sm font-semibold text-slate-300 mb-2 px-1 border-l-2 border-accent-primary pl-2">
+                {degree}
+                <span className="text-xs text-slate-500 ml-2">({groupSamples.length})</span>
+              </h3>
+              <div className={gridClass.replace('p-4', '')}>
+                {groupSamples.map(sample => renderSampleCard(sample))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className={gridClass}>
+          {sortedSamples.map(sample => renderSampleCard(sample))}
+        </div>
+      )}
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Play, Pause, Heart, Trash2, Pencil } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
+import { InstrumentIcon } from './InstrumentIcon'
 import type { SliceWithTrackExtended } from '../types'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
@@ -159,7 +160,14 @@ export function SourcesSampleListRow({
           {isPlaying && playMode === 'normal' ? <Pause size={16} /> : <Play size={16} />}
         </button>
 
-        {/* Sample name (editable) */}
+        {/* Instrument icon */}
+        {(sample.instrumentType || sample.instrumentPrimary) && (
+          <div className="flex-shrink-0 text-slate-400" title={sample.instrumentType || sample.instrumentPrimary || ''}>
+            <InstrumentIcon type={sample.instrumentType || sample.instrumentPrimary || 'other'} size={14} />
+          </div>
+        )}
+
+        {/* Sample name (editable) + artist */}
         <div className="flex-1 min-w-0 pl-1">
           {isEditingName ? (
             <input
@@ -184,9 +192,16 @@ export function SourcesSampleListRow({
                 setIsEditingName(true)
               }}
             >
-              <span className="font-medium text-white text-sm truncate">
-                {sample.name}
-              </span>
+              <div className="min-w-0">
+                <span className="font-medium text-white text-sm truncate block">
+                  {sample.name}
+                </span>
+                {sample.track.artist && (
+                  <span className="text-[10px] text-slate-500 truncate block">
+                    {sample.track.artist}
+                  </span>
+                )}
+              </div>
               <Pencil size={12} className="text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
             </div>
           )}
@@ -203,7 +218,7 @@ export function SourcesSampleListRow({
                   onTagClick(tag.id)
                 }
               }}
-              className={`px-1.5 py-0.5 text-[10px] rounded-full flex-shrink-0 ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+              className={`inline-block px-1.5 py-0 text-[10px] rounded-full flex-shrink-0 ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
               style={{
                 backgroundColor: tag.color + '25',
                 color: tag.color,
@@ -257,7 +272,7 @@ export function SourcesSampleListRow({
                             }
                           }
                         }}
-                        className={`px-1.5 py-0.5 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                        className={`inline-block px-1.5 py-0 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
                         style={{
                           backgroundColor: tag.color + '25',
                           color: tag.color,

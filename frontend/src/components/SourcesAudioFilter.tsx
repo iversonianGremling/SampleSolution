@@ -1,5 +1,7 @@
 import { ArrowUpDown, ArrowUp, ArrowDown, ChevronDown, ChevronRight } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
+import { getRelatedKeys } from '../utils/musicTheory'
+import { InstrumentIcon } from './InstrumentIcon'
 
 export interface AudioFilterState {
   sortBy: 'bpm' | 'key' | 'name' | 'duration' | 'createdAt' | null
@@ -18,6 +20,10 @@ export interface AudioFilterState {
   // ML classifications (when available)
   selectedInstruments: string[]
   selectedGenres: string[]
+  // Related keys
+  relatedKeysLevels: number[]
+  // Scale degree grouping
+  groupByScaleDegree: boolean
 }
 
 interface SourcesAudioFilterProps {
@@ -29,26 +35,51 @@ interface SourcesAudioFilterProps {
   availableGenres?: string[]
 }
 
-const COMMON_KEYS = [
-  'C major', 'C minor', 'C# major', 'C# minor',
-  'D major', 'D minor', 'D# major', 'D# minor',
-  'E major', 'E minor',
-  'F major', 'F minor', 'F# major', 'F# minor',
-  'G major', 'G minor', 'G# major', 'G# minor',
-  'A major', 'A minor', 'A# major', 'A# minor',
-  'B major', 'B minor'
+// Chromatic order with color coding (based on circle of fifths hue)
+const KEY_DATA = [
+  { note: 'C', hue: 0 },      // Red
+  { note: 'C#', hue: 30 },    // Orange
+  { note: 'D', hue: 60 },     // Yellow
+  { note: 'D#', hue: 90 },    // Yellow-green
+  { note: 'E', hue: 120 },    // Green
+  { note: 'F', hue: 150 },    // Cyan-green
+  { note: 'F#', hue: 180 },   // Cyan
+  { note: 'G', hue: 210 },    // Blue-cyan
+  { note: 'G#', hue: 240 },   // Blue
+  { note: 'A', hue: 270 },    // Purple
+  { note: 'A#', hue: 300 },   // Magenta
+  { note: 'B', hue: 330 },    // Pink-red
 ]
+
 
 export function SourcesAudioFilter({
   filterState,
   onChange,
-  availableKeys,
+  availableKeys: _availableKeys,
   availableEnvelopeTypes = [],
   availableInstruments = [],
   availableGenres = []
 }: SourcesAudioFilterProps) {
   const [showPerceptual, setShowPerceptual] = useState(false)
   const [showClassification, setShowClassification] = useState(false)
+  const [showRelatedKeys, setShowRelatedKeys] = useState(false)
+
+  const relatedKeyGroups = useMemo(
+    () => getRelatedKeys(filterState.selectedKeys),
+    [filterState.selectedKeys]
+  )
+
+  const handleRelatedLevelToggle = (level: number) => {
+    const current = filterState.relatedKeysLevels || []
+    const newLevels = current.includes(level)
+      ? current.filter(l => l !== level)
+      : [...current, level]
+    onChange({ ...filterState, relatedKeysLevels: newLevels })
+  }
+
+  const handleScaleDegreeToggle = () => {
+    onChange({ ...filterState, groupByScaleDegree: !filterState.groupByScaleDegree })
+  }
   const handleSortChange = (field: AudioFilterState['sortBy']) => {
     if (filterState.sortBy === field) {
       // Toggle order or clear
@@ -142,9 +173,6 @@ export function SourcesAudioFilter({
     }`
   }
 
-  // Display keys that are actually in the data
-  const displayKeys = availableKeys.length > 0 ? availableKeys : COMMON_KEYS
-
   return (
     <div className="flex flex-col gap-3">
       {/* Sort controls */}
@@ -188,31 +216,76 @@ export function SourcesAudioFilter({
       <div className="flex items-center gap-3">
         <span className="text-xs text-slate-400 whitespace-nowrap">BPM:</span>
         <div className="flex items-center gap-2 flex-1 max-w-md">
+          {/* Number inputs */}
           <input
             type="number"
             value={filterState.minBpm}
             onChange={(e) => {
               const val = parseFloat(e.target.value) || 0
-              handleBpmRangeChange(Math.max(0, val), filterState.maxBpm)
+              handleBpmRangeChange(Math.max(0, Math.min(val, filterState.maxBpm)), filterState.maxBpm)
             }}
-            placeholder="Min"
-            className="w-20 px-2 py-1 text-xs bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
+            className="w-14 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary no-spinner"
             min="0"
             max={filterState.maxBpm}
           />
-          <span className="text-xs text-slate-500">to</span>
+
+          {/* Dual slider */}
+          <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+            {/* Track background */}
+            <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
+
+            {/* Active range */}
+            <div
+              className="absolute h-0.5 bg-accent-primary rounded-full pointer-events-none"
+              style={{
+                left: `${(filterState.minBpm / 300) * 100}%`,
+                right: `${((300 - filterState.maxBpm) / 300) * 100}%`,
+              }}
+            />
+
+            {/* Min handle */}
+            <input
+              type="range"
+              min={0}
+              max={300}
+              step={1}
+              value={filterState.minBpm}
+              onChange={(e) => {
+                const newMin = parseFloat(e.target.value)
+                handleBpmRangeChange(Math.min(newMin, filterState.maxBpm), filterState.maxBpm)
+              }}
+              className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+              style={{ zIndex: filterState.minBpm > filterState.maxBpm - 2 ? 5 : 3 }}
+            />
+
+            {/* Max handle */}
+            <input
+              type="range"
+              min={0}
+              max={300}
+              step={1}
+              value={filterState.maxBpm}
+              onChange={(e) => {
+                const newMax = parseFloat(e.target.value)
+                handleBpmRangeChange(filterState.minBpm, Math.max(newMax, filterState.minBpm))
+              }}
+              className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+              style={{ zIndex: filterState.maxBpm < filterState.minBpm + 2 ? 5 : 4 }}
+            />
+          </div>
+
           <input
             type="number"
             value={filterState.maxBpm}
             onChange={(e) => {
               const val = parseFloat(e.target.value) || 300
-              handleBpmRangeChange(filterState.minBpm, Math.max(filterState.minBpm, val))
+              handleBpmRangeChange(filterState.minBpm, Math.max(filterState.minBpm, Math.min(val, 300)))
             }}
-            placeholder="Max"
-            className="w-20 px-2 py-1 text-xs bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
+            className="w-14 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary no-spinner"
             min={filterState.minBpm}
             max="300"
           />
+
           {(filterState.minBpm > 0 || filterState.maxBpm < 300) && (
             <button
               onClick={() => handleBpmRangeChange(0, 300)}
@@ -228,50 +301,144 @@ export function SourcesAudioFilter({
       <div className="flex items-start gap-3">
         <span className="text-xs text-slate-400 whitespace-nowrap pt-1">Key:</span>
         <div className="flex-1">
-          <div className="flex flex-wrap gap-1">
-            {displayKeys.slice(0, 12).map((key) => (
-              <button
-                key={key}
-                onClick={() => handleKeyToggle(key)}
-                className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                  filterState.selectedKeys.includes(key)
-                    ? 'bg-accent-primary text-white'
-                    : 'bg-surface-base text-slate-400 hover:text-white hover:bg-surface-raised'
-                }`}
-              >
-                {key}
-              </button>
-            ))}
-          </div>
-          {displayKeys.length > 12 && (
-            <details className="mt-1">
-              <summary className="text-xs text-slate-400 hover:text-white cursor-pointer">
-                Show more ({displayKeys.length - 12} more)
-              </summary>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {displayKeys.slice(12).map((key) => (
+          <div className="flex flex-wrap gap-1.5">
+            {KEY_DATA.map(({ note, hue }) => {
+              const majorKey = `${note} major`
+              const minorKey = `${note} minor`
+              const isMajorSelected = filterState.selectedKeys.includes(majorKey)
+              const isMinorSelected = filterState.selectedKeys.includes(minorKey)
+
+              return (
+                <div key={note} className="flex items-center rounded overflow-hidden border border-surface-border">
+                  {/* Major button */}
                   <button
-                    key={key}
-                    onClick={() => handleKeyToggle(key)}
-                    className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                      filterState.selectedKeys.includes(key)
-                        ? 'bg-accent-primary text-white'
-                        : 'bg-surface-base text-slate-400 hover:text-white hover:bg-surface-raised'
-                    }`}
+                    onClick={() => handleKeyToggle(majorKey)}
+                    className="relative px-2 py-1 text-xs font-medium transition-all group"
+                    style={{
+                      backgroundColor: isMajorSelected
+                        ? `hsl(${hue}, 60%, 45%)`
+                        : 'transparent',
+                      color: isMajorSelected ? '#fff' : '#94a3b8',
+                      borderRight: '1px solid rgb(51, 65, 85)'
+                    }}
+                    title={majorKey}
                   >
-                    {key}
+                    <div className="flex items-center gap-0.5">
+                      <span>{note}</span>
+                      <span className="text-[9px] opacity-70">M</span>
+                    </div>
+                    {!isMajorSelected && (
+                      <div
+                        className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity"
+                        style={{ backgroundColor: `hsl(${hue}, 60%, 45%)` }}
+                      />
+                    )}
                   </button>
-                ))}
-              </div>
-            </details>
-          )}
+
+                  {/* Minor button */}
+                  <button
+                    onClick={() => handleKeyToggle(minorKey)}
+                    className="relative px-2 py-1 text-xs font-medium transition-all group"
+                    style={{
+                      backgroundColor: isMinorSelected
+                        ? `hsl(${hue}, 40%, 35%)`
+                        : 'transparent',
+                      color: isMinorSelected ? '#fff' : '#94a3b8',
+                    }}
+                    title={minorKey}
+                  >
+                    <div className="flex items-center gap-0.5">
+                      <span className="text-[9px] opacity-70">m</span>
+                    </div>
+                    {!isMinorSelected && (
+                      <div
+                        className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity"
+                        style={{ backgroundColor: `hsl(${hue}, 40%, 35%)` }}
+                      />
+                    )}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
           {filterState.selectedKeys.length > 0 && (
-            <button
-              onClick={clearKeyFilter}
-              className="text-xs text-slate-400 hover:text-white transition-colors mt-1"
-            >
-              Clear ({filterState.selectedKeys.length} selected)
-            </button>
+            <div className="flex items-center gap-3 mt-2">
+              <button
+                onClick={clearKeyFilter}
+                className="text-xs text-slate-400 hover:text-white transition-colors"
+              >
+                Clear ({filterState.selectedKeys.length} selected)
+              </button>
+              {filterState.selectedKeys.length === 1 && (
+                <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={filterState.groupByScaleDegree}
+                    onChange={handleScaleDegreeToggle}
+                    className="accent-accent-primary"
+                  />
+                  Group by degree
+                </label>
+              )}
+            </div>
+          )}
+
+          {/* Related Keys */}
+          {filterState.selectedKeys.length > 0 && relatedKeyGroups.length > 0 && (
+            <div className="mt-2">
+              <button
+                onClick={() => setShowRelatedKeys(!showRelatedKeys)}
+                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
+              >
+                {showRelatedKeys ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                <span>Related Keys</span>
+              </button>
+              {showRelatedKeys && (
+                <div className="mt-2 space-y-2 pl-4">
+                  {relatedKeyGroups.map(group => {
+                    const isActive = (filterState.relatedKeysLevels || []).includes(group.level)
+                    return (
+                      <div key={group.level} className="flex items-start gap-2">
+                        <button
+                          onClick={() => handleRelatedLevelToggle(group.level)}
+                          className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border transition-colors flex-shrink-0 ${
+                            isActive
+                              ? 'border-current bg-current/10 text-white'
+                              : 'border-surface-border text-slate-500 hover:text-slate-300'
+                          }`}
+                          style={{ borderColor: isActive ? group.color : undefined, color: isActive ? group.color : undefined }}
+                        >
+                          <span>{group.emoji}</span>
+                          <span>{group.label}</span>
+                        </button>
+                        <div className="flex flex-wrap gap-0.5">
+                          {group.keys.map(k => {
+                            const note = k.split(' ')[0]
+                            const keyData = KEY_DATA.find(kd => kd.note === note)
+                            const hue = keyData?.hue ?? 0
+                            const isMajor = k.includes('major')
+                            return (
+                              <button
+                                key={k}
+                                onClick={() => handleKeyToggle(k)}
+                                className="px-1 py-0 text-[9px] rounded transition-colors"
+                                style={{
+                                  backgroundColor: `hsla(${hue}, ${isMajor ? 60 : 40}%, ${isMajor ? 45 : 35}%, 0.3)`,
+                                  color: `hsl(${hue}, 50%, 70%)`,
+                                }}
+                                title={k}
+                              >
+                                {note}{isMajor ? '' : 'm'}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -324,26 +491,53 @@ export function SourcesAudioFilter({
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-400 w-20">Brightness:</span>
               <div className="flex-1 flex items-center gap-2">
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={filterState.minBrightness}
-                  onChange={(e) => handlePerceptualRangeChange('brightness', 'min', parseFloat(e.target.value))}
-                  className="flex-1 h-1 accent-accent-primary"
-                />
-                <span className="text-xs text-slate-500 w-8">{filterState.minBrightness.toFixed(2)}</span>
-                <span className="text-xs text-slate-500">-</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={filterState.maxBrightness}
-                  onChange={(e) => handlePerceptualRangeChange('brightness', 'max', parseFloat(e.target.value))}
-                  className="flex-1 h-1 accent-accent-primary"
-                />
+                <span className="text-xs text-slate-500 w-8 text-right">{filterState.minBrightness.toFixed(2)}</span>
+
+                {/* Dual slider */}
+                <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+                  {/* Track background */}
+                  <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
+
+                  {/* Active range */}
+                  <div
+                    className="absolute h-0.5 bg-accent-primary rounded-full pointer-events-none"
+                    style={{
+                      left: `${filterState.minBrightness * 100}%`,
+                      right: `${(1 - filterState.maxBrightness) * 100}%`,
+                    }}
+                  />
+
+                  {/* Min handle */}
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={filterState.minBrightness}
+                    onChange={(e) => {
+                      const newMin = parseFloat(e.target.value)
+                      handlePerceptualRangeChange('brightness', 'min', Math.min(newMin, filterState.maxBrightness))
+                    }}
+                    className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                    style={{ zIndex: filterState.minBrightness > filterState.maxBrightness - 0.02 ? 5 : 3 }}
+                  />
+
+                  {/* Max handle */}
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={filterState.maxBrightness}
+                    onChange={(e) => {
+                      const newMax = parseFloat(e.target.value)
+                      handlePerceptualRangeChange('brightness', 'max', Math.max(newMax, filterState.minBrightness))
+                    }}
+                    className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                    style={{ zIndex: filterState.maxBrightness < filterState.minBrightness + 0.02 ? 5 : 4 }}
+                  />
+                </div>
+
                 <span className="text-xs text-slate-500 w-8">{filterState.maxBrightness.toFixed(2)}</span>
               </div>
             </div>
@@ -352,26 +546,53 @@ export function SourcesAudioFilter({
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-400 w-20">Warmth:</span>
               <div className="flex-1 flex items-center gap-2">
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={filterState.minWarmth}
-                  onChange={(e) => handlePerceptualRangeChange('warmth', 'min', parseFloat(e.target.value))}
-                  className="flex-1 h-1 accent-accent-primary"
-                />
-                <span className="text-xs text-slate-500 w-8">{filterState.minWarmth.toFixed(2)}</span>
-                <span className="text-xs text-slate-500">-</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={filterState.maxWarmth}
-                  onChange={(e) => handlePerceptualRangeChange('warmth', 'max', parseFloat(e.target.value))}
-                  className="flex-1 h-1 accent-accent-primary"
-                />
+                <span className="text-xs text-slate-500 w-8 text-right">{filterState.minWarmth.toFixed(2)}</span>
+
+                {/* Dual slider */}
+                <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+                  {/* Track background */}
+                  <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
+
+                  {/* Active range */}
+                  <div
+                    className="absolute h-0.5 bg-accent-primary rounded-full pointer-events-none"
+                    style={{
+                      left: `${filterState.minWarmth * 100}%`,
+                      right: `${(1 - filterState.maxWarmth) * 100}%`,
+                    }}
+                  />
+
+                  {/* Min handle */}
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={filterState.minWarmth}
+                    onChange={(e) => {
+                      const newMin = parseFloat(e.target.value)
+                      handlePerceptualRangeChange('warmth', 'min', Math.min(newMin, filterState.maxWarmth))
+                    }}
+                    className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                    style={{ zIndex: filterState.minWarmth > filterState.maxWarmth - 0.02 ? 5 : 3 }}
+                  />
+
+                  {/* Max handle */}
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={filterState.maxWarmth}
+                    onChange={(e) => {
+                      const newMax = parseFloat(e.target.value)
+                      handlePerceptualRangeChange('warmth', 'max', Math.max(newMax, filterState.minWarmth))
+                    }}
+                    className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                    style={{ zIndex: filterState.maxWarmth < filterState.minWarmth + 0.02 ? 5 : 4 }}
+                  />
+                </div>
+
                 <span className="text-xs text-slate-500 w-8">{filterState.maxWarmth.toFixed(2)}</span>
               </div>
             </div>
@@ -380,26 +601,53 @@ export function SourcesAudioFilter({
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-400 w-20">Hardness:</span>
               <div className="flex-1 flex items-center gap-2">
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={filterState.minHardness}
-                  onChange={(e) => handlePerceptualRangeChange('hardness', 'min', parseFloat(e.target.value))}
-                  className="flex-1 h-1 accent-accent-primary"
-                />
-                <span className="text-xs text-slate-500 w-8">{filterState.minHardness.toFixed(2)}</span>
-                <span className="text-xs text-slate-500">-</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={filterState.maxHardness}
-                  onChange={(e) => handlePerceptualRangeChange('hardness', 'max', parseFloat(e.target.value))}
-                  className="flex-1 h-1 accent-accent-primary"
-                />
+                <span className="text-xs text-slate-500 w-8 text-right">{filterState.minHardness.toFixed(2)}</span>
+
+                {/* Dual slider */}
+                <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+                  {/* Track background */}
+                  <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
+
+                  {/* Active range */}
+                  <div
+                    className="absolute h-0.5 bg-accent-primary rounded-full pointer-events-none"
+                    style={{
+                      left: `${filterState.minHardness * 100}%`,
+                      right: `${(1 - filterState.maxHardness) * 100}%`,
+                    }}
+                  />
+
+                  {/* Min handle */}
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={filterState.minHardness}
+                    onChange={(e) => {
+                      const newMin = parseFloat(e.target.value)
+                      handlePerceptualRangeChange('hardness', 'min', Math.min(newMin, filterState.maxHardness))
+                    }}
+                    className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                    style={{ zIndex: filterState.minHardness > filterState.maxHardness - 0.02 ? 5 : 3 }}
+                  />
+
+                  {/* Max handle */}
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={filterState.maxHardness}
+                    onChange={(e) => {
+                      const newMax = parseFloat(e.target.value)
+                      handlePerceptualRangeChange('hardness', 'max', Math.max(newMax, filterState.minHardness))
+                    }}
+                    className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                    style={{ zIndex: filterState.maxHardness < filterState.minHardness + 0.02 ? 5 : 4 }}
+                  />
+                </div>
+
                 <span className="text-xs text-slate-500 w-8">{filterState.maxHardness.toFixed(2)}</span>
               </div>
             </div>
@@ -450,12 +698,13 @@ export function SourcesAudioFilter({
                         <button
                           key={instrument}
                           onClick={() => handleInstrumentToggle(instrument)}
-                          className={`px-2 py-0.5 text-xs rounded capitalize transition-colors ${
+                          className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded capitalize transition-colors ${
                             filterState.selectedInstruments.includes(instrument)
                               ? 'bg-accent-primary text-white'
                               : 'bg-surface-base text-slate-400 hover:text-white hover:bg-surface-raised'
                           }`}
                         >
+                          <InstrumentIcon type={instrument} size={12} />
                           {instrument}
                         </button>
                       ))}

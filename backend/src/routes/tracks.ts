@@ -249,7 +249,7 @@ router.post('/', async (req, res) => {
 // Update track
 router.put('/:id', async (req, res) => {
   const id = parseInt(req.params.id)
-  const { title } = req.body as { title?: string }
+  const { title, artist, album } = req.body as { title?: string; artist?: string; album?: string }
 
   try {
     const track = await db
@@ -264,6 +264,8 @@ router.put('/:id', async (req, res) => {
 
     const updates: Partial<typeof schema.tracks.$inferSelect> = {}
     if (title !== undefined) updates.title = title
+    if (artist !== undefined) updates.artist = artist
+    if (album !== undefined) updates.album = album
 
     const [updated] = await db
       .update(schema.tracks)

@@ -1,0 +1,193 @@
+export const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
+
+export interface RelatedKeyGroup {
+  level: number
+  label: string
+  emoji: string
+  color: string
+  keys: string[]
+}
+
+/**
+ * Parse a key string like "C major" or "A minor" into note index and mode
+ */
+function parseKey(key: string): { noteIdx: number; mode: 'major' | 'minor' } | null {
+  const match = key.match(/^([A-G]#?)\s*(major|minor)$/i)
+  if (!match) return null
+  const noteIdx = NOTES.indexOf(match[1].charAt(0).toUpperCase() + match[1].slice(1) as any)
+  if (noteIdx === -1) return null
+  return { noteIdx, mode: match[2].toLowerCase() as 'major' | 'minor' }
+}
+
+function keyStr(idx: number, mode: 'major' | 'minor'): string {
+  return `${NOTES[(idx + 12) % 12]} ${mode}`
+}
+
+/**
+ * Get related keys for selected keys, grouped by "spiciness" level.
+ * Keys are deduplicated - each key appears only at its smoothest level.
+ * Already-selected keys are excluded from results.
+ */
+export function getRelatedKeys(selectedKeys: string[]): RelatedKeyGroup[] {
+  if (selectedKeys.length === 0) return []
+
+  const selectedSet = new Set(selectedKeys.map(k => k.toLowerCase()))
+  const assigned = new Set<string>()
+
+  // For each level, collect all related keys from all selected keys
+  const levelKeys: string[][] = [[], [], [], [], []]
+
+  for (const sk of selectedKeys) {
+    const parsed = parseKey(sk)
+    if (!parsed) continue
+    const { noteIdx: root, mode } = parsed
+
+    // Level 1 - Smooth: relative major/minor, parallel major/minor
+    const rel1: string[] = []
+    if (mode === 'major') {
+      rel1.push(keyStr(root, 'minor'))           // parallel minor
+      rel1.push(keyStr((root + 9) % 12, 'minor'))  // relative minor
+    } else {
+      rel1.push(keyStr(root, 'major'))           // parallel major
+      rel1.push(keyStr((root + 3) % 12, 'major'))  // relative major
+    }
+    levelKeys[0].push(...rel1)
+
+    // Level 2 - Close: circle of fifths neighbors
+    const rel2: string[] = []
+    const dom = (root + 7) % 12  // dominant
+    const sub = (root + 5) % 12  // subdominant
+    rel2.push(keyStr(dom, mode))
+    rel2.push(keyStr(sub, mode))
+    // + their relative keys
+    if (mode === 'major') {
+      rel2.push(keyStr((dom + 9) % 12, 'minor'))
+      rel2.push(keyStr((sub + 9) % 12, 'minor'))
+    } else {
+      rel2.push(keyStr((dom + 3) % 12, 'major'))
+      rel2.push(keyStr((sub + 3) % 12, 'major'))
+    }
+    levelKeys[1].push(...rel2)
+
+    // Level 3 - Moderate: two steps on circle of fifths, secondary dominants
+    const rel3: string[] = []
+    const twoUp = (root + 2) % 12   // two fifths up = whole step up
+    const twoDown = (root + 10) % 12 // two fifths down = whole step down
+    rel3.push(keyStr(twoUp, 'major'))
+    rel3.push(keyStr(twoDown, 'major'))
+    rel3.push(keyStr(twoUp, 'minor'))
+    rel3.push(keyStr(twoDown, 'minor'))
+    levelKeys[2].push(...rel3)
+
+    // Level 4 - Spicy: tritone sub, Neapolitan, chromatic mediants
+    const rel4: string[] = []
+    const tritone = (root + 6) % 12
+    const neapolitan = (root + 1) % 12
+    const chromaticMediantUp = (root + 4) % 12
+    const chromaticMediantDown = (root + 8) % 12
+    rel4.push(keyStr(tritone, 'major'), keyStr(tritone, 'minor'))
+    rel4.push(keyStr(neapolitan, 'major'), keyStr(neapolitan, 'minor'))
+    rel4.push(keyStr(chromaticMediantUp, 'major'), keyStr(chromaticMediantUp, 'minor'))
+    rel4.push(keyStr(chromaticMediantDown, 'major'), keyStr(chromaticMediantDown, 'minor'))
+    levelKeys[3].push(...rel4)
+  }
+
+  // Level 5 - Exotic: everything remaining
+  const allKeys: string[] = []
+  for (const note of NOTES) {
+    allKeys.push(`${note} major`, `${note} minor`)
+  }
+
+  // Now deduplicate across levels: key appears at its smoothest level
+  const groups: RelatedKeyGroup[] = []
+  const labels = ['Smooth', 'Close', 'Moderate', 'Spicy', 'Exotic']
+  const emojis = ['🟢', '🟡', '🟠', '🔴', '🟣']
+  const colors = ['#22c55e', '#eab308', '#f97316', '#ef4444', '#a855f7']
+
+  for (let level = 0; level < 4; level++) {
+    const uniqueKeys: string[] = []
+    for (const k of levelKeys[level]) {
+      const lower = k.toLowerCase()
+      if (!selectedSet.has(lower) && !assigned.has(lower)) {
+        assigned.add(lower)
+        uniqueKeys.push(k)
+      }
+    }
+    if (uniqueKeys.length > 0) {
+      groups.push({
+        level: level + 1,
+        label: labels[level],
+        emoji: emojis[level],
+        color: colors[level],
+        keys: uniqueKeys,
+      })
+    }
+  }
+
+  // Level 5: all remaining
+  const exoticKeys: string[] = []
+  for (const k of allKeys) {
+    const lower = k.toLowerCase()
+    if (!selectedSet.has(lower) && !assigned.has(lower)) {
+      assigned.add(lower)
+      exoticKeys.push(k)
+    }
+  }
+  if (exoticKeys.length > 0) {
+    groups.push({
+      level: 5,
+      label: labels[4],
+      emoji: emojis[4],
+      color: colors[4],
+      keys: exoticKeys,
+    })
+  }
+
+  return groups
+}
+
+const DEGREE_NAMES = [
+  'Tonic (I)',
+  'Neapolitan (bII)',
+  'Supertonic (II)',
+  'Mediant (III)',
+  'Mediant (bIII)',
+  'Subdominant (IV)',
+  'Tritone (bV)',
+  'Dominant (V)',
+  'Submediant (bVI)',
+  'Submediant (VI)',
+  'Subtonic (bVII)',
+  'Leading Tone (VII)',
+]
+
+/**
+ * Get the scale degree name of a sample key relative to a reference key.
+ * Returns a string like "Dominant (V)" or "Mediant (III)".
+ */
+export function getScaleDegree(sampleKey: string, referenceKey: string): string {
+  const sample = parseKey(sampleKey)
+  const ref = parseKey(referenceKey)
+  if (!sample || !ref) return 'Unknown'
+
+  const semitones = ((sample.noteIdx - ref.noteIdx) + 12) % 12
+  return DEGREE_NAMES[semitones] || 'Unknown'
+}
+
+/**
+ * Get all unique scale degree labels for grouping.
+ * Returns them in chromatic order.
+ */
+export function getScaleDegreeGroups(
+  samples: Array<{ keyEstimate?: string | null }>,
+  referenceKey: string
+): string[] {
+  const degrees = new Set<string>()
+  for (const s of samples) {
+    if (s.keyEstimate) {
+      degrees.add(getScaleDegree(s.keyEstimate, referenceKey))
+    }
+  }
+  // Sort by chromatic order
+  return DEGREE_NAMES.filter(d => degrees.has(d))
+}

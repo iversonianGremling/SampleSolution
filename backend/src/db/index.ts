@@ -274,6 +274,51 @@ function initDatabase() {
     `)
   }
 
+  // Migration: Add new analysis features (temporal centroid, crest factor, etc.)
+  const audioFeaturesNew = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasTemporalCentroid = audioFeaturesNew.some(col => col.name === 'temporal_centroid')
+  if (!hasTemporalCentroid) {
+    console.log('[DB] Migrating: Adding new analysis features (temporal centroid, crest factor, etc.)')
+    sqlite.exec(`
+      ALTER TABLE audio_features ADD COLUMN temporal_centroid REAL;
+      ALTER TABLE audio_features ADD COLUMN crest_factor REAL;
+      ALTER TABLE audio_features ADD COLUMN transient_spectral_centroid REAL;
+      ALTER TABLE audio_features ADD COLUMN transient_spectral_flatness REAL;
+      ALTER TABLE audio_features ADD COLUMN sample_type_confidence REAL;
+    `)
+  }
+
+  // Migration: Add instrument_type to audio_features
+  const audioFeaturesInstrType = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasInstrumentType = audioFeaturesInstrType.some(col => col.name === 'instrument_type')
+  if (!hasInstrumentType) {
+    console.log('[DB] Migrating: Adding instrument_type column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN instrument_type TEXT;`)
+  }
+
+  // Migration: Add artist and album to tracks
+  const tracksArtist = sqlite.prepare("PRAGMA table_info(tracks)").all() as { name: string }[]
+  const hasArtist = tracksArtist.some(col => col.name === 'artist')
+  if (!hasArtist) {
+    console.log('[DB] Migrating: Adding artist and album columns to tracks')
+    sqlite.exec(`
+      ALTER TABLE tracks ADD COLUMN artist TEXT;
+      ALTER TABLE tracks ADD COLUMN album TEXT;
+    `)
+  }
+
+  // Migration: Create sync_configs table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS sync_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+      collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      sync_direction TEXT NOT NULL DEFAULT 'bidirectional',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+  `)
+
   return drizzleDb
 }
 

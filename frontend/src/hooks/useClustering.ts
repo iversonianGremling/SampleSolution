@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import DBSCAN from 'density-clustering/lib/DBSCAN'
 import KMEANS from 'density-clustering/lib/KMEANS'
 
-export type ClusterMethod = 'dbscan' | 'kmeans'
+export type ClusterMethod = 'dbscan' | 'kmeans' | 'hdbscan'
 
 interface UseClusteringOptions {
   method: ClusterMethod
@@ -11,6 +11,9 @@ interface UseClusteringOptions {
   minPoints?: number
   // K-means params
   k?: number
+  // HDBSCAN params
+  minClusterSize?: number
+  minSamples?: number
 }
 
 interface UseClusteringResult {
@@ -24,6 +27,8 @@ const DEFAULT_OPTIONS: UseClusteringOptions = {
   epsilon: 0.15,
   minPoints: 2,
   k: 5,
+  minClusterSize: 5,
+  minSamples: 3,
 }
 
 // Vibrant cluster color palette - saturated, visually distinct colors
@@ -86,6 +91,118 @@ export function useClustering(
           })
 
           setClusterCount(clusterIndices.length)
+        } else if (opts.method === 'hdbscan') {
+          // HDBSCAN: mutual reachability distance + single linkage + DBSCAN* extraction
+          const minClusterSize = opts.minClusterSize ?? 5
+          const minSamples = opts.minSamples ?? 3
+
+          // Compute pairwise Euclidean distances
+          const n = points.length
+          const dist = Array.from({ length: n }, (_, i) =>
+            Array.from({ length: n }, (_, j) => {
+              if (i === j) return 0
+              const dx = points[i][0] - points[j][0]
+              const dy = points[i][1] - points[j][1]
+              return Math.sqrt(dx * dx + dy * dy)
+            })
+          )
+
+          // Core distances (distance to k-th nearest neighbor)
+          const coreDistances = dist.map(row => {
+            const sorted = [...row].sort((a, b) => a - b)
+            return sorted[Math.min(minSamples, n - 1)]
+          })
+
+          // Mutual reachability distance
+          const mrd = Array.from({ length: n }, (_, i) =>
+            Array.from({ length: n }, (_, j) =>
+              Math.max(coreDistances[i], coreDistances[j], dist[i][j])
+            )
+          )
+
+          // Build MST using Prim's algorithm
+          const inMST = new Array(n).fill(false)
+          const mstEdges: { from: number; to: number; weight: number }[] = []
+          const minEdge = new Array(n).fill(Infinity)
+          const minFrom = new Array(n).fill(-1)
+          inMST[0] = true
+          for (let j = 1; j < n; j++) {
+            minEdge[j] = mrd[0][j]
+            minFrom[j] = 0
+          }
+          for (let iter = 0; iter < n - 1; iter++) {
+            let bestIdx = -1
+            let bestDist = Infinity
+            for (let j = 0; j < n; j++) {
+              if (!inMST[j] && minEdge[j] < bestDist) {
+                bestDist = minEdge[j]
+                bestIdx = j
+              }
+            }
+            if (bestIdx === -1) break
+            inMST[bestIdx] = true
+            mstEdges.push({ from: minFrom[bestIdx], to: bestIdx, weight: bestDist })
+            for (let j = 0; j < n; j++) {
+              if (!inMST[j] && mrd[bestIdx][j] < minEdge[j]) {
+                minEdge[j] = mrd[bestIdx][j]
+                minFrom[j] = bestIdx
+              }
+            }
+          }
+
+          // Sort MST edges by weight descending for single-linkage dendrogram cutting
+          mstEdges.sort((a, b) => b.weight - a.weight)
+
+          // Extract clusters using simplified DBSCAN* approach:
+          // Cut edges from largest to smallest, form connected components,
+          // keep components >= minClusterSize
+          const parent = Array.from({ length: n }, (_, i) => i)
+          const size = new Array(n).fill(1)
+          const find = (x: number): number => {
+            while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x] }
+            return x
+          }
+          const union = (a: number, b: number) => {
+            a = find(a); b = find(b)
+            if (a === b) return
+            if (size[a] < size[b]) [a, b] = [b, a]
+            parent[b] = a
+            size[a] += size[b]
+          }
+
+          // Add all MST edges (they're sorted desc, but union order doesn't matter for final components)
+          for (const edge of mstEdges) {
+            union(edge.from, edge.to)
+          }
+
+          // Now iteratively remove the heaviest edges and check stability
+          // Simpler approach: use DBSCAN with adaptive epsilon based on MST edge distribution
+          const edgeWeights = mstEdges.map(e => e.weight).sort((a, b) => a - b)
+          const medianEdge = edgeWeights[Math.floor(edgeWeights.length * 0.5)]
+
+          // Reset and rebuild with only edges below threshold
+          for (let i = 0; i < n; i++) { parent[i] = i; size[i] = 1 }
+          for (const edge of mstEdges) {
+            if (edge.weight <= medianEdge * 2) {
+              union(edge.from, edge.to)
+            }
+          }
+
+          // Assign clusters, mark small components as noise
+          const componentMap = new Map<number, number>()
+          let nextCluster = 0
+          clusterAssignments = new Array(n).fill(-1)
+          for (let i = 0; i < n; i++) {
+            const root = find(i)
+            if (size[root] >= minClusterSize) {
+              if (!componentMap.has(root)) {
+                componentMap.set(root, nextCluster++)
+              }
+              clusterAssignments[i] = componentMap.get(root)!
+            }
+          }
+
+          setClusterCount(nextCluster)
         } else {
           // K-means
           const kmeans = new KMEANS()
@@ -115,7 +232,7 @@ export function useClustering(
     }, 10)
 
     return () => clearTimeout(timeoutId)
-  }, [points, opts.method, opts.epsilon, opts.minPoints, opts.k])
+  }, [points, opts.method, opts.epsilon, opts.minPoints, opts.k, opts.minClusterSize, opts.minSamples])
 
   return { clusters, clusterCount, isComputing }
 }

@@ -9,6 +9,7 @@ import {
   featuresToTags,
   getTagMetadata,
   storeAudioFeatures,
+  parseFilenameTags,
 } from '../services/audioAnalysis.js'
 
 const router = Router()
@@ -104,9 +105,14 @@ router.get('/sources/samples', async (req, res) => {
         trackSource: schema.tracks.source,
         trackFolderPath: schema.tracks.folderPath,
         trackOriginalPath: schema.tracks.originalPath,
+        trackArtist: schema.tracks.artist,
+        trackAlbum: schema.tracks.album,
         // Audio features
         bpm: schema.audioFeatures.bpm,
         keyEstimate: schema.audioFeatures.keyEstimate,
+        envelopeType: schema.audioFeatures.envelopeType,
+        genrePrimary: schema.audioFeatures.genrePrimary,
+        instrumentType: schema.audioFeatures.instrumentType,
       })
       .from(schema.slices)
       .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
@@ -253,12 +259,17 @@ router.get('/sources/samples', async (req, res) => {
       collectionIds: collectionsBySlice.get(slice.id) || [],
       bpm: slice.bpm,
       keyEstimate: slice.keyEstimate,
+      envelopeType: slice.envelopeType,
+      genrePrimary: slice.genrePrimary,
+      instrumentType: slice.instrumentType,
       track: {
         title: slice.trackTitle,
         youtubeId: slice.trackYoutubeId,
         source: slice.trackSource,
         folderPath: slice.trackFolderPath,
         originalPath: slice.trackOriginalPath,
+        artist: slice.trackArtist,
+        album: slice.trackAlbum,
       },
     }))
 
@@ -275,7 +286,7 @@ router.get('/sources/samples', async (req, res) => {
 // Helper function to auto-tag a slice using audio analysis
 async function autoTagSlice(sliceId: number, audioPath: string, analysisLevel?: 'quick' | 'standard' | 'advanced'): Promise<void> {
   try {
-    const level = analysisLevel || 'standard'
+    const level = analysisLevel || 'advanced'
     console.log(`Running audio analysis on slice ${sliceId} (level: ${level})...`)
 
     // Analyze audio with Python (Essentia + Librosa)
@@ -295,6 +306,14 @@ async function autoTagSlice(sliceId: number, audioPath: string, analysisLevel?: 
     // Convert features to tags
     const tagNames = featuresToTags(features)
 
+    // Get existing tags for this slice to avoid duplicating filename-derived tags
+    const existingSliceTags = await db
+      .select({ name: schema.tags.name })
+      .from(schema.sliceTags)
+      .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
+      .where(eq(schema.sliceTags.sliceId, sliceId))
+    const existingTagNames = new Set(existingSliceTags.map(t => t.name.toLowerCase()))
+
     if (tagNames.length === 0) {
       console.log(`No tags generated for slice ${sliceId}`)
       return
@@ -305,6 +324,7 @@ async function autoTagSlice(sliceId: number, audioPath: string, analysisLevel?: 
     // Create tags and link them to the slice
     for (const tagName of tagNames) {
       const lowerTag = tagName.toLowerCase()
+      if (existingTagNames.has(lowerTag)) continue // Skip already-applied tags
       const { color, category } = getTagMetadata(lowerTag)
 
       try {
@@ -751,6 +771,11 @@ router.get('/slices/features', async (_req, res) => {
         spectralFlux: schema.audioFeatures.spectralFlux,
         spectralFlatness: schema.audioFeatures.spectralFlatness,
         kurtosis: schema.audioFeatures.kurtosis,
+        temporalCentroid: schema.audioFeatures.temporalCentroid,
+        crestFactor: schema.audioFeatures.crestFactor,
+        transientSpectralCentroid: schema.audioFeatures.transientSpectralCentroid,
+        transientSpectralFlatness: schema.audioFeatures.transientSpectralFlatness,
+        sampleTypeConfidence: schema.audioFeatures.sampleTypeConfidence,
       })
       .from(schema.slices)
       .innerJoin(schema.audioFeatures, eq(schema.slices.id, schema.audioFeatures.sliceId))
@@ -765,6 +790,122 @@ router.get('/slices/features', async (_req, res) => {
   } catch (error) {
     console.error('Error fetching slice features:', error)
     res.status(500).json({ error: 'Failed to fetch slice features' })
+  }
+})
+
+// GET /api/slices/:id/features - Get audio features for a specific slice
+router.get('/slices/:id/features', async (req, res) => {
+  const sliceId = parseInt(req.params.id)
+
+  try {
+    // Get the slice info
+    const slice = await db
+      .select()
+      .from(schema.slices)
+      .where(eq(schema.slices.id, sliceId))
+      .limit(1)
+
+    if (slice.length === 0) {
+      return res.status(404).json({ error: 'Slice not found' })
+    }
+
+    // Get audio features
+    const features = await db
+      .select()
+      .from(schema.audioFeatures)
+      .where(eq(schema.audioFeatures.sliceId, sliceId))
+      .limit(1)
+
+    if (features.length === 0) {
+      return res.status(404).json({ error: 'Audio features not found for this slice' })
+    }
+
+    const feature = features[0]
+
+    // Parse JSON fields
+    const mfccMean = feature.mfccMean ? JSON.parse(feature.mfccMean) : null
+    const tristimulus = feature.tristimulus ? JSON.parse(feature.tristimulus) : null
+    const melBandsMean = feature.melBandsMean ? JSON.parse(feature.melBandsMean) : null
+    const melBandsStd = feature.melBandsStd ? JSON.parse(feature.melBandsStd) : null
+    const yamnetEmbeddings = feature.yamnetEmbeddings ? JSON.parse(feature.yamnetEmbeddings) : null
+    const instrumentClasses = feature.instrumentClasses ? JSON.parse(feature.instrumentClasses) : null
+    const genreClasses = feature.genreClasses ? JSON.parse(feature.genreClasses) : null
+    const moodClasses = feature.moodClasses ? JSON.parse(feature.moodClasses) : null
+
+    // Return all features
+    res.json({
+      id: slice[0].id,
+      name: slice[0].name,
+      trackId: slice[0].trackId,
+      filePath: slice[0].filePath,
+      duration: feature.duration,
+      bpm: feature.bpm,
+      onsetCount: feature.onsetCount,
+      spectralCentroid: feature.spectralCentroid,
+      spectralRolloff: feature.spectralRolloff,
+      spectralBandwidth: feature.spectralBandwidth,
+      spectralContrast: feature.spectralContrast,
+      zeroCrossingRate: feature.zeroCrossingRate,
+      mfccMean,
+      rmsEnergy: feature.rmsEnergy,
+      loudness: feature.loudness,
+      dynamicRange: feature.dynamicRange,
+      keyEstimate: feature.keyEstimate,
+      keyStrength: feature.keyStrength,
+      attackTime: feature.attackTime,
+      spectralFlux: feature.spectralFlux,
+      spectralFlatness: feature.spectralFlatness,
+      kurtosis: feature.kurtosis,
+      dissonance: feature.dissonance,
+      inharmonicity: feature.inharmonicity,
+      tristimulus,
+      spectralComplexity: feature.spectralComplexity,
+      spectralCrest: feature.spectralCrest,
+      brightness: feature.brightness,
+      warmth: feature.warmth,
+      hardness: feature.hardness,
+      roughness: feature.roughness,
+      sharpness: feature.sharpness,
+      melBandsMean,
+      melBandsStd,
+      stereoWidth: feature.stereoWidth,
+      panningCenter: feature.panningCenter,
+      stereoImbalance: feature.stereoImbalance,
+      harmonicPercussiveRatio: feature.harmonicPercussiveRatio,
+      harmonicEnergy: feature.harmonicEnergy,
+      percussiveEnergy: feature.percussiveEnergy,
+      harmonicCentroid: feature.harmonicCentroid,
+      percussiveCentroid: feature.percussiveCentroid,
+      onsetRate: feature.onsetRate,
+      beatStrength: feature.beatStrength,
+      rhythmicRegularity: feature.rhythmicRegularity,
+      danceability: feature.danceability,
+      decayTime: feature.decayTime,
+      sustainLevel: feature.sustainLevel,
+      releaseTime: feature.releaseTime,
+      envelopeType: feature.envelopeType,
+      instrumentClasses,
+      genreClasses,
+      genrePrimary: feature.genrePrimary,
+      yamnetEmbeddings,
+      moodClasses,
+      loudnessIntegrated: feature.loudnessIntegrated,
+      loudnessRange: feature.loudnessRange,
+      loudnessMomentaryMax: feature.loudnessMomentaryMax,
+      truePeak: feature.truePeak,
+      eventCount: feature.eventCount,
+      eventDensity: feature.eventDensity,
+      chromaprintFingerprint: feature.chromaprintFingerprint,
+      temporalCentroid: feature.temporalCentroid,
+      crestFactor: feature.crestFactor,
+      transientSpectralCentroid: feature.transientSpectralCentroid,
+      transientSpectralFlatness: feature.transientSpectralFlatness,
+      sampleTypeConfidence: feature.sampleTypeConfidence,
+      analysisLevel: feature.analysisLevel,
+    })
+  } catch (error) {
+    console.error('Error fetching audio features for slice:', error)
+    res.status(500).json({ error: 'Failed to fetch audio features' })
   }
 })
 
@@ -848,18 +989,36 @@ router.post('/slices/batch-delete', async (req, res) => {
 // POST /api/slices/batch-reanalyze - Re-analyze all or selected slices
 router.post('/slices/batch-reanalyze', async (req, res) => {
   try {
-    const { sliceIds, analysisLevel } = req.body as {
+    const { sliceIds, analysisLevel, concurrency, includeFilenameTags } = req.body as {
       sliceIds?: number[]
       analysisLevel?: 'quick' | 'standard' | 'advanced'
+      concurrency?: number
+      includeFilenameTags?: boolean
     }
 
-    // Get slices to re-analyze
+    // Get slices to re-analyze (join with tracks to get folderPath for filename tagging)
     const slicesToAnalyze = sliceIds && sliceIds.length > 0
       ? await db
-          .select()
+          .select({
+            id: schema.slices.id,
+            name: schema.slices.name,
+            filePath: schema.slices.filePath,
+            trackId: schema.slices.trackId,
+            folderPath: schema.tracks.folderPath,
+          })
           .from(schema.slices)
+          .leftJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
           .where(inArray(schema.slices.id, sliceIds))
-      : await db.select().from(schema.slices).all()
+      : await db
+          .select({
+            id: schema.slices.id,
+            name: schema.slices.name,
+            filePath: schema.slices.filePath,
+            trackId: schema.slices.trackId,
+            folderPath: schema.tracks.folderPath,
+          })
+          .from(schema.slices)
+          .leftJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
 
     if (slicesToAnalyze.length === 0) {
       return res.json({
@@ -870,9 +1029,8 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
       })
     }
 
-    // Start background re-analysis
-    // We'll process in chunks to avoid overwhelming the system
-    const CHUNK_SIZE = 5
+    // Configurable concurrency (1-50, default 5)
+    const CHUNK_SIZE = Math.max(1, Math.min(50, concurrency || 5))
     const results: Array<{ sliceId: number; success: boolean; error?: string }> = []
 
     // Process in chunks
@@ -892,9 +1050,15 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
             }
 
             // Check if file exists
-            const filePath = path.isAbsolute(slice.filePath)
-              ? slice.filePath
-              : path.join(DATA_DIR, slice.filePath)
+            // Handle both absolute paths and relative paths (strip leading 'data/' if present)
+            let filePath = slice.filePath
+            if (!path.isAbsolute(filePath)) {
+              // Remove 'data/' prefix if present to avoid duplication with DATA_DIR
+              if (filePath.startsWith('data/')) {
+                filePath = filePath.substring(5) // Remove 'data/'
+              }
+              filePath = path.join(DATA_DIR, filePath)
+            }
 
             try {
               await fs.access(filePath)
@@ -957,6 +1121,40 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
               }
             }
 
+            // Apply filename-derived tags if enabled
+            if (includeFilenameTags && slice.name) {
+              const filenameTags = parseFilenameTags(slice.name, slice.folderPath ?? null)
+              for (const ft of filenameTags) {
+                const lowerTag = ft.tag.toLowerCase()
+                try {
+                  let tag = await db
+                    .select()
+                    .from(schema.tags)
+                    .where(eq(schema.tags.name, lowerTag))
+                    .limit(1)
+
+                  if (tag.length === 0) {
+                    const [newTag] = await db
+                      .insert(schema.tags)
+                      .values({
+                        name: lowerTag,
+                        color: '#f472b6',
+                        category: 'filename',
+                      })
+                      .returning()
+                    tag = [newTag]
+                  }
+
+                  await db
+                    .insert(schema.sliceTags)
+                    .values({ sliceId: slice.id, tagId: tag[0].id })
+                    .onConflictDoNothing()
+                } catch {
+                  // Ignore duplicate tag errors
+                }
+              }
+            }
+
             results.push({ sliceId: slice.id, success: true })
           } catch (error) {
             console.error(`Error re-analyzing slice ${slice.id}:`, error)
@@ -1002,27 +1200,6 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
   if (magA === 0 || magB === 0) return 0
   return dotProduct / (magA * magB)
-}
-
-// Helper function to calculate Hamming distance between two hex strings
-function hammingDistance(hash1: string, hash2: string): number {
-  if (!hash1 || !hash2 || hash1.length !== hash2.length) return Infinity
-
-  let distance = 0
-  for (let i = 0; i < hash1.length; i++) {
-    const byte1 = parseInt(hash1.substr(i, 2), 16)
-    const byte2 = parseInt(hash2.substr(i, 2), 16)
-
-    // Count differing bits
-    let xor = byte1 ^ byte2
-    while (xor > 0) {
-      distance += xor & 1
-      xor >>= 1
-    }
-    i++ // Skip next char since we processed 2 chars
-  }
-
-  return distance
 }
 
 // GET /api/slices/:id/similar - Find similar samples based on YAMNet embeddings
@@ -1106,45 +1283,42 @@ router.get('/slices/:id/similar', async (req, res) => {
   }
 })
 
-// GET /api/slices/duplicates - Find potential duplicate samples based on perceptual hash
+// GET /api/slices/duplicates - Find potential duplicate samples based on chromaprint fingerprint
 router.get('/slices/duplicates', async (_req, res) => {
   try {
-    // Get all slices with similarity hashes
+    // Get all slices with chromaprint fingerprints
     const allFeatures = await db
       .select({
         sliceId: schema.audioFeatures.sliceId,
-        similarityHash: schema.audioFeatures.similarityHash,
         chromaprintFingerprint: schema.audioFeatures.chromaprintFingerprint,
       })
       .from(schema.audioFeatures)
-      .where(sql`${schema.audioFeatures.similarityHash} IS NOT NULL`)
+      .where(sql`${schema.audioFeatures.chromaprintFingerprint} IS NOT NULL`)
 
     if (allFeatures.length === 0) {
       return res.json({ groups: [], total: 0 })
     }
 
-    // Group by exact hash match first
+    // Group by exact fingerprint match
     const exactGroups = new Map<string, number[]>()
 
     for (const feature of allFeatures) {
-      const hash = feature.similarityHash!
-      if (!exactGroups.has(hash)) {
-        exactGroups.set(hash, [])
+      const fp = feature.chromaprintFingerprint!
+      if (!exactGroups.has(fp)) {
+        exactGroups.set(fp, [])
       }
-      exactGroups.get(hash)!.push(feature.sliceId)
+      exactGroups.get(fp)!.push(feature.sliceId)
     }
 
-    // Find near-duplicates using Hamming distance
-    const nearDuplicateGroups: Array<{
+    const duplicateGroups: Array<{
       sliceIds: number[]
-      matchType: 'exact' | 'near'
+      matchType: 'exact'
       hashSimilarity: number
     }> = []
 
-    // Process exact matches
-    for (const [hash, sliceIds] of exactGroups.entries()) {
+    for (const [_fp, sliceIds] of exactGroups.entries()) {
       if (sliceIds.length > 1) {
-        nearDuplicateGroups.push({
+        duplicateGroups.push({
           sliceIds,
           matchType: 'exact',
           hashSimilarity: 1.0,
@@ -1152,49 +1326,13 @@ router.get('/slices/duplicates', async (_req, res) => {
       }
     }
 
-    // Find near duplicates (Hamming distance < threshold)
-    const HAMMING_THRESHOLD = 5 // Allow up to 5 bits difference
-    const processed = new Set<number>()
-
-    for (let i = 0; i < allFeatures.length; i++) {
-      if (processed.has(allFeatures[i].sliceId)) continue
-
-      const group: number[] = [allFeatures[i].sliceId]
-      processed.add(allFeatures[i].sliceId)
-
-      for (let j = i + 1; j < allFeatures.length; j++) {
-        if (processed.has(allFeatures[j].sliceId)) continue
-
-        const distance = hammingDistance(
-          allFeatures[i].similarityHash!,
-          allFeatures[j].similarityHash!
-        )
-
-        if (distance <= HAMMING_THRESHOLD) {
-          group.push(allFeatures[j].sliceId)
-          processed.add(allFeatures[j].sliceId)
-        }
-      }
-
-      if (group.length > 1) {
-        // Check if already in exact match group
-        const isInExactGroup = nearDuplicateGroups.some(g =>
-          g.matchType === 'exact' && g.sliceIds.some(id => group.includes(id))
-        )
-
-        if (!isInExactGroup) {
-          nearDuplicateGroups.push({
-            sliceIds: group,
-            matchType: 'near',
-            hashSimilarity: 0.9, // Approximate
-          })
-        }
-      }
-    }
-
     // Get slice details for all duplicates
     const allDuplicateIds = new Set<number>()
-    nearDuplicateGroups.forEach(g => g.sliceIds.forEach(id => allDuplicateIds.add(id)))
+    duplicateGroups.forEach(g => g.sliceIds.forEach(id => allDuplicateIds.add(id)))
+
+    if (allDuplicateIds.size === 0) {
+      return res.json({ groups: [], total: 0 })
+    }
 
     const slices = await db
       .select({
@@ -1209,8 +1347,7 @@ router.get('/slices/duplicates', async (_req, res) => {
 
     const sliceMap = new Map(slices.map(s => [s.id, s]))
 
-    // Build response
-    const groups = nearDuplicateGroups.map(g => ({
+    const groups = duplicateGroups.map(g => ({
       matchType: g.matchType,
       hashSimilarity: g.hashSimilarity,
       samples: g.sliceIds.map(id => sliceMap.get(id)!).filter(Boolean),
@@ -1348,6 +1485,149 @@ router.get('/slices/hierarchy', async (_req, res) => {
   } catch (error) {
     console.error('Error building hierarchy:', error)
     res.status(500).json({ error: 'Failed to build hierarchy' })
+  }
+})
+
+// Phase 5: LMNN Weight Learning Endpoints
+
+// POST /api/weights/learn - Learn optimal feature weights from labeled samples
+router.post('/weights/learn', async (_req, res) => {
+  try {
+    const { spawn } = await import('child_process')
+    const pathMod = await import('path')
+    const fsMod = await import('fs/promises')
+    const { fileURLToPath } = await import('url')
+
+    const __fn = fileURLToPath(import.meta.url)
+    const __dn = pathMod.dirname(__fn)
+
+    // Get all samples with filename-derived tags
+    const samplesWithTags = await db
+      .select({
+        sliceId: schema.audioFeatures.sliceId,
+        spectralCentroid: schema.audioFeatures.spectralCentroid,
+        spectralRolloff: schema.audioFeatures.spectralRolloff,
+        spectralBandwidth: schema.audioFeatures.spectralBandwidth,
+        spectralContrast: schema.audioFeatures.spectralContrast,
+        spectralFlux: schema.audioFeatures.spectralFlux,
+        spectralFlatness: schema.audioFeatures.spectralFlatness,
+        rmsEnergy: schema.audioFeatures.rmsEnergy,
+        loudness: schema.audioFeatures.loudness,
+        dynamicRange: schema.audioFeatures.dynamicRange,
+        attackTime: schema.audioFeatures.attackTime,
+        brightness: schema.audioFeatures.brightness,
+        warmth: schema.audioFeatures.warmth,
+        hardness: schema.audioFeatures.hardness,
+        roughness: schema.audioFeatures.roughness,
+        sharpness: schema.audioFeatures.sharpness,
+        harmonicPercussiveRatio: schema.audioFeatures.harmonicPercussiveRatio,
+        temporalCentroid: schema.audioFeatures.temporalCentroid,
+        crestFactor: schema.audioFeatures.crestFactor,
+        transientSpectralCentroid: schema.audioFeatures.transientSpectralCentroid,
+        transientSpectralFlatness: schema.audioFeatures.transientSpectralFlatness,
+        stereoWidth: schema.audioFeatures.stereoWidth,
+        zeroCrossingRate: schema.audioFeatures.zeroCrossingRate,
+        bpm: schema.audioFeatures.bpm,
+        tagName: schema.tags.name,
+      })
+      .from(schema.audioFeatures)
+      .innerJoin(schema.sliceTags, eq(schema.audioFeatures.sliceId, schema.sliceTags.sliceId))
+      .innerJoin(schema.tags, and(eq(schema.sliceTags.tagId, schema.tags.id), eq(schema.tags.category, 'filename')))
+
+    if (samplesWithTags.length < 20) {
+      return res.status(400).json({
+        error: 'Need at least 20 labeled samples for weight learning',
+        current: samplesWithTags.length
+      })
+    }
+
+    // Group by sliceId, pick primary tag
+    const sampleMap = new Map<number, { features: number[], label: string }>()
+    const featureNames = [
+      'spectralCentroid', 'spectralRolloff', 'spectralBandwidth', 'spectralContrast',
+      'spectralFlux', 'spectralFlatness', 'rmsEnergy', 'loudness', 'dynamicRange',
+      'attackTime', 'brightness', 'warmth', 'hardness', 'roughness', 'sharpness',
+      'harmonicPercussiveRatio', 'temporalCentroid', 'crestFactor',
+      'transientSpectralCentroid', 'transientSpectralFlatness', 'stereoWidth',
+      'zeroCrossingRate', 'bpm',
+    ]
+
+    for (const row of samplesWithTags) {
+      if (sampleMap.has(row.sliceId)) continue
+      const featureValues = featureNames.map(f => (row as any)[f] ?? 0)
+      sampleMap.set(row.sliceId, { features: featureValues, label: row.tagName })
+    }
+
+    const samples = Array.from(sampleMap.values())
+    const inputData = {
+      features: samples.map(s => s.features),
+      labels: samples.map(s => s.label),
+      feature_names: featureNames,
+    }
+
+    const PYTHON_SCRIPT = pathMod.join(__dn, '../python/learn_weights.py')
+    const VENV_PYTHON = pathMod.join(__dn, '../../venv/bin/python')
+    const PYTHON_EXECUTABLE = process.env.PYTHON_PATH || VENV_PYTHON
+
+    const proc = spawn(PYTHON_EXECUTABLE, [PYTHON_SCRIPT], {
+      timeout: 120000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    proc.stdout.on('data', (data: Buffer) => { stdout += data.toString() })
+    proc.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
+
+    proc.stdin.write(JSON.stringify(inputData))
+    proc.stdin.end()
+
+    proc.on('close', async (code: number | null) => {
+      if (code !== 0) {
+        console.error('Weight learning failed:', stderr)
+        return res.status(500).json({ error: 'Weight learning failed', details: stderr.substring(0, 500) })
+      }
+
+      try {
+        const result = JSON.parse(stdout)
+        const DATA_DIR = process.env.DATA_DIR || './data'
+        const weightsPath = pathMod.join(DATA_DIR, 'learned_weights.json')
+        await fsMod.mkdir(DATA_DIR, { recursive: true })
+        await fsMod.writeFile(weightsPath, JSON.stringify(result, null, 2))
+        res.json(result)
+      } catch {
+        res.status(500).json({ error: 'Failed to parse weight learning results' })
+      }
+    })
+
+    proc.on('error', (err: Error) => {
+      res.status(500).json({ error: `Failed to spawn Python process: ${err.message}` })
+    })
+  } catch (error) {
+    console.error('Error in weight learning:', error)
+    res.status(500).json({ error: 'Failed to run weight learning' })
+  }
+})
+
+// GET /api/weights/learned - Get stored learned weights
+router.get('/weights/learned', async (_req, res) => {
+  try {
+    const pathMod = await import('path')
+    const fsMod = await import('fs/promises')
+
+    const DATA_DIR = process.env.DATA_DIR || './data'
+    const weightsPath = pathMod.join(DATA_DIR, 'learned_weights.json')
+
+    try {
+      const data = await fsMod.readFile(weightsPath, 'utf-8')
+      res.json(JSON.parse(data))
+    } catch {
+      res.status(404).json({ error: 'No learned weights found. Import labeled samples and run weight learning first.' })
+    }
+  } catch (error) {
+    console.error('Error fetching learned weights:', error)
+    res.status(500).json({ error: 'Failed to fetch learned weights' })
   }
 })
 

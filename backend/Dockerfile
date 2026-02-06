@@ -19,6 +19,8 @@ RUN apt-get update && apt-get install -y \
     libfftw3-dev \
     libsamplerate0-dev \
     libyaml-dev \
+    libchromaprint-dev \
+    libchromaprint-tools \
     && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp \
     && apt-get clean \
@@ -31,7 +33,7 @@ COPY requirements.txt ./
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHON_PATH="/opt/venv/bin/python"
-RUN pip install numpy librosa essentia-tensorflow
+RUN pip install --no-cache-dir -r requirements.txt
 
 
 COPY package*.json ./

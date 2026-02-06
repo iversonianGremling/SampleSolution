@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Search, Heart, LayoutGrid, List, Sparkles, Play, Repeat1, MousePointerClick, ChevronDown, Repeat, Settings } from 'lucide-react'
+import { Search, Heart, LayoutGrid, List, Sparkles, Play, Repeat1, MousePointerClick, ChevronDown, Repeat } from 'lucide-react'
 import { SourcesTree } from './SourcesTree'
 import { SourcesTagFilter } from './SourcesTagFilter'
 import { SourcesSampleGrid } from './SourcesSampleGrid'
@@ -10,7 +10,6 @@ import { SourcesBatchActions } from './SourcesBatchActions'
 import { SourcesDetailModal } from './SourcesDetailModal'
 import { EditingModal } from './EditingModal'
 import { SampleSpaceView } from './SampleSpaceView'
-import { SourcesSettings } from './SourcesSettings'
 import { SourcesAudioFilter, AudioFilterState } from './SourcesAudioFilter'
 import { useSourceTree } from '../hooks/useSourceTree'
 import { useScopedSamples } from '../hooks/useScopedSamples'
@@ -32,6 +31,7 @@ import {
 } from '../hooks/useTracks'
 import type { SourceScope, SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
+import { getRelatedKeys, getScaleDegree } from '../utils/musicTheory'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
@@ -42,7 +42,7 @@ export function SourcesView() {
   const [searchQuery, setSearchQuery] = useState('')
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
   const [selectedSampleId, setSelectedSampleId] = useState<number | null>(null)
-  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'space' | 'settings'>('grid')
+  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'space'>('grid')
   const [selectedSampleIds, setSelectedSampleIds] = useState<Set<number>>(new Set())
   const [editingTrackId, setEditingTrackId] = useState<number | null>(null)
 
@@ -68,8 +68,24 @@ export function SourcesView() {
     minHardness: 0,
     maxHardness: 1,
     selectedInstruments: [],
-    selectedGenres: []
+    selectedGenres: [],
+    relatedKeysLevels: [],
+    groupByScaleDegree: false,
   })
+
+  // Compute effective keys (selected + related levels)
+  const effectiveKeys = useMemo(() => {
+    const keys = [...audioFilter.selectedKeys]
+    if (audioFilter.relatedKeysLevels.length > 0) {
+      const relatedGroups = getRelatedKeys(audioFilter.selectedKeys)
+      for (const group of relatedGroups) {
+        if (audioFilter.relatedKeysLevels.includes(group.level)) {
+          keys.push(...group.keys)
+        }
+      }
+    }
+    return keys
+  }, [audioFilter.selectedKeys, audioFilter.relatedKeysLevels])
 
   // Data queries
   const { data: sourceTree, isLoading: isTreeLoading } = useSourceTree()
@@ -83,7 +99,7 @@ export function SourcesView() {
       sortOrder: audioFilter.sortOrder,
       minBpm: audioFilter.minBpm > 0 ? audioFilter.minBpm : undefined,
       maxBpm: audioFilter.maxBpm < 300 ? audioFilter.maxBpm : undefined,
-      keys: audioFilter.selectedKeys.length > 0 ? audioFilter.selectedKeys : undefined
+      keys: effectiveKeys.length > 0 ? effectiveKeys : undefined
     }
   )
   const { data: allTags = [] } = useTags()
@@ -123,9 +139,10 @@ export function SourcesView() {
         }
       }
 
-      // Instrument filter
+      // Instrument filter (check both instrumentType and instrumentPrimary)
       if (audioFilter.selectedInstruments.length > 0) {
-        if (!sample.instrumentPrimary || !audioFilter.selectedInstruments.includes(sample.instrumentPrimary)) {
+        const instrType = sample.instrumentType || sample.instrumentPrimary
+        if (!instrType || !audioFilter.selectedInstruments.includes(instrType)) {
           return false
         }
       }
@@ -144,6 +161,31 @@ export function SourcesView() {
       return true
     })
   }, [allSamples, minDuration, maxDuration, audioFilter])
+
+  // Scale degree grouping
+  const scaleDegreeGroups = useMemo(() => {
+    if (!audioFilter.groupByScaleDegree || audioFilter.selectedKeys.length !== 1) return null
+    const refKey = audioFilter.selectedKeys[0]
+    const groups = new Map<string, SliceWithTrackExtended[]>()
+    const ungrouped: SliceWithTrackExtended[] = []
+    for (const s of samples) {
+      if (s.keyEstimate) {
+        const degree = getScaleDegree(s.keyEstimate, refKey)
+        if (degree !== 'Unknown') {
+          if (!groups.has(degree)) groups.set(degree, [])
+          groups.get(degree)!.push(s)
+        } else {
+          ungrouped.push(s)
+        }
+      } else {
+        ungrouped.push(s)
+      }
+    }
+    if (ungrouped.length > 0) {
+      groups.set('No Key', ungrouped)
+    }
+    return groups
+  }, [samples, audioFilter.groupByScaleDegree, audioFilter.selectedKeys])
 
   const selectedSample = useMemo<SliceWithTrackExtended | null>(() => {
     if (!selectedSampleId) return null
@@ -241,7 +283,7 @@ export function SourcesView() {
     })
   }
 
-  const handleViewModeChange = (mode: 'grid' | 'list' | 'space' | 'settings') => {
+  const handleViewModeChange = (mode: 'grid' | 'list' | 'space') => {
     setViewMode(mode)
   }
 
@@ -435,17 +477,6 @@ export function SourcesView() {
               >
                 <Sparkles size={16} />
               </button>
-              <button
-                onClick={() => handleViewModeChange('settings')}
-                className={`p-1.5 rounded transition-colors ${
-                  viewMode === 'settings'
-                    ? 'bg-accent-primary text-white'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-                title="Settings"
-              >
-                <Settings size={16} />
-              </button>
             </div>
 
             {/* Favorites toggle */}
@@ -492,7 +523,7 @@ export function SourcesView() {
                   onChange={setAudioFilter}
                   availableKeys={[...new Set(samples.map(s => s.keyEstimate).filter(Boolean) as string[])]}
                   availableEnvelopeTypes={[...new Set(samples.map(s => s.envelopeType).filter(Boolean) as string[])]}
-                  availableInstruments={[...new Set(samples.map(s => s.instrumentPrimary).filter(Boolean) as string[])]}
+                  availableInstruments={[...new Set(samples.map(s => s.instrumentType || s.instrumentPrimary).filter(Boolean) as string[])]}
                   availableGenres={[...new Set(samples.map(s => s.genrePrimary).filter(Boolean) as string[])]}
                 />
 
@@ -662,14 +693,9 @@ export function SourcesView() {
           />
         )}
 
-        {/* Sample grid/list/settings */}
+        {/* Sample grid/list */}
         <div className="flex-1 overflow-hidden">
-          {viewMode === 'settings' ? (
-            // Settings view
-            <div className="overflow-y-auto h-full">
-              <SourcesSettings />
-            </div>
-          ) : currentScope.type === 'youtube' ? (
+          {currentScope.type === 'youtube' ? (
             // YouTube grouped view
             viewMode === 'grid' ? (
               <div className="overflow-y-auto h-full">
@@ -726,6 +752,7 @@ export function SourcesView() {
                   isLoading={isSamplesLoading}
                   playMode={playMode}
                   loopEnabled={loopEnabled}
+                  scaleDegreeGroups={scaleDegreeGroups}
                 />
               </div>
             ) : viewMode === 'list' ? (

@@ -1,20 +1,20 @@
-import type { AudioFeatures, FeatureWeights } from '../types'
+import type { AudioFeatures, FeatureWeights, NormalizationMethod } from '../types'
 
-// Default weights - all features equally weighted
+// Default weights - MIR-literature-informed
 export const DEFAULT_WEIGHTS: FeatureWeights = {
-  spectralCentroid: 1,
-  spectralRolloff: 1,
-  spectralBandwidth: 1,
-  spectralContrast: 1,
-  spectralFlux: 1,
-  spectralFlatness: 1,
+  spectralCentroid: 1.2,
+  spectralRolloff: 0.8,
+  spectralBandwidth: 0.8,
+  spectralContrast: 0.8,
+  spectralFlux: 0.8,
+  spectralFlatness: 0.8,
   zeroCrossingRate: 1,
-  rmsEnergy: 1,
-  loudness: 1,
+  rmsEnergy: 0.5,
+  loudness: 0.5,
   dynamicRange: 1,
-  attackTime: 1,
+  attackTime: 1.3,
   kurtosis: 1,
-  bpm: 1,
+  bpm: 0.3,
   onsetCount: 1,
   keyStrength: 1,
   // Phase 1: Timbral features
@@ -23,17 +23,17 @@ export const DEFAULT_WEIGHTS: FeatureWeights = {
   spectralComplexity: 1,
   spectralCrest: 1,
   // Phase 1: Perceptual features
-  brightness: 1,
-  warmth: 1,
-  hardness: 1,
-  roughness: 1,
-  sharpness: 1,
+  brightness: 0.6,
+  warmth: 0.6,
+  hardness: 0.6,
+  roughness: 0.6,
+  sharpness: 0.6,
   // Phase 2: Stereo features
-  stereoWidth: 1,
-  panningCenter: 1,
-  stereoImbalance: 1,
+  stereoWidth: 0.3,
+  panningCenter: 0.3,
+  stereoImbalance: 0.3,
   // Phase 2: Harmonic/Percussive features
-  harmonicPercussiveRatio: 1,
+  harmonicPercussiveRatio: 1.2,
   harmonicEnergy: 1,
   percussiveEnergy: 1,
   harmonicCentroid: 1,
@@ -48,13 +48,18 @@ export const DEFAULT_WEIGHTS: FeatureWeights = {
   sustainLevel: 1,
   releaseTime: 1,
   // Phase 5: EBU R128 Loudness features
-  loudnessIntegrated: 1,
-  loudnessRange: 1,
-  loudnessMomentaryMax: 1,
-  truePeak: 1,
+  loudnessIntegrated: 0.5,
+  loudnessRange: 0.5,
+  loudnessMomentaryMax: 0.5,
+  truePeak: 0.5,
   // Phase 5: Sound Event Detection features
   eventCount: 1,
   eventDensity: 1,
+  // New analysis features
+  temporalCentroid: 1.2,
+  crestFactor: 1.1,
+  transientSpectralCentroid: 1.5,
+  transientSpectralFlatness: 1.3,
 }
 
 // Feature groups for the UI
@@ -97,7 +102,11 @@ export const FEATURE_GROUPS = {
   },
   envelope: {
     label: 'Envelope (Advanced)',
-    features: ['attackTime', 'decayTime', 'sustainLevel', 'releaseTime'],
+    features: ['attackTime', 'decayTime', 'sustainLevel', 'releaseTime', 'temporalCentroid', 'crestFactor'],
+  },
+  transient: {
+    label: 'Transient (Advanced)',
+    features: ['transientSpectralCentroid', 'transientSpectralFlatness'],
   },
 } as const
 
@@ -156,12 +165,27 @@ export const FEATURE_LABELS: Record<keyof FeatureWeights, string> = {
   // Phase 5: Sound Event Detection features
   eventCount: 'Event Count',
   eventDensity: 'Event Density',
+  // New analysis features
+  temporalCentroid: 'Temporal Center',
+  crestFactor: 'Crest Factor',
+  transientSpectralCentroid: 'Transient Brightness',
+  transientSpectralFlatness: 'Transient Noisiness',
 }
 
 // Normalize a value to 0-1 range using min-max scaling
 function normalize(value: number, min: number, max: number): number {
   if (max === min) return 0.5
   return (value - min) / (max - min)
+}
+
+function robustNormalize(value: number, median: number, iqr: number): number {
+  if (iqr === 0) return 0.5
+  return Math.max(0, Math.min(1, 0.5 + (value - median) / (iqr * 2)))
+}
+
+function zscoreNormalize(value: number, mean: number, std: number): number {
+  if (std === 0) return 0.5
+  return Math.max(0, Math.min(1, 0.5 + (value - mean) / (std * 6)))
 }
 
 // Extract a single feature value from AudioFeatures
@@ -265,6 +289,15 @@ function getFeatureValue(sample: AudioFeatures, feature: keyof FeatureWeights): 
       return sample.eventCount ?? null
     case 'eventDensity':
       return sample.eventDensity ?? null
+    // New analysis features
+    case 'temporalCentroid':
+      return sample.temporalCentroid ?? null
+    case 'crestFactor':
+      return sample.crestFactor ?? null
+    case 'transientSpectralCentroid':
+      return sample.transientSpectralCentroid ?? null
+    case 'transientSpectralFlatness':
+      return sample.transientSpectralFlatness ?? null
     default:
       return null
   }
@@ -273,7 +306,8 @@ function getFeatureValue(sample: AudioFeatures, feature: keyof FeatureWeights): 
 // Build a normalized, weighted feature matrix for dimensionality reduction
 export function buildFeatureMatrix(
   samples: AudioFeatures[],
-  weights: FeatureWeights
+  weights: FeatureWeights,
+  normalization: NormalizationMethod = 'robust'
 ): { matrix: number[][]; validIndices: number[] } {
   const featureKeys = Object.keys(weights) as (keyof FeatureWeights)[]
 
@@ -284,16 +318,30 @@ export function buildFeatureMatrix(
     return { matrix: [], validIndices: [] }
   }
 
-  // First pass: collect all values to find min/max for normalization
-  const featureRanges: Record<string, { min: number; max: number; values: (number | null)[] }> = {}
+  // First pass: collect all values and compute statistics for normalization
+  const featureRanges: Record<string, { min: number; max: number; median: number; q1: number; q3: number; iqr: number; mean: number; std: number; values: (number | null)[] }> = {}
 
   for (const feature of activeFeatures) {
     const values = samples.map((s) => getFeatureValue(s, feature))
     const validValues = values.filter((v): v is number => v !== null)
+    const sorted = [...validValues].sort((a, b) => a - b)
+    const n = sorted.length
+
+    const q1 = n > 0 ? sorted[Math.floor(n * 0.25)] : 0
+    const median = n > 0 ? sorted[Math.floor(n * 0.5)] : 0
+    const q3 = n > 0 ? sorted[Math.floor(n * 0.75)] : 0
+    const mean = n > 0 ? validValues.reduce((a, b) => a + b, 0) / n : 0
+    const std = n > 1 ? Math.sqrt(validValues.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (n - 1)) : 0
 
     featureRanges[feature] = {
-      min: validValues.length > 0 ? Math.min(...validValues) : 0,
-      max: validValues.length > 0 ? Math.max(...validValues) : 1,
+      min: n > 0 ? sorted[0] : 0,
+      max: n > 0 ? sorted[n - 1] : 1,
+      median,
+      q1,
+      q3,
+      iqr: q3 - q1,
+      mean,
+      std,
       values,
     }
   }
@@ -312,7 +360,20 @@ export function buildFeatureMatrix(
       const weight = weights[feature]
 
       if (value !== null) {
-        const normalized = normalize(value, featureRanges[feature].min, featureRanges[feature].max)
+        let normalized: number
+        const range = featureRanges[feature]
+        switch (normalization) {
+          case 'robust':
+            normalized = robustNormalize(value, range.median, range.iqr)
+            break
+          case 'zscore':
+            normalized = zscoreNormalize(value, range.mean, range.std)
+            break
+          case 'minmax':
+          default:
+            normalized = normalize(value, range.min, range.max)
+            break
+        }
         row.push(normalized * weight)
         hasAnyValue = true
       } else {

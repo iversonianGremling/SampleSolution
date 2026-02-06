@@ -11,6 +11,8 @@ export interface Track {
   source?: 'youtube' | 'local'
   originalPath?: string | null
   folderPath?: string | null
+  artist?: string | null
+  album?: string | null
   createdAt: string
   tags: Tag[]
 }
@@ -30,6 +32,7 @@ export interface Slice {
   envelopeType?: string | null
   genrePrimary?: string | null
   instrumentPrimary?: string | null
+  instrumentType?: string | null
 }
 
 export interface SliceWithTrack extends Slice {
@@ -94,6 +97,8 @@ export interface ImportResult {
 }
 
 export type AnalysisLevel = 'quick' | 'standard' | 'advanced'
+
+export type NormalizationMethod = 'minmax' | 'robust' | 'zscore'
 
 export interface AudioFeatures {
   // Slice info
@@ -178,9 +183,14 @@ export interface AudioFeatures {
   // Phase 5: Sound Event Detection
   eventCount?: number | null
   eventDensity?: number | null // Events per second
+  // New analysis features
+  temporalCentroid?: number | null
+  crestFactor?: number | null
+  transientSpectralCentroid?: number | null
+  transientSpectralFlatness?: number | null
+  sampleTypeConfidence?: number | null
   // Phase 6: Audio Fingerprinting & Similarity Detection
   chromaprintFingerprint?: string | null
-  similarityHash?: string | null
   // Metadata
   analysisLevel?: AnalysisLevel | null
 }
@@ -239,6 +249,11 @@ export interface FeatureWeights {
   // Phase 5: Sound Event Detection features
   eventCount: number
   eventDensity: number
+  // New analysis features
+  temporalCentroid: number
+  crestFactor: number
+  transientSpectralCentroid: number
+  transientSpectralFlatness: number
 }
 
 export interface SamplePoint {
@@ -319,7 +334,18 @@ export interface SliceWithTrackExtended extends Slice {
     source?: 'youtube' | 'local'
     folderPath?: string | null
     originalPath?: string | null
+    artist?: string | null
+    album?: string | null
   }
+}
+
+export interface SyncConfig {
+  id: number
+  tagId: number
+  collectionId: number
+  syncDirection: 'tag-to-collection' | 'collection-to-tag' | 'bidirectional'
+  enabled: boolean
+  createdAt: string
 }
 
 export interface SourcesSamplesResponse {

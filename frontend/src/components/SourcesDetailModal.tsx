@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Scissors, Search, ChevronLeft, ChevronRight, Sparkles, Activity } from 'lucide-react'
 import type { SliceWithTrackExtended, Tag, Collection, AudioFeatures } from '../types'
-import { getSliceDownloadUrl } from '../api/client'
+import { getSliceDownloadUrl, updateTrack } from '../api/client'
+import { InstrumentIcon } from './InstrumentIcon'
 import { SliceWaveform, type SliceWaveformRef } from './SliceWaveform'
 
 // Helper component to display a feature value
@@ -221,6 +222,10 @@ export function SourcesDetailModal({
   const [tagSearchQuery, setTagSearchQuery] = useState('')
   const [collectionSearchQuery, setCollectionSearchQuery] = useState('')
   const [activeTab, setActiveTab] = useState<'details' | 'advanced'>('details')
+  const [editingArtist, setEditingArtist] = useState(false)
+  const [editingAlbum, setEditingAlbum] = useState(false)
+  const [artistValue, setArtistValue] = useState('')
+  const [albumValue, setAlbumValue] = useState('')
   const waveformRef = useRef<SliceWaveformRef>(null)
   const tagDropdownRef = useRef<HTMLDivElement>(null)
   const collectionDropdownRef = useRef<HTMLDivElement>(null)
@@ -565,6 +570,95 @@ export function SourcesDetailModal({
               <p className="text-white text-base">{sample.track.title}</p>
               {sample.track.folderPath && (
                 <p className="text-sm text-slate-500 mt-1">{sample.track.folderPath}</p>
+              )}
+            </div>
+
+            {/* Instrument Type */}
+            {(sample.instrumentType || sample.instrumentPrimary) && (
+              <div>
+                <label className="text-sm font-medium text-slate-400 block mb-2">Instrument</label>
+                <div className="flex items-center gap-2 text-white">
+                  <InstrumentIcon type={sample.instrumentType || sample.instrumentPrimary || 'other'} size={18} />
+                  <span className="capitalize">{sample.instrumentType || sample.instrumentPrimary}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Artist */}
+            <div>
+              <label className="text-sm font-medium text-slate-400 block mb-2">Artist</label>
+              {editingArtist ? (
+                <input
+                  type="text"
+                  value={artistValue}
+                  onChange={(e) => setArtistValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      updateTrack(sample.trackId, { artist: artistValue.trim() || undefined })
+                      setEditingArtist(false)
+                    }
+                    if (e.key === 'Escape') setEditingArtist(false)
+                  }}
+                  onBlur={() => {
+                    updateTrack(sample.trackId, { artist: artistValue.trim() || undefined })
+                    setEditingArtist(false)
+                  }}
+                  autoFocus
+                  className="w-full px-2 py-1 bg-surface-base border border-accent-primary rounded text-white text-sm focus:outline-none"
+                  placeholder="Add artist..."
+                />
+              ) : (
+                <div
+                  className="flex items-center gap-2 cursor-pointer group"
+                  onClick={() => {
+                    setArtistValue(sample.track.artist || '')
+                    setEditingArtist(true)
+                  }}
+                >
+                  <span className={`text-sm ${sample.track.artist ? 'text-white' : 'text-slate-500'}`}>
+                    {sample.track.artist || 'No artist'}
+                  </span>
+                  <Edit2 size={12} className="text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
+              )}
+            </div>
+
+            {/* Album */}
+            <div>
+              <label className="text-sm font-medium text-slate-400 block mb-2">Album</label>
+              {editingAlbum ? (
+                <input
+                  type="text"
+                  value={albumValue}
+                  onChange={(e) => setAlbumValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      updateTrack(sample.trackId, { album: albumValue.trim() || undefined })
+                      setEditingAlbum(false)
+                    }
+                    if (e.key === 'Escape') setEditingAlbum(false)
+                  }}
+                  onBlur={() => {
+                    updateTrack(sample.trackId, { album: albumValue.trim() || undefined })
+                    setEditingAlbum(false)
+                  }}
+                  autoFocus
+                  className="w-full px-2 py-1 bg-surface-base border border-accent-primary rounded text-white text-sm focus:outline-none"
+                  placeholder="Add album..."
+                />
+              ) : (
+                <div
+                  className="flex items-center gap-2 cursor-pointer group"
+                  onClick={() => {
+                    setAlbumValue(sample.track.album || '')
+                    setEditingAlbum(true)
+                  }}
+                >
+                  <span className={`text-sm ${sample.track.album ? 'text-white' : 'text-slate-500'}`}>
+                    {sample.track.album || 'No album'}
+                  </span>
+                  <Edit2 size={12} className="text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
               )}
             </div>
 

@@ -9,8 +9,17 @@ import json
 import time
 import warnings
 import numpy as np
+import os
 
 warnings.filterwarnings('ignore')
+
+# Debug mode - set DEBUG_ANALYSIS=1 environment variable to enable detailed timing logs
+DEBUG_MODE = os.environ.get('DEBUG_ANALYSIS', '0') == '1'
+
+def debug_log(message):
+    """Print debug message if debug mode is enabled"""
+    if DEBUG_MODE:
+        print(f"[DEBUG] {message}", file=sys.stderr)
 
 try:
     import librosa
@@ -51,7 +60,18 @@ _yamnet_model = None
 _yamnet_class_names = None
 
 
-def analyze_audio(audio_path, analysis_level='standard'):
+def preprocess_audio(y, sr):
+    """Remove DC offset, trim silence, and peak-normalize the audio."""
+    y_original = y.copy()          # Keep for EBU R128 (needs absolute levels)
+    y = y - np.mean(y)             # DC offset removal
+    y, trim_idx = librosa.effects.trim(y, top_db=30)  # Silence trimming
+    peak = np.max(np.abs(y))
+    if peak > 1e-8:
+        y = y / peak               # Peak normalization
+    return y, y_original, trim_idx
+
+
+def analyze_audio(audio_path, analysis_level='standard', filename=None):
     """
     Main audio analysis function
     Args:
@@ -60,33 +80,60 @@ def analyze_audio(audio_path, analysis_level='standard'):
     Returns dict with all extracted features and suggested tags
     """
     start_time = time.time()
+    debug_log(f"=== Starting audio analysis: {audio_path} (level: {analysis_level}) ===")
 
     try:
         # Load audio
+        step_start = time.time()
         y, sr = librosa.load(audio_path, sr=44100, mono=True)
         duration = librosa.get_duration(y=y, sr=sr)
+        debug_log(f"Audio loaded: duration={duration:.2f}s, sr={sr}Hz [{(time.time()-step_start)*1000:.0f}ms]")
+
+        # Preprocess audio
+        step_start = time.time()
+        y, y_original, trim_idx = preprocess_audio(y, sr)
+        duration = librosa.get_duration(y=y, sr=sr)
+        debug_log(f"Audio preprocessed: trimmed duration={duration:.2f}s, trim_idx={trim_idx} [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Calculate basic properties
-        is_one_shot, is_loop = detect_sample_type(y, sr, duration)
+        step_start = time.time()
+        is_one_shot, is_loop, sample_type_confidence = detect_sample_type(y, sr, duration, filename)
+        debug_log(f"Sample type detected: one_shot={is_one_shot}, loop={is_loop}, confidence={sample_type_confidence:.3f} [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Extract features (all levels)
+        step_start = time.time()
         spectral_features = extract_spectral_features(y, sr, level=analysis_level)
+        debug_log(f"Spectral features extracted [{(time.time()-step_start)*1000:.0f}ms]")
+
+        step_start = time.time()
         energy_features = extract_energy_features(y, sr)
+        debug_log(f"Energy features extracted [{(time.time()-step_start)*1000:.0f}ms]")
+
+        # Extract additional features (all levels - cheap to compute)
+        step_start = time.time()
+        additional_features = extract_additional_features(y, sr)
+        debug_log(f"Additional features extracted [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Extract key features (standard and advanced only)
         key_features = {'key_estimate': None, 'key_strength': None}
         if analysis_level in ['standard', 'advanced']:
+            step_start = time.time()
             key_features = extract_key_features(y, sr)
+            debug_log(f"Key features extracted: {key_features['key_estimate']} [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Extract tempo only for loops (standard and advanced only)
         tempo_features = {}
         if is_loop and duration > 1.5 and analysis_level in ['standard', 'advanced']:
+            step_start = time.time()
             tempo_features = extract_tempo_features(y, sr)
+            debug_log(f"Tempo extracted: {tempo_features.get('bpm')} BPM [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Detect instruments (all levels)
+        step_start = time.time()
         instrument_predictions = extract_instrument_predictions(
             y, sr, spectral_features, energy_features, duration
         )
+        debug_log(f"Instrument predictions: {len(instrument_predictions)} instruments [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Build features dict
         features = {
@@ -94,6 +141,7 @@ def analyze_audio(audio_path, analysis_level='standard'):
             'sample_rate': int(sr),
             'is_one_shot': bool(is_one_shot),
             'is_loop': bool(is_loop),
+            'sample_type_confidence': float(sample_type_confidence),
             'onset_count': int(count_onsets(y, sr)),
             'analysis_level': analysis_level,
             # Spectral
@@ -115,109 +163,260 @@ def analyze_audio(audio_path, analysis_level='standard'):
             'beats_count': tempo_features.get('beats_count'),
             # Instruments
             'instrument_predictions': instrument_predictions,
+            # Additional features
+            'spectral_flux': additional_features.get('spectral_flux'),
+            'spectral_flatness': additional_features.get('spectral_flatness'),
+            'temporal_centroid': additional_features.get('temporal_centroid'),
+            'crest_factor': additional_features.get('crest_factor'),
         }
 
         # Advanced level: Add Phase 1 features (timbral, perceptual, spectral)
         if analysis_level == 'advanced':
+            debug_log("--- Starting ADVANCED analysis phases ---")
+
             # Advanced spectral from basic extraction
             if 'mel_bands_mean' in spectral_features:
                 features['mel_bands_mean'] = spectral_features['mel_bands_mean']
                 features['mel_bands_std'] = spectral_features['mel_bands_std']
 
             # Timbral features (Essentia)
+            step_start = time.time()
             timbral_features = extract_timbral_features(y, sr)
+            debug_log(f"Phase 1: Timbral features (Essentia) [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(timbral_features)
 
             # Perceptual features (derived)
+            step_start = time.time()
             perceptual_features = extract_perceptual_features(
                 spectral_features, energy_features, timbral_features
             )
+            debug_log(f"Phase 1: Perceptual features [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(perceptual_features)
 
             # Phase 2: Stereo analysis
+            step_start = time.time()
             stereo_features = extract_stereo_features(audio_path, sr)
+            debug_log(f"Phase 2: Stereo analysis [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(stereo_features)
 
             # Phase 2: Harmonic/Percussive separation
-            hpss_features = extract_hpss_features(y, sr)
+            step_start = time.time()
+            hpss_features, y_percussive = extract_hpss_features(y, sr)
+            debug_log(f"Phase 2: HPSS separation [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(hpss_features)
 
+            # Transient features (reuse y_percussive from HPSS)
+            step_start = time.time()
+            transient_features = extract_transient_features(y_percussive, sr) if y_percussive is not None else {}
+            debug_log(f"Transient features extracted [{(time.time()-step_start)*1000:.0f}ms]")
+            features.update(transient_features)
+
             # Phase 3: Advanced rhythm features
+            step_start = time.time()
             rhythm_features = extract_rhythm_features(y, sr, duration, tempo_features)
+            debug_log(f"Phase 3: Rhythm features [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(rhythm_features)
 
             # Phase 3: ADSR envelope
+            step_start = time.time()
             adsr_features = extract_adsr_envelope(y, sr)
+            debug_log(f"Phase 3: ADSR envelope [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(adsr_features)
 
             # Phase 4: ML-based instrument classification (YAMNet)
+            step_start = time.time()
             ml_instrument_features = extract_instrument_ml(audio_path, y, sr)
+            debug_log(f"Phase 4: YAMNet instrument classification [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(ml_instrument_features)
 
-            # Phase 4: Genre/mood classification (Essentia)
-            genre_features = extract_genre_ml(y, sr)
+            # Phase 4: Genre/mood classification (heuristics + YAMNet)
+            # Pass pre-calculated features to avoid redundant computation
+            step_start = time.time()
+            genre_features = extract_genre_ml(
+                y, sr,
+                spectral_features,
+                energy_features,
+                tempo_features,
+                ml_instrument_features.get('instrument_classes'),
+                hpss_features.get('harmonic_percussive_ratio'),
+                is_one_shot=is_one_shot
+            )
+            debug_log(f"Phase 4: Genre/mood classification [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(genre_features)
 
             # Phase 5: EBU R128 loudness analysis
-            loudness_ebu_features = extract_loudness_ebu(y, sr)
+            step_start = time.time()
+            loudness_ebu_features = extract_loudness_ebu(y_original, sr)
+            debug_log(f"Phase 5: EBU R128 loudness [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(loudness_ebu_features)
 
             # Phase 5: Sound event detection
+            step_start = time.time()
             event_features = detect_sound_events(y, sr, duration)
+            debug_log(f"Phase 5: Sound event detection [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(event_features)
 
             # Phase 6: Audio fingerprinting and similarity detection
+            step_start = time.time()
             fingerprint_features = extract_fingerprint(audio_path, y, sr)
+            debug_log(f"Phase 6: Audio fingerprinting [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(fingerprint_features)
 
         # Generate tags from features
+        step_start = time.time()
         suggested_tags = generate_tags(features)
         features['suggested_tags'] = suggested_tags
+        debug_log(f"Tag generation: {len(suggested_tags)} tags [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Add analysis metadata
-        features['analysis_duration_ms'] = int((time.time() - start_time) * 1000)
+        total_duration = (time.time() - start_time) * 1000
+        features['analysis_duration_ms'] = int(total_duration)
+
+        debug_log(f"=== Analysis complete: {total_duration:.0f}ms total ===")
 
         return features
 
     except Exception as e:
+        debug_log(f"!!! Analysis FAILED after {(time.time()-start_time)*1000:.0f}ms: {str(e)}")
         raise Exception(f"Audio analysis failed: {str(e)}")
 
 
-def detect_sample_type(y, sr, duration):
+def detect_sample_type(y, sr, duration, filename=None):
     """
-    Detect if audio is a one-shot or loop
+    Detect if audio is a one-shot or loop using multi-evidence voting.
 
-    Heuristics:
-    - One-shot: duration < 1.5s AND single prominent onset OR low onset density
-    - Loop: duration > 2s OR repeating patterns
+    DESIGN PRINCIPLE: Default to one-shot. A loop must prove itself with
+    strong, converging evidence. False negatives (loop classified as one-shot)
+    are acceptable; false positives (one-shot classified as loop) are not.
+    One-shot and loop are mutually exclusive.
+
+    Returns (is_one_shot, is_loop, confidence).
     """
-    if duration >= 1.5:
-        # Could be either - check onset patterns
-        onsets = librosa.onset.onset_detect(y=y, sr=sr, units='frames', hop_length=512)
-        onset_density = len(onsets) / duration
+    os_score = 0.0
+    loop_score = 0.0
 
-        # If very dense onsets (lots of events), it's likely a loop
-        is_loop = onset_density > 2.0 or duration > 3.0
-        return False, is_loop
+    # --- Hard rule: very short samples are ALWAYS one-shots ---
+    # No percussion hit, crash, or shaker under 2s is a loop.
+    if duration < 2.0:
+        return (True, False, 1.0)
 
-    # Very short samples are likely one-shots
-    onsets = librosa.onset.onset_detect(y=y, sr=sr, units='frames', hop_length=512)
+    # --- Filename keywords (evaluated early, strong signal) ---
+    filename_is_percussion = False
+    if filename:
+        fname_lower = filename.lower()
+        # Percussion keywords -> always one-shot regardless of other evidence
+        perc_keywords = ['kick', 'snare', 'hat', 'hihat', 'hi-hat', 'hh',
+                         'crash', 'ride', 'tom', 'clap', 'rim', 'shaker',
+                         'tambourine', 'cowbell', 'perc', 'conga', 'bongo',
+                         'cymbal', 'openhat', 'closedhat', 'oh', 'ch']
+        os_keywords = ['shot', 'hit', 'one', 'single', 'oneshot', 'one-shot',
+                       'one_shot', 'stab', 'impact', 'fx', 'riser', 'sweep',
+                       'boom', 'whoosh', 'transition']
+        loop_keywords = ['loop', 'beat', 'groove', 'pattern', 'break', 'fill']
 
-    if len(onsets) <= 2:
-        # Few onsets = one-shot
-        return True, False
+        if any(kw in fname_lower for kw in perc_keywords):
+            filename_is_percussion = True
+            os_score += 5.0  # Very strong one-shot signal
 
-    # Check energy decay (percussive one-shots have rapid decay)
+        if any(kw in fname_lower for kw in os_keywords):
+            os_score += 4.0
+
+        if any(kw in fname_lower for kw in loop_keywords):
+            loop_score += 4.0
+
+    # --- Evidence 1: RMS envelope shape (weight 2.0) ---
     rms = librosa.feature.rms(y=y)[0]
     if len(rms) > 10:
         peak_idx = np.argmax(rms)
-        if peak_idx < len(rms) - 5:
-            decay_ratio = rms[peak_idx] / (np.mean(rms[peak_idx + 5:]) + 1e-6)
-            if decay_ratio > 3.0:
-                return True, False
+        peak_pos_ratio = peak_idx / len(rms)
+        tail_start = min(peak_idx + 5, len(rms) - 1)
+        tail_mean = np.mean(rms[tail_start:]) + 1e-8
+        peak_tail_ratio = rms[peak_idx] / tail_mean
 
-    # Default to one-shot for very short samples
-    return True, False
+        # Clear decay from early peak -> one-shot
+        if peak_pos_ratio < 0.3 and peak_tail_ratio > 3.0:
+            os_score += 2.0
+        # Riser (peak at end) -> one-shot variant
+        elif peak_pos_ratio > 0.8:
+            os_score += 1.5
+
+        # Very flat RMS is loop evidence, but only a weak signal
+        # (many sustained sounds like pads/strings have flat RMS and aren't loops)
+        rms_cv = np.std(rms) / (np.mean(rms) + 1e-8)  # coefficient of variation
+        if peak_tail_ratio < 1.3 and rms_cv < 0.15:
+            loop_score += 1.0  # Very flat, low variance — mild loop signal
+
+    # --- Evidence 2: Start-end spectral similarity (weight 1.5) ---
+    # A seamless loop should have very similar spectral content at start and end
+    try:
+        n_frames = len(rms)
+        window_frames = max(2, int(n_frames * 0.08))
+        start_segment = rms[:window_frames]
+        end_segment = rms[-window_frames:]
+        if len(start_segment) == len(end_segment) and len(start_segment) > 2:
+            corr = np.corrcoef(start_segment, end_segment)[0, 1]
+            if not np.isnan(corr):
+                if corr < 0.3:
+                    os_score += 1.5  # Very different start/end -> one-shot
+                elif corr > 0.85:
+                    loop_score += 1.0  # Very high similarity needed for loop evidence
+    except Exception:
+        pass
+
+    # --- Evidence 3: Onset periodicity (weight 1.5) ---
+    # Loops have clearly periodic onsets (repeating rhythmic pattern)
+    try:
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        if len(onset_env) > 20:
+            autocorr = np.correlate(onset_env, onset_env, mode='full')
+            autocorr = autocorr[len(autocorr) // 2:]
+            if len(autocorr) > 1:
+                autocorr = autocorr / (autocorr[0] + 1e-8)
+                # Look for strong periodic peaks (skip first 10% to avoid lag-0 bleed)
+                min_lag = max(2, int(len(autocorr) * 0.1))
+                autocorr_tail = autocorr[min_lag:]
+                if len(autocorr_tail) > 0:
+                    max_ac = np.max(autocorr_tail)
+                    if max_ac > 0.65:
+                        loop_score += 1.5  # Strong periodicity -> loop evidence
+                    elif max_ac < 0.3:
+                        os_score += 1.0    # No periodicity at all -> one-shot evidence
+    except Exception:
+        pass
+
+    # --- Evidence 4: Multiple onsets (required for loops) ---
+    # A loop must contain multiple distinct rhythmic events
+    try:
+        onsets = librosa.onset.onset_detect(y=y, sr=sr, units='frames', hop_length=512)
+        n_onsets = len(onsets)
+        if n_onsets <= 1:
+            os_score += 2.0  # Single onset = definitively one-shot
+        elif n_onsets >= 4 and duration > 2.0:
+            loop_score += 0.5  # Multiple onsets, mild loop evidence
+    except Exception:
+        pass
+
+    # --- Evidence 5: Duration prior (conservative) ---
+    if duration < 1.0:
+        os_score += 1.0   # Sub-second -> strong one-shot lean
+    elif duration > 8.0:
+        loop_score += 0.5  # Long samples have slight loop lean (but not decisive)
+
+    # --- Final decision ---
+    # Loop requires MINIMUM threshold of evidence to overcome one-shot default.
+    # If percussion keyword was found in filename, loop classification is effectively
+    # impossible (would need loop_score > os_score + 5.0, which can't happen).
+    min_loop_threshold = 3.0  # Loop needs at least this much evidence to be considered
+
+    if loop_score >= min_loop_threshold and loop_score > os_score:
+        is_loop = True
+        is_one_shot = False
+    else:
+        is_loop = False
+        is_one_shot = True  # Default: one-shot
+
+    confidence = abs(os_score - loop_score) / (os_score + loop_score + 1e-8)
+    return (is_one_shot, is_loop, confidence)
 
 
 def count_onsets(y, sr):
@@ -372,31 +571,93 @@ def extract_timbral_features(y, sr):
             # Convert to float32 for Essentia
             audio_essentia = y.astype('float32')
 
-            # Dissonance - harmonic dissonance
+            # Set up Essentia processing chain for spectral analysis
+            w = es.Windowing(type='hann')
+            spectrum = es.Spectrum()
+            spectral_peaks = es.SpectralPeaks()
+
+            # Initialize extractors ONCE outside the loop
+            dissonance_extractor = es.Dissonance()
+            inharmonicity_extractor = es.Inharmonicity()
+            tristimulus_extractor = es.Tristimulus()
+
+            # Process in frames to get average values
+            # OPTIMIZED: Single loop for all three features instead of 3 separate loops
+            frame_size = 2048
+            hop_size = 512
+
+            dissonance_values = []
+            inharmonicity_values = []
+            t1_values, t2_values, t3_values = [], [], []
+            crest_values = []
+            crest = es.Crest()
+
+            num_frames = (len(audio_essentia) - frame_size) // hop_size
+            debug_log(f"  Processing {num_frames} frames for timbral features...")
+            frame_start = time.time()
+
             try:
-                dissonance_extractor = es.Dissonance()
-                dissonance = dissonance_extractor(audio_essentia)
-                features['dissonance'] = float(dissonance)
-            except:
+                # Single pass through frames - extract all features at once
+                for i in range(0, len(audio_essentia) - frame_size, hop_size):
+                    frame = audio_essentia[i:i + frame_size]
+                    windowed = w(frame)
+                    spec = spectrum(windowed)
+                    freqs, mags = spectral_peaks(spec)
+
+                    if len(freqs) > 0:
+                        # Dissonance - harmonic dissonance
+                        try:
+                            diss = dissonance_extractor(freqs, mags)
+                            dissonance_values.append(diss)
+                        except:
+                            pass
+
+                        # Inharmonicity - deviation from perfect harmonic structure
+                        # Note: Only works for pitched sounds with clear fundamental frequency
+                        try:
+                            inharm = inharmonicity_extractor(freqs, mags)
+                            if inharm > 0:  # Valid result
+                                inharmonicity_values.append(inharm)
+                        except:
+                            # Skip frames without clear fundamental frequency
+                            pass
+
+                        # Tristimulus - 3-value tonal color descriptor
+                        try:
+                            t1, t2, t3 = tristimulus_extractor(freqs, mags)
+                            t1_values.append(t1)
+                            t2_values.append(t2)
+                            t3_values.append(t3)
+                        except:
+                            pass
+
+                    # Spectral Crest (computed for every frame, no freqs/mags dependency)
+                    try:
+                        crest_values.append(crest(spec))
+                    except:
+                        pass
+
+                # Aggregate results
+                debug_log(f"  Frame processing complete [{(time.time()-frame_start)*1000:.0f}ms] - dissonance:{len(dissonance_values)}, inharm:{len(inharmonicity_values)}, tristim:{len(t1_values)}")
+                features['dissonance'] = float(np.mean(dissonance_values)) if dissonance_values else None
+                features['inharmonicity'] = float(np.mean(inharmonicity_values)) if inharmonicity_values else None
+                features['tristimulus'] = [
+                    float(np.mean(t1_values)),
+                    float(np.mean(t2_values)),
+                    float(np.mean(t3_values))
+                ] if t1_values else None
+
+                features['spectral_crest'] = float(np.mean(crest_values)) if crest_values else None
+
+            except Exception as e:
+                debug_log(f"  Timbral feature extraction failed: {e}")
+                print(f"Warning: Timbral feature extraction failed: {e}", file=sys.stderr)
                 features['dissonance'] = None
-
-            # Inharmonicity - deviation from perfect harmonic structure
-            try:
-                inharmonicity_extractor = es.Inharmonicity()
-                inharmonicity = inharmonicity_extractor(audio_essentia)
-                features['inharmonicity'] = float(inharmonicity)
-            except:
                 features['inharmonicity'] = None
-
-            # Tristimulus - 3-value tonal color descriptor
-            try:
-                tristimulus_extractor = es.Tristimulus()
-                t1, t2, t3 = tristimulus_extractor(audio_essentia)
-                features['tristimulus'] = [float(t1), float(t2), float(t3)]
-            except:
                 features['tristimulus'] = None
+                features['spectral_crest'] = None
 
-            # Spectral Complexity
+            # Spectral Complexity (still inside "if essentia is not None" block)
             try:
                 complexity_extractor = es.SpectralComplexity()
                 complexity = complexity_extractor(audio_essentia)
@@ -404,30 +665,13 @@ def extract_timbral_features(y, sr):
             except:
                 features['spectral_complexity'] = None
 
-            # Spectral Crest - peakiness of spectrum
-            try:
-                # Use windowing and spectrum
-                w = es.Windowing(type='hann')
-                spectrum = es.Spectrum()
-                crest = es.Crest()
-
-                # Process in frames
-                frame_size = 2048
-                hop_size = 512
-                crest_values = []
-
-                for i in range(0, len(audio_essentia) - frame_size, hop_size):
-                    frame = audio_essentia[i:i + frame_size]
-                    windowed = w(frame)
-                    spec = spectrum(windowed)
-                    crest_values.append(crest(spec))
-
-                if crest_values:
-                    features['spectral_crest'] = float(np.mean(crest_values))
-                else:
-                    features['spectral_crest'] = None
-            except:
-                features['spectral_crest'] = None
+        else:
+            # Essentia not available - set all to None
+            features['dissonance'] = None
+            features['inharmonicity'] = None
+            features['tristimulus'] = None
+            features['spectral_complexity'] = None
+            features['spectral_crest'] = None
 
     except Exception as e:
         # If Essentia fails entirely, return None for all
@@ -550,7 +794,7 @@ def extract_hpss_features(y, sr):
     """
     Extract Harmonic/Percussive Separation features (Phase 2)
     Uses librosa.effects.hpss() to separate components and analyze each
-    Returns dict with harmonic/percussive ratios, energies, and centroids
+    Returns (features_dict, y_percussive) tuple
     """
     features = {
         'harmonic_percussive_ratio': None,
@@ -559,10 +803,12 @@ def extract_hpss_features(y, sr):
         'harmonic_centroid': None,
         'percussive_centroid': None,
     }
+    y_percussive_out = None
 
     try:
         # Separate harmonic and percussive components
         y_harmonic, y_percussive = librosa.effects.hpss(y)
+        y_percussive_out = y_percussive
 
         # Calculate energies
         harmonic_energy = float(np.sum(y_harmonic ** 2))
@@ -593,7 +839,7 @@ def extract_hpss_features(y, sr):
     except Exception as e:
         print(f"Warning: HPSS feature extraction failed: {e}", file=sys.stderr)
 
-    return features
+    return features, y_percussive_out
 
 
 def extract_rhythm_features(y, sr, duration, tempo_features):
@@ -788,12 +1034,12 @@ def extract_adsr_envelope(y, sr):
             # Plucked: Fast attack, medium decay, low sustain
             elif attack < 0.02 and sustain < 0.4 and decay < 0.3:
                 features['envelope_type'] = 'plucked'
+            # Pad: Very slow attack and/or very slow release (check BEFORE sustained)
+            elif attack > 0.1 or (release is not None and release > 0.5):
+                features['envelope_type'] = 'pad'
             # Sustained: Slow attack or high sustain level
             elif attack > 0.05 or sustain > 0.6:
                 features['envelope_type'] = 'sustained'
-            # Pad: Very slow attack and/or very slow release
-            elif attack > 0.1 or (release is not None and release > 0.5):
-                features['envelope_type'] = 'pad'
             else:
                 features['envelope_type'] = 'hybrid'
         else:
@@ -813,23 +1059,33 @@ def load_yamnet_model():
     global _yamnet_model, _yamnet_class_names
 
     if _yamnet_model is not None:
+        debug_log("YAMNet model already cached")
         return _yamnet_model, _yamnet_class_names
 
     if tf is None or hub is None:
+        debug_log("TensorFlow/Hub not available, skipping YAMNet")
         return None, None
 
     try:
+        load_start = time.time()
+        debug_log("Loading YAMNet model from TensorFlow Hub...")
         print("Loading YAMNet model... (this may take a few seconds on first run)", file=sys.stderr)
         _yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
+        debug_log(f"YAMNet model downloaded/loaded [{(time.time()-load_start)*1000:.0f}ms]")
 
-        # Load class names
+        # Load class names (CSV format: index,mid,display_name)
+        import csv
         class_map_path = _yamnet_model.class_map_path().numpy().decode('utf-8')
         with open(class_map_path) as f:
-            _yamnet_class_names = [line.strip() for line in f]
+            reader = csv.reader(f)
+            next(reader)  # Skip header row
+            _yamnet_class_names = [row[2] if len(row) >= 3 else row[0] for row in reader]
 
         print(f"YAMNet model loaded successfully ({len(_yamnet_class_names)} classes)", file=sys.stderr)
+        debug_log(f"YAMNet total load time: {(time.time()-load_start)*1000:.0f}ms")
         return _yamnet_model, _yamnet_class_names
     except Exception as e:
+        debug_log(f"YAMNet loading failed: {e}")
         print(f"Warning: Failed to load YAMNet model: {e}", file=sys.stderr)
         return None, None
 
@@ -852,11 +1108,14 @@ def extract_instrument_ml(audio_path, y, sr):
     try:
         model, class_names = load_yamnet_model()
         if model is None or class_names is None:
+            debug_log("YAMNet not available, skipping ML instrument extraction")
             return features
 
         # YAMNet expects 16kHz mono audio
+        resample_start = time.time()
         if sr != 16000:
             y_16k = librosa.resample(y, orig_sr=sr, target_sr=16000)
+            debug_log(f"  Resampled audio to 16kHz [{(time.time()-resample_start)*1000:.0f}ms]")
         else:
             y_16k = y
 
@@ -864,7 +1123,10 @@ def extract_instrument_ml(audio_path, y, sr):
         waveform = y_16k.astype(np.float32)
 
         # Run inference
+        inference_start = time.time()
+        debug_log(f"  Running YAMNet inference on {len(waveform)} samples...")
         scores, embeddings, spectrogram = model(waveform)
+        debug_log(f"  YAMNet inference complete [{(time.time()-inference_start)*1000:.0f}ms]")
 
         # Get mean scores across all frames
         mean_scores = np.mean(scores.numpy(), axis=0)
@@ -879,7 +1141,11 @@ def extract_instrument_ml(audio_path, y, sr):
             'violin', 'brass', 'trumpet', 'saxophone', 'flute', 'organ',
             'vocal', 'singing', 'speech', 'voice', 'percussion', 'cymbal',
             'snare', 'kick', 'hi-hat', 'tom', 'clap', 'cowbell', 'shaker',
-            'tambourine', 'bell', 'chime', 'pluck', 'strum', 'string'
+            'tambourine', 'bell', 'chime', 'pluck', 'strum', 'string',
+            'marimba', 'xylophone', 'harmonica', 'harp', 'ukulele', 'banjo',
+            'cello', 'viola', 'trombone', 'tuba', 'clarinet', 'oboe',
+            'bass drum', 'gong', 'tabla', 'bongo', 'conga', 'woodblock',
+            'glockenspiel', 'vibraphone', 'steelpan', 'accordion'
         ]
 
         instrument_predictions = []
@@ -910,12 +1176,18 @@ def extract_instrument_ml(audio_path, y, sr):
     return features
 
 
-def extract_genre_ml(y, sr):
+def extract_genre_ml(y, sr, spectral_features=None, energy_features=None, tempo_features=None, yamnet_instruments=None, hpss_ratio=None, is_one_shot=False):
     """
-    Extract genre and mood classification using Essentia MusicExtractor (Phase 4)
+    Extract genre and mood classification using audio feature heuristics (Phase 4)
     Args:
         y: Audio time series (mono, float32)
         sr: Sample rate
+        spectral_features: Pre-calculated spectral features dict (optional, avoids recalculation)
+        energy_features: Pre-calculated energy features dict (optional, avoids recalculation)
+        tempo_features: Pre-calculated tempo features dict (optional, avoids recalculation)
+        yamnet_instruments: Optional YAMNet instrument classifications to boost genre detection
+        hpss_ratio: Optional pre-calculated harmonic/percussive ratio from Phase 2
+        is_one_shot: If True, skip genre classification (unreliable for isolated samples)
     Returns:
         dict with genre_classes, genre_primary, mood_classes
     """
@@ -925,25 +1197,192 @@ def extract_genre_ml(y, sr):
         'mood_classes': None,
     }
 
+    # Genre on isolated one-shot samples is unreliable — skip
+    if is_one_shot:
+        return features
+
     try:
-        if essentia is None:
-            return features
+        # Use pre-calculated features if available, otherwise calculate
+        if spectral_features:
+            spectral_centroid = spectral_features['spectral_centroid']
+            spectral_rolloff = spectral_features['spectral_rolloff']
+            zero_crossing_rate = spectral_features['zero_crossing_rate']
+        else:
+            spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=y, sr=sr))
+            spectral_rolloff = np.mean(librosa.feature.spectral_rolloff(y=y, sr=sr))
+            zero_crossing_rate = np.mean(librosa.feature.zero_crossing_rate(y))
 
-        # Essentia MusicExtractor works on audio files, not numpy arrays
-        # We'll use a different approach with individual extractors
+        if energy_features:
+            rms_mean = energy_features['rms_energy']
+            loudness = energy_features['loudness']
+            dynamic_range = energy_features['dynamic_range']
+        else:
+            rms = librosa.feature.rms(y=y)
+            rms_mean = np.mean(rms)
+            rms_db = librosa.amplitude_to_db(rms, ref=np.max)
+            loudness = np.mean(rms_db)
+            dynamic_range = np.max(rms_db) - np.min(rms_db)
 
-        # Genre classification using Essentia's pre-trained models
-        # Note: This requires essentia-tensorflow models which may not be available
-        # For now, we'll skip this and rely on YAMNet for classification
-        # In production, you'd use:
-        # - essentia.standard.TensorflowPredictMusiCNN for genre
-        # - essentia.standard.TensorflowPredictVGGish for features
+        # Get tempo from pre-calculated or calculate if needed
+        if tempo_features and tempo_features.get('bpm'):
+            tempo = tempo_features['bpm']
+        else:
+            try:
+                tempo = librosa.feature.tempo(y=y, sr=sr)[0]
+            except:
+                tempo = 120.0
 
-        # Placeholder: We'll implement this when essentia-tensorflow is set up
-        # For now, return None to indicate not available
+        # Use pre-calculated HPSS ratio if available (from Phase 2),
+        # otherwise approximate with zero crossing rate
+        if hpss_ratio is not None:
+            hp_ratio = hpss_ratio
+        else:
+            # Fallback: Use zero crossing rate as proxy for percussiveness
+            percussiveness = zero_crossing_rate * 10  # Scale to roughly 0-2 range
+            hp_ratio = 1.0 / (percussiveness + 0.1)  # Inverse for harmonic/percussive ratio
+
+        # Genre classification based on audio features
+        genre_scores = {}
+
+        # Boost genre scores based on YAMNet instrument detections
+        yamnet_genre_hints = {}
+        if yamnet_instruments:
+            for instrument in yamnet_instruments:
+                class_name = instrument['class'].lower()
+                confidence = instrument['confidence']
+
+                # Map YAMNet classes to genre hints
+                if any(x in class_name for x in ['techno', 'electronic', 'synthesizer', 'synth']):
+                    yamnet_genre_hints['electronic'] = yamnet_genre_hints.get('electronic', 0) + confidence * 0.3
+                if any(x in class_name for x in ['rock', 'guitar', 'electric guitar', 'distortion']):
+                    yamnet_genre_hints['rock'] = yamnet_genre_hints.get('rock', 0) + confidence * 0.3
+                if any(x in class_name for x in ['hip hop', 'rap', 'trap']):
+                    yamnet_genre_hints['hip-hop'] = yamnet_genre_hints.get('hip-hop', 0) + confidence * 0.3
+                if any(x in class_name for x in ['jazz', 'saxophone', 'trumpet', 'brass']):
+                    yamnet_genre_hints['jazz'] = yamnet_genre_hints.get('jazz', 0) + confidence * 0.3
+                if any(x in class_name for x in ['classical', 'orchestra', 'violin', 'cello', 'piano']):
+                    yamnet_genre_hints['classical'] = yamnet_genre_hints.get('classical', 0) + confidence * 0.3
+                if any(x in class_name for x in ['house', 'disco']):
+                    yamnet_genre_hints['house'] = yamnet_genre_hints.get('house', 0) + confidence * 0.3
+                if any(x in class_name for x in ['drum and bass', 'jungle']):
+                    yamnet_genre_hints['drum-and-bass'] = yamnet_genre_hints.get('drum-and-bass', 0) + confidence * 0.3
+                if any(x in class_name for x in ['dubstep', 'bass music']):
+                    yamnet_genre_hints['dubstep'] = yamnet_genre_hints.get('dubstep', 0) + confidence * 0.3
+                if any(x in class_name for x in ['ambient', 'drone']):
+                    yamnet_genre_hints['ambient'] = yamnet_genre_hints.get('ambient', 0) + confidence * 0.3
+
+        # Electronic/EDM: High energy, strong percussive, 120-140 BPM, bright
+        if 100 <= tempo <= 140 and spectral_centroid > 2000 and hp_ratio < 1.5:
+            genre_scores['electronic'] = 0.7 + min((rms_mean / 0.3) * 0.2, 0.2)
+
+        # Hip-Hop/Trap: 60-100 BPM, strong bass, percussive
+        if 60 <= tempo <= 100 and spectral_rolloff < 3000 and hp_ratio < 1.0:
+            # Use inverse hp_ratio as percussiveness metric
+            percussiveness_score = 1.0 / (hp_ratio + 0.1) if hp_ratio > 0 else 1.0
+            genre_scores['hip-hop'] = 0.65 + min(percussiveness_score * 0.15, 0.25)
+
+        # House/Techno: 120-130 BPM, 4/4 kick pattern, repetitive
+        if 118 <= tempo <= 132 and hp_ratio < 0.8 and rms_mean > 0.1:
+            genre_scores['house'] = 0.6 + min((130 - abs(tempo - 125)) / 30, 0.3)
+
+        # Drum & Bass: 160-180 BPM, very percussive, high energy
+        if 160 <= tempo <= 185 and hp_ratio < 0.5 and rms_mean > 0.15:
+            genre_scores['drum-and-bass'] = 0.75
+
+        # Ambient/Downtempo: Slow, low energy, harmonic, sustained
+        if tempo < 100 and hp_ratio > 2.0 and loudness < -20:
+            genre_scores['ambient'] = 0.6 + min((hp_ratio / 5.0) * 0.3, 0.3)
+
+        # Rock/Metal: Mid-high energy, distorted (high ZCR), 100-160 BPM
+        if 100 <= tempo <= 160 and zero_crossing_rate > 0.1 and dynamic_range > 20:
+            genre_scores['rock'] = 0.55 + min((zero_crossing_rate / 0.2) * 0.25, 0.25)
+
+        # Jazz/Funk: Complex rhythms, harmonic, 80-140 BPM, dynamic
+        if 80 <= tempo <= 140 and hp_ratio > 1.2 and dynamic_range > 25:
+            genre_scores['jazz'] = 0.5 + min((dynamic_range / 40) * 0.3, 0.3)
+
+        # Pop: Moderate everything, 100-130 BPM, balanced
+        if 100 <= tempo <= 130 and 0.8 < hp_ratio < 1.5 and -20 < loudness < -5:
+            genre_scores['pop'] = 0.5
+
+        # Classical: Very harmonic, wide dynamic range, variable tempo
+        if hp_ratio > 3.0 and dynamic_range > 30:
+            genre_scores['classical'] = 0.65
+
+        # Dubstep: 140 BPM (half-time 70), very bass-heavy, dynamic
+        if 135 <= tempo <= 145 and spectral_rolloff < 2500 and dynamic_range > 25:
+            genre_scores['dubstep'] = 0.7
+
+        # Boost scores with YAMNet instrument hints
+        for genre, boost in yamnet_genre_hints.items():
+            if genre in genre_scores:
+                genre_scores[genre] = min(genre_scores[genre] + boost, 0.95)
+            else:
+                # YAMNet detected instruments for a genre we didn't score
+                genre_scores[genre] = boost
+
+        # Create genre classes list
+        if genre_scores:
+            genre_classes = [
+                {'genre': genre, 'confidence': float(confidence)}
+                for genre, confidence in sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+            ]
+            features['genre_classes'] = genre_classes[:5]  # Top 5
+            features['genre_primary'] = genre_classes[0]['genre'] if genre_classes else None
+
+        # Mood classification based on audio features
+        mood_scores = {}
+
+        # Energetic/Aggressive: High energy, loud, bright
+        if rms_mean > 0.1 and loudness > -15 and spectral_centroid > 2500:
+            mood_scores['energetic'] = 0.7 + min((rms_mean / 0.3) * 0.2, 0.2)
+
+        # Calm/Relaxed: Low energy, soft, warm (low centroid)
+        if rms_mean < 0.08 and loudness < -25 and spectral_centroid < 2000:
+            mood_scores['calm'] = 0.75
+
+        # Dark/Moody: Low brightness, low energy, sustained
+        if spectral_centroid < 1500 and hp_ratio > 1.5 and loudness < -20:
+            mood_scores['dark'] = 0.65 + min((2000 - spectral_centroid) / 2000 * 0.25, 0.25)
+
+        # Uplifting/Happy: Bright, major key characteristics, energetic
+        if spectral_centroid > 3000 and tempo > 110 and loudness > -20:
+            mood_scores['uplifting'] = 0.6 + min((spectral_centroid / 6000) * 0.3, 0.3)
+
+        # Melancholic/Sad: Harmonic, slow, moderate energy
+        if hp_ratio > 2.0 and tempo < 100 and -30 < loudness < -15:
+            mood_scores['melancholic'] = 0.6
+
+        # Intense/Driving: High energy, fast tempo, percussive
+        if tempo > 130 and rms_mean > 0.12 and hp_ratio < 1.0:
+            mood_scores['intense'] = 0.7
+
+        # Atmospheric/Ethereal: Harmonic, reverberant, wide dynamic range
+        if hp_ratio > 2.5 and dynamic_range > 30 and spectral_centroid > 2000:
+            mood_scores['atmospheric'] = 0.65
+
+        # Aggressive/Angry: Very loud, harsh (high ZCR), distorted
+        if loudness > -10 and zero_crossing_rate > 0.15:
+            mood_scores['aggressive'] = 0.7 + min((zero_crossing_rate / 0.25) * 0.2, 0.2)
+
+        # Peaceful/Serene: Very soft, harmonic, smooth (low ZCR)
+        if loudness < -30 and zero_crossing_rate < 0.05 and hp_ratio > 2.0:
+            mood_scores['peaceful'] = 0.75
+
+        # Mysterious/Suspenseful: Dark, dynamic, moderate tempo
+        if spectral_centroid < 1800 and dynamic_range > 20 and 60 < tempo < 100:
+            mood_scores['mysterious'] = 0.6
+
+        # Create mood classes list
+        if mood_scores:
+            mood_classes = [
+                {'mood': mood, 'confidence': float(confidence)}
+                for mood, confidence in sorted(mood_scores.items(), key=lambda x: x[1], reverse=True)
+            ]
+            features['mood_classes'] = mood_classes[:5]  # Top 5
 
     except Exception as e:
-        print(f"Warning: Genre extraction failed: {e}", file=sys.stderr)
+        print(f"Warning: Genre/mood extraction failed: {e}", file=sys.stderr)
 
     return features
 
@@ -1152,89 +1591,155 @@ def extract_fingerprint(audio_path, y, sr):
         y: Audio time series (mono, float32)
         sr: Sample rate
     Returns:
-        dict with chromaprint_fingerprint, similarity_hash
+        dict with chromaprint_fingerprint
     """
     features = {
         'chromaprint_fingerprint': None,
-        'similarity_hash': None,
     }
 
     try:
         # Chromaprint fingerprint for exact/near duplicate detection
-        if chromaprint is not None:
+        if acoustid is not None:
             try:
-                # Chromaprint expects 16-bit PCM audio
-                # Convert float32 [-1, 1] to int16 [-32768, 32767]
-                audio_int16 = (y * 32767).astype(np.int16)
-
-                # Generate fingerprint
-                fpcalc = chromaprint.Chromaprint()
-                fpcalc.start(sr, 1)  # sample_rate, num_channels=1 (mono)
-                fpcalc.feed(audio_int16.tobytes())
-                fpcalc.finish()
-
-                fingerprint = fpcalc.get_fingerprint()
+                # Use pyacoustid to generate chromaprint fingerprint
+                # acoustid.fingerprint_file returns (duration, fingerprint)
+                duration_fp, fingerprint = acoustid.fingerprint_file(audio_path)
+                # Ensure fingerprint is a string (may be bytes)
+                if isinstance(fingerprint, bytes):
+                    fingerprint = fingerprint.decode('utf-8')
                 features['chromaprint_fingerprint'] = fingerprint
             except Exception as e:
                 print(f"Warning: Chromaprint fingerprinting failed: {e}", file=sys.stderr)
-
-        # Perceptual hash from mel-spectrogram for similarity detection
-        try:
-            # Generate mel-spectrogram (compact representation)
-            mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=32, n_fft=2048)
-
-            # Convert to dB scale
-            mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
-
-            # Downsample temporally (average across time to get 32x32 matrix)
-            target_frames = 32
-            if mel_spec_db.shape[1] > target_frames:
-                # Average every N frames to get target number
-                frames_per_bucket = mel_spec_db.shape[1] // target_frames
-                downsampled = []
-                for i in range(target_frames):
-                    start_idx = i * frames_per_bucket
-                    end_idx = start_idx + frames_per_bucket
-                    if end_idx <= mel_spec_db.shape[1]:
-                        downsampled.append(np.mean(mel_spec_db[:, start_idx:end_idx], axis=1))
-                mel_spec_compact = np.array(downsampled).T  # 32x32
-            else:
-                # Pad if too short
-                mel_spec_compact = np.pad(
-                    mel_spec_db,
-                    ((0, 0), (0, max(0, target_frames - mel_spec_db.shape[1]))),
-                    mode='constant',
-                    constant_values=np.min(mel_spec_db)
-                )[:, :target_frames]
-
-            # Create binary hash: 1 if above median, 0 if below
-            median_val = np.median(mel_spec_compact)
-            binary_matrix = (mel_spec_compact > median_val).astype(int)
-
-            # Flatten and convert to hexadecimal string (compact representation)
-            binary_flat = binary_matrix.flatten()
-
-            # Convert binary array to hex string (more compact than storing 1024 bits)
-            # Group into bytes (8 bits each)
-            hex_chars = []
-            for i in range(0, len(binary_flat), 8):
-                byte_chunk = binary_flat[i:i+8]
-                # Pad if last chunk is incomplete
-                if len(byte_chunk) < 8:
-                    byte_chunk = np.pad(byte_chunk, (0, 8 - len(byte_chunk)), mode='constant')
-                # Convert to integer then to hex
-                byte_val = int(''.join(str(b) for b in byte_chunk), 2)
-                hex_chars.append(f'{byte_val:02x}')
-
-            features['similarity_hash'] = ''.join(hex_chars)
-
-        except Exception as e:
-            print(f"Warning: Perceptual hash generation failed: {e}", file=sys.stderr)
 
     except Exception as e:
         print(f"Warning: Fingerprint extraction failed: {e}", file=sys.stderr)
 
     return features
+
+
+def extract_additional_features(y, sr):
+    """
+    Extract additional audio features: spectral flux, spectral flatness,
+    temporal centroid, and crest factor.
+    """
+    features = {
+        'spectral_flux': None,
+        'spectral_flatness': None,
+        'temporal_centroid': None,
+        'crest_factor': None,
+    }
+
+    try:
+        # Spectral flux: L2 norm of frame-to-frame STFT magnitude difference, mean
+        S = np.abs(librosa.stft(y))
+        if S.shape[1] > 1:
+            diff = np.diff(S, axis=1)
+            flux_per_frame = np.sqrt(np.sum(diff ** 2, axis=0))
+            features['spectral_flux'] = float(np.mean(flux_per_frame))
+
+        # Spectral flatness
+        flatness = librosa.feature.spectral_flatness(y=y)
+        features['spectral_flatness'] = float(np.mean(flatness))
+
+        # Temporal centroid: sum(t * rms(t)) / sum(rms(t)), normalized 0-1
+        rms = librosa.feature.rms(y=y)[0]
+        if np.sum(rms) > 1e-8:
+            t = np.arange(len(rms), dtype=np.float64)
+            temporal_centroid = np.sum(t * rms) / np.sum(rms)
+            # Normalize to 0-1
+            features['temporal_centroid'] = float(temporal_centroid / (len(rms) - 1)) if len(rms) > 1 else 0.5
+
+        # Crest factor: 20 * log10(peak / rms) in dB
+        rms_total = np.sqrt(np.mean(y ** 2))
+        peak_val = np.max(np.abs(y))
+        if rms_total > 1e-8:
+            features['crest_factor'] = float(20.0 * np.log10(peak_val / rms_total))
+
+    except Exception as e:
+        print(f"Warning: Additional feature extraction failed: {e}", file=sys.stderr)
+
+    return features
+
+
+def extract_transient_features(y_percussive, sr):
+    """
+    Extract transient features from the percussive component.
+    Analyzes the first 50ms of the percussive component.
+    Args:
+        y_percussive: Percussive component from HPSS (already separated)
+        sr: Sample rate
+    Returns:
+        dict with transient_spectral_centroid, transient_spectral_flatness
+    """
+    features = {
+        'transient_spectral_centroid': None,
+        'transient_spectral_flatness': None,
+    }
+
+    try:
+        if y_percussive is None or len(y_percussive) == 0:
+            return features
+
+        # Take first 50ms of percussive component
+        n_samples_50ms = int(0.05 * sr)
+        transient = y_percussive[:n_samples_50ms]
+
+        if len(transient) < 512:
+            return features
+
+        # Spectral centroid of transient
+        centroid = librosa.feature.spectral_centroid(y=transient, sr=sr)
+        features['transient_spectral_centroid'] = float(np.mean(centroid))
+
+        # Spectral flatness of transient
+        flatness = librosa.feature.spectral_flatness(y=transient)
+        features['transient_spectral_flatness'] = float(np.mean(flatness))
+
+    except Exception as e:
+        print(f"Warning: Transient feature extraction failed: {e}", file=sys.stderr)
+
+    return features
+
+
+def classify_percussion_subtype(transient_centroid, transient_flatness, crest_factor, attack_time):
+    """
+    Classify percussion subtype based on transient characteristics.
+    Args:
+        transient_centroid: Spectral centroid of transient (Hz)
+        transient_flatness: Spectral flatness of transient (0-1)
+        crest_factor: Crest factor in dB
+        attack_time: Attack time in seconds
+    Returns:
+        (subtype, confidence) tuple
+    """
+    if transient_centroid is None or transient_flatness is None:
+        return (None, 0.0)
+
+    # Kick: centroid < 200 Hz, low flatness, crest > 15
+    if transient_centroid < 200 and transient_flatness < 0.3 and crest_factor is not None and crest_factor > 15:
+        return ('kick', 0.8)
+
+    # Hi-hat: centroid > 5000 Hz, low flatness, short decay
+    if transient_centroid > 5000 and transient_flatness < 0.4 and attack_time is not None and attack_time < 0.01:
+        return ('hi-hat', 0.75)
+
+    # Ride: centroid > 3000 Hz, low flatness, longer decay
+    if transient_centroid > 3000 and transient_flatness < 0.4 and attack_time is not None and attack_time >= 0.01:
+        return ('ride', 0.65)
+
+    # Snare: 200-5000 Hz centroid, flatness > 0.5
+    if 200 <= transient_centroid <= 5000 and transient_flatness > 0.5:
+        return ('snare', 0.7)
+
+    # Clap: Broadband, flatness > 0.4
+    if transient_flatness > 0.4 and 500 < transient_centroid < 8000:
+        return ('clap', 0.6)
+
+    # Tom: 100-800 Hz centroid, low flatness, crest > 10
+    if 100 <= transient_centroid <= 800 and transient_flatness < 0.3 and crest_factor is not None and crest_factor > 10:
+        return ('tom', 0.65)
+
+    return (None, 0.0)
 
 
 def generate_tags(features):
@@ -1283,7 +1788,7 @@ def generate_tags(features):
 
     # Energy/dynamics tags
     loudness = features['loudness']
-    onset_strength = features['rms_energy']
+    onset_strength = features.get('onset_strength', features['rms_energy'])
     dynamic_range = features['dynamic_range']
 
     # Punch and softness
@@ -1472,6 +1977,8 @@ def main():
     parser.add_argument('audio_file', help='Path to audio file')
     parser.add_argument('--level', choices=['quick', 'standard', 'advanced'],
                         default='standard', help='Analysis level (default: standard)')
+    parser.add_argument('--filename', default=None,
+                        help='Original filename (used for sample type detection hints)')
 
     args = parser.parse_args()
 
@@ -1486,7 +1993,7 @@ def main():
         sys.exit(1)
 
     try:
-        results = analyze_audio(args.audio_file, analysis_level=args.level)
+        results = analyze_audio(args.audio_file, analysis_level=args.level, filename=args.filename)
         print(json.dumps(results, indent=2))
     except Exception as e:
         print(json.dumps({"error": str(e)}))
