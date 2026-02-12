@@ -2,7 +2,8 @@
 
 A practical audio sample management and analysis platform for music producers and sound designers. Import your library, slice audio quickly, auto-analyze features, and organize everything with tags, folders, and collections. Works as a webapp, running experiments for a desktop app (electron)
 
-<img width="1895" height="899" alt="image" src="https://github.com/user-attachments/assets/d5ca1454-722f-4e65-be19-2a8afe1cae42" />
+<img width="1929" height="994" alt="image" src="https://github.com/user-attachments/assets/aee09211-d6c7-42ee-86c3-ffb8dedf7015" />
+
 
 > **Legal Note**: Ensure you have appropriate rights to any content in your library. Use this tool responsibly and in accordance with copyright and intellectual property laws.
 
@@ -25,7 +26,9 @@ A practical audio sample management and analysis platform for music producers an
 ### Import
 - **Import Local Files**: Add individual audio files directly to your library
 - **Batch Folder Import**: Import full folder structures
-- **Source Organization**: Browse and manage by source/folder
+- **Source Organization**: Browse and manage by source/folder, create and manage folders/tags/collections efficiently through several tools
+- **Drum Rack**: To play around with your samples
+- **Batch download and analysis**
 
 ### Slice & Analyze
 - **Waveform Editor**
