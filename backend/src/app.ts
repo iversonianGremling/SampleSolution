@@ -9,8 +9,10 @@ import slicesRouter from './routes/slices.js'
 import youtubeRouter from './routes/youtube.js'
 import authRouter from './routes/auth.js'
 import tagsRouter from './routes/tags.js'
+import foldersRouter from './routes/folders.js'
 import collectionsRouter from './routes/collections.js'
 import importRouter from './routes/import.js'
+import libraryRouter from './routes/library.js'
 
 export function createApp(options: { dataDir?: string; frontendUrl?: string; sessionSecret?: string } = {}) {
   const app = express()
@@ -57,7 +59,9 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
   app.use('/api/auth', authRouter)
   app.use('/api/tags', tagsRouter)
   app.use('/api', tagsRouter)
+  app.use('/api', foldersRouter)
   app.use('/api', collectionsRouter)
+  app.use('/api', libraryRouter)
 
   // Health check
   app.get('/api/health', (req, res) => {

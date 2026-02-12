@@ -10,9 +10,9 @@ import {
   useAddTagToSlice,
   useRemoveTagFromSlice,
   useTags,
-  useCollections,
-  useAddSliceToCollection,
-  useRemoveSliceFromCollection,
+  useFolders,
+  useAddSliceToFolder,
+  useRemoveSliceFromFolder,
 } from '../hooks/useTracks'
 import { TagSearchInput } from './TagSearchInput'
 
@@ -67,12 +67,12 @@ export function SliceDetailPanel({
   const toggleFavoriteMutation = useToggleFavorite()
   const addTagMutation = useAddTagToSlice()
   const removeTagMutation = useRemoveTagFromSlice()
-  const addCollectionMutation = useAddSliceToCollection()
-  const removeCollectionMutation = useRemoveSliceFromCollection()
+  const addFolderMutation = useAddSliceToFolder()
+  const removeFolderMutation = useRemoveSliceFromFolder()
 
   // Queries
   const { data: allTags } = useTags()
-  const { data: allCollections } = useCollections()
+  const { data: allFolders } = useFolders()
 
   // Focus input when editing starts
   useEffect(() => {
@@ -115,17 +115,17 @@ export function SliceDetailPanel({
     })
   }
 
-  const handleAddCollection = (collectionId: number) => {
-    addCollectionMutation.mutate({
+  const handleAddFolder = (folderId: number) => {
+    addFolderMutation.mutate({
       sliceId: sliceData.id,
-      collectionId,
+      folderId,
     })
   }
 
-  const handleRemoveCollection = (collectionId: number) => {
-    removeCollectionMutation.mutate({
+  const handleRemoveFolder = (folderId: number) => {
+    removeFolderMutation.mutate({
       sliceId: sliceData.id,
-      collectionId,
+      folderId,
     })
   }
 
@@ -134,10 +134,10 @@ export function SliceDetailPanel({
   }
 
   const sliceTagIds = new Set(sliceData.tags.map((t) => t.id))
-  const sliceCollectionIds = new Set(sliceData.collectionIds)
+  const sliceFolderIds = new Set(sliceData.folderIds)
   const availableTags = allTags?.filter((t) => !sliceTagIds.has(t.id)) || []
-  const availableCollections = allCollections?.filter((c) => !sliceCollectionIds.has(c.id)) || []
-  const sliceCollections = allCollections?.filter((c) => sliceCollectionIds.has(c.id)) || []
+  const availableFolders = allFolders?.filter((c) => !sliceFolderIds.has(c.id)) || []
+  const sliceFolders = allFolders?.filter((c) => sliceFolderIds.has(c.id)) || []
 
   return (
     <div className="bg-surface-overlay border-t border-surface-border">
@@ -274,7 +274,7 @@ export function SliceDetailPanel({
         </div>
       </div>
 
-      {/* Tags and Collections Row - Compact */}
+      {/* Tags and Folders Row - Compact */}
       <div className="px-3 pb-2 flex items-center gap-2 flex-wrap">
         {sliceData.tags.map((tag) => (
           <span
@@ -295,19 +295,19 @@ export function SliceDetailPanel({
             </button>
           </span>
         ))}
-        {sliceCollections.map((collection) => (
+        {sliceFolders.map((folder) => (
           <span
-            key={collection.id}
+            key={folder.id}
             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium border border-dashed"
             style={{
-              borderColor: (collection.color || '#6366f1') + '50',
-              color: collection.color || '#6366f1',
+              borderColor: (folder.color || '#6366f1') + '50',
+              color: folder.color || '#6366f1',
             }}
           >
-            {collection.name}
+            {folder.name}
             <button
-              onClick={() => handleRemoveCollection(collection.id)}
-              disabled={removeCollectionMutation.isPending}
+              onClick={() => handleRemoveFolder(folder.id)}
+              disabled={removeFolderMutation.isPending}
               className="hover:opacity-70 transition-opacity"
             >
               <X size={10} />
@@ -323,19 +323,19 @@ export function SliceDetailPanel({
             className="text-[11px]"
           />
         )}
-        {availableCollections.length > 0 && (
+        {availableFolders.length > 0 && (
           <select
             onChange={(e) => {
-              const collectionId = parseInt(e.target.value)
-              if (collectionId) {
-                handleAddCollection(collectionId)
+              const folderId = parseInt(e.target.value)
+              if (folderId) {
+                handleAddFolder(folderId)
                 e.target.value = ''
               }
             }}
             className="px-1.5 py-0.5 bg-surface-raised border border-surface-border rounded text-[11px] text-slate-400 focus:outline-none focus:border-accent-primary"
           >
-            <option value="">+ Collection</option>
-            {availableCollections.map((c) => (
+            <option value="">+ Folder</option>
+            {availableFolders.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
               </option>

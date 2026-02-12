@@ -270,9 +270,7 @@ export function SourcesYouTubeGroupedList({
           const allVideoSlicesSelected = selectedInVideo === videoSliceIds.length && videoSliceIds.length > 0
           const someVideoSlicesSelected = selectedInVideo > 0 && selectedInVideo < videoSliceIds.length
 
-          const handleToggleVideoSelection = (e: React.MouseEvent) => {
-            e.stopPropagation()
-
+          const toggleVideoSelection = () => {
             if (allVideoSlicesSelected) {
               // Deselect all slices from this video
               videoSliceIds.forEach(id => {
@@ -288,6 +286,11 @@ export function SourcesYouTubeGroupedList({
                 }
               })
             }
+          }
+
+          const handleVideoCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+            e.stopPropagation()
+            toggleVideoSelection()
           }
 
           return (
@@ -316,14 +319,12 @@ export function SourcesYouTubeGroupedList({
                 </button>
 
                 {/* Select all checkbox for this video */}
-                <div onClick={handleToggleVideoSelection}>
-                  <CustomCheckbox
-                    checked={allVideoSlicesSelected}
-                    indeterminate={someVideoSlicesSelected}
-                    onChange={() => {}}
-                    title={`Select all slices from ${group.trackTitle}`}
-                  />
-                </div>
+                <CustomCheckbox
+                  checked={allVideoSlicesSelected}
+                  indeterminate={someVideoSlicesSelected}
+                  onChange={handleVideoCheckboxChange}
+                  title={`Select all slices from ${group.trackTitle}`}
+                />
               </div>
 
               {/* Slices list */}

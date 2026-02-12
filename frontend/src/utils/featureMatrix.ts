@@ -1,5 +1,43 @@
 import type { AudioFeatures, FeatureWeights, NormalizationMethod } from '../types'
 
+type TagLike = { name: string }
+
+export interface TagFeatureOptions {
+  enabled?: boolean
+  weight?: number
+  excludeDerived?: boolean
+  minTagFrequency?: number
+  derivedTagNames?: string[]
+}
+
+export interface FeatureMatrixOptions {
+  tags?: TagFeatureOptions
+}
+
+const DEFAULT_DERIVED_TAG_NAMES = [
+  'bright',
+  'brightness',
+  'dark',
+  'mid-range',
+  'high-freq',
+  'high-frequency',
+  'bass-heavy',
+  'aggressive',
+  'ambient',
+  'dynamic',
+  'compressed',
+  'loud',
+  'quiet',
+]
+
+const DEFAULT_TAG_OPTIONS: Required<TagFeatureOptions> = {
+  enabled: true,
+  weight: 1.8,
+  excludeDerived: true,
+  minTagFrequency: 1,
+  derivedTagNames: DEFAULT_DERIVED_TAG_NAMES,
+}
+
 // Default weights - MIR-literature-informed
 export const DEFAULT_WEIGHTS: FeatureWeights = {
   spectralCentroid: 1.2,
@@ -172,6 +210,51 @@ export const FEATURE_LABELS: Record<keyof FeatureWeights, string> = {
   transientSpectralFlatness: 'Transient Noisiness',
 }
 
+function normalizeTagName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-')
+    .replace(/-+/g, '-')
+}
+
+function buildTagDimensions(
+  samples: Array<AudioFeatures & { tags?: TagLike[] }>,
+  tagOptions?: TagFeatureOptions
+): { activeTags: string[]; sampleTagSets: Set<string>[]; tagWeight: number } {
+  const opts = { ...DEFAULT_TAG_OPTIONS, ...tagOptions }
+  if (!opts.enabled) {
+    return { activeTags: [], sampleTagSets: [], tagWeight: opts.weight }
+  }
+
+  const derivedTagSet = new Set(
+    (opts.derivedTagNames || DEFAULT_DERIVED_TAG_NAMES).map(normalizeTagName)
+  )
+
+  const sampleTagSets = samples.map((sample) => {
+    const normalized = (sample.tags ?? [])
+      .map((t) => normalizeTagName(t.name))
+      .filter(Boolean)
+      .filter((tag) => !(opts.excludeDerived && derivedTagSet.has(tag)))
+
+    return new Set(normalized)
+  })
+
+  const tagCounts = new Map<string, number>()
+  for (const tagSet of sampleTagSets) {
+    for (const tag of tagSet) {
+      tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1)
+    }
+  }
+
+  const activeTags = [...tagCounts.entries()]
+    .filter(([, count]) => count >= opts.minTagFrequency)
+    .map(([tag]) => tag)
+    .sort()
+
+  return { activeTags, sampleTagSets, tagWeight: opts.weight }
+}
+
 // Normalize a value to 0-1 range using min-max scaling
 function normalize(value: number, min: number, max: number): number {
   if (max === min) return 0.5
@@ -305,16 +388,18 @@ function getFeatureValue(sample: AudioFeatures, feature: keyof FeatureWeights): 
 
 // Build a normalized, weighted feature matrix for dimensionality reduction
 export function buildFeatureMatrix(
-  samples: AudioFeatures[],
+  samples: Array<AudioFeatures & { tags?: TagLike[] }>,
   weights: FeatureWeights,
-  normalization: NormalizationMethod = 'robust'
+  normalization: NormalizationMethod = 'robust',
+  options: FeatureMatrixOptions = {}
 ): { matrix: number[][]; validIndices: number[] } {
   const featureKeys = Object.keys(weights) as (keyof FeatureWeights)[]
 
   // Only use features with non-zero weights
   const activeFeatures = featureKeys.filter((k) => weights[k] > 0)
+  const { activeTags, sampleTagSets, tagWeight } = buildTagDimensions(samples, options.tags)
 
-  if (activeFeatures.length === 0) {
+  if (activeFeatures.length === 0 && activeTags.length === 0) {
     return { matrix: [], validIndices: [] }
   }
 
@@ -379,6 +464,15 @@ export function buildFeatureMatrix(
       } else {
         // Use 0.5 (middle) for missing values
         row.push(0.5 * weight)
+      }
+    }
+
+    if (activeTags.length > 0) {
+      const tagSet = sampleTagSets[i] ?? new Set<string>()
+      for (const tag of activeTags) {
+        const hasTag = tagSet.has(tag)
+        row.push(hasTag ? tagWeight : 0)
+        if (hasTag) hasAnyValue = true
       }
     }
 

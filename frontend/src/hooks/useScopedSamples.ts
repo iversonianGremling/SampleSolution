@@ -15,6 +15,8 @@ function scopeToString(scope: SourceScope): string {
     case 'folder':
       return `folder:${scope.path}`
     case 'my-folder':
+      return `my-folder:${scope.folderId}`
+    case 'collection':
       return `collection:${scope.collectionId}`
     default:
       return 'all'
@@ -22,11 +24,12 @@ function scopeToString(scope: SourceScope): string {
 }
 
 export interface AudioFilterParams {
-  sortBy?: 'bpm' | 'key' | 'name' | 'duration' | 'createdAt'
+  sortBy?: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt'
   sortOrder?: 'asc' | 'desc'
   minBpm?: number
   maxBpm?: number
   keys?: string[]
+  notes?: string[]
 }
 
 export function useScopedSamples(
@@ -36,7 +39,12 @@ export function useScopedSamples(
   favorites: boolean = false,
   audioFilters?: AudioFilterParams
 ) {
-  const scopeString = scopeToString(scope)
+  // Some backend deployments don't correctly handle scoped my-folder/collection queries.
+  // For those scopes, fetch from "all" and let the UI apply precise folder-based filtering.
+  const scopeString =
+    scope.type === 'my-folder' || scope.type === 'collection'
+      ? 'all'
+      : scopeToString(scope)
 
   return useQuery({
     queryKey: ['scopedSamples', scopeString, tagIds, search, favorites, audioFilters],
@@ -51,6 +59,7 @@ export function useScopedSamples(
         minBpm: audioFilters?.minBpm,
         maxBpm: audioFilters?.maxBpm,
         keys: audioFilters?.keys,
+        notes: audioFilters?.notes,
       }),
   })
 }

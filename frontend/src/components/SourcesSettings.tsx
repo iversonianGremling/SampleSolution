@@ -1,14 +1,14 @@
-import { useState, useEffect } from 'react'
-import { RefreshCw, AlertCircle, CheckCircle2, Copy, Link2, Trash2, ArrowRight, ArrowLeft, ArrowLeftRight } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { RefreshCw, AlertCircle, CheckCircle2, Copy, Link2, FolderOpen } from 'lucide-react'
 import * as api from '../api/client'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { AnalysisLevelSelector } from './AnalysisLevelSelector'
-import type { AnalysisLevel, SyncConfig } from '../types'
+import type { AnalysisLevel } from '../types'
 
 const ANALYSIS_LEVEL_KEY = 'defaultAnalysisLevel'
 
 interface DuplicateGroup {
-  matchType: 'exact' | 'near'
+  matchType: 'exact' | 'file'
   hashSimilarity: number
   samples: Array<{
     id: number
@@ -23,11 +23,7 @@ function FindDuplicatesSection() {
     total: number
   }>({
     queryKey: ['duplicates'],
-    queryFn: async () => {
-      const res = await fetch('/api/slices/duplicates')
-      if (!res.ok) throw new Error('Failed to fetch duplicates')
-      return res.json()
-    },
+    queryFn: api.getDuplicateSlices,
     enabled: false, // Don't auto-fetch
   })
 
@@ -70,7 +66,7 @@ function FindDuplicatesSection() {
                 {duplicates.groups.map((group, idx) => (
                   <div key={idx} className="p-2 bg-surface-raised rounded border border-surface-border">
                     <div className="text-xs text-slate-400 mb-1">
-                      {group.matchType === 'exact' ? 'Exact match' : 'Similar'}
+                      {group.matchType === 'exact' ? 'Exact fingerprint match' : 'File identity match'}
                       {' '}({Math.round(group.hashSimilarity * 100)}%)
                     </div>
                     <div className="space-y-1">
@@ -116,185 +112,202 @@ function FindDuplicatesSection() {
   )
 }
 
-function TagCollectionSyncSection() {
-  const queryClient = useQueryClient()
+function LibraryTransferSection() {
+  const [exportPath, setExportPath] = useState('')
+  const [importPath, setImportPath] = useState('')
+  const [pickerNotice, setPickerNotice] = useState<string | null>(null)
+  const exportDirInputRef = useRef<HTMLInputElement>(null)
+  const importDirInputRef = useRef<HTMLInputElement>(null)
 
-  const { data: syncConfigs = [], isLoading: loadingConfigs } = useQuery<SyncConfig[]>({
-    queryKey: ['syncConfigs'],
-    queryFn: api.getSyncConfigs,
+  const exportMutation = useMutation({
+    mutationFn: () => api.exportLibrary(exportPath.trim() || undefined),
   })
 
-  const { data: tags = [] } = useQuery<Array<{ id: number; name: string; color: string }>>({
-    queryKey: ['tags'],
-    queryFn: async () => {
-      const res = await fetch('/api/tags')
-      if (!res.ok) throw new Error('Failed to fetch tags')
-      return res.json()
-    },
+  const importMutation = useMutation({
+    mutationFn: () => api.importLibrary(importPath.trim()),
   })
 
-  const { data: collections = [] } = useQuery<Array<{ id: number; name: string; color: string }>>({
-    queryKey: ['collections'],
-    queryFn: async () => {
-      const res = await fetch('/api/collections')
-      if (!res.ok) throw new Error('Failed to fetch collections')
-      return res.json()
-    },
-  })
+  const handleImportLibrary = async () => {
+    if (!importPath.trim()) return
+    const confirmed = window.confirm(
+      'Importing a library will replace your current database, tracks, slices, tags, folders, and settings. A backup will be created automatically. Continue?'
+    )
+    if (!confirmed) return
 
-  const [newTagId, setNewTagId] = useState<number | ''>('')
-  const [newCollectionId, setNewCollectionId] = useState<number | ''>('')
-  const [newDirection, setNewDirection] = useState<'tag-to-collection' | 'collection-to-tag' | 'bidirectional'>('bidirectional')
+    await importMutation.mutateAsync()
 
-  const createMutation = useMutation({
-    mutationFn: () => api.createSyncConfig({
-      tagId: newTagId as number,
-      collectionId: newCollectionId as number,
-      direction: newDirection,
-    }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['syncConfigs'] })
-      setNewTagId('')
-      setNewCollectionId('')
-    },
-  })
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: number) => api.deleteSyncConfig(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['syncConfigs'] })
-    },
-  })
-
-  const directionIcon = (dir: string) => {
-    switch (dir) {
-      case 'tag-to-collection': return <ArrowRight size={14} />
-      case 'collection-to-tag': return <ArrowLeft size={14} />
-      case 'bidirectional': return <ArrowLeftRight size={14} />
-      default: return null
-    }
+    // Reload app so all queries/state are consistent with replaced DB
+    window.location.reload()
   }
 
-  const directionLabel = (dir: string) => {
-    switch (dir) {
-      case 'tag-to-collection': return 'Tag → Collection'
-      case 'collection-to-tag': return 'Collection → Tag'
-      case 'bidirectional': return 'Bidirectional'
-      default: return dir
+  const openBrowse = async (target: 'export' | 'import') => {
+    setPickerNotice(null)
+    const initialPath = (target === 'export' ? exportPath : importPath).trim() || undefined
+
+    // Prefer native local filesystem picker when available (Electron)
+    if (window.electron?.selectDirectory) {
+      try {
+        const selected = await window.electron.selectDirectory({
+          defaultPath: initialPath,
+          title: target === 'export' ? 'Select export folder' : 'Select library folder to import',
+        })
+
+        if (selected) {
+          if (target === 'export') setExportPath(selected)
+          if (target === 'import') setImportPath(selected)
+        }
+        return
+      } catch {
+        // Continue with browser-native fallbacks below
+      }
     }
+
+    // Browser-native picker (File System Access API)
+    try {
+      const maybeShowDirectoryPicker = (window as any).showDirectoryPicker
+      if (typeof maybeShowDirectoryPicker === 'function') {
+        const handle = await maybeShowDirectoryPicker()
+        if (handle?.name) {
+          if (target === 'export') setExportPath(handle.name)
+          if (target === 'import') setImportPath(handle.name)
+          setPickerNotice('Browser returned folder name only. If needed, paste absolute path manually (or use Electron app).')
+          return
+        }
+      }
+    } catch {
+      // User canceled or API unavailable
+    }
+
+    // Fallback via input[type=file][webkitdirectory]
+    if (target === 'export') exportDirInputRef.current?.click()
+    if (target === 'import') importDirInputRef.current?.click()
   }
 
-  const getTagName = (id: number) => tags.find(t => t.id === id)?.name || `Tag #${id}`
-  const getTagColor = (id: number) => tags.find(t => t.id === id)?.color || '#888'
-  const getCollectionName = (id: number) => collections.find(c => c.id === id)?.name || `Collection #${id}`
-  const getCollectionColor = (id: number) => collections.find(c => c.id === id)?.color || '#888'
+  const handleWebDirectoryPicked = (target: 'export' | 'import', e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    if (files.length === 0) return
+
+    const first = files[0]
+    const folderName = first.webkitRelativePath?.split('/')[0] || first.name
+    if (target === 'export') setExportPath(folderName)
+    if (target === 'import') setImportPath(folderName)
+    setPickerNotice('Browser returned folder name only. If needed, paste absolute path manually (or use Electron app).')
+  }
 
   return (
     <div>
-      <h4 className="text-sm font-medium text-white mb-2">Tag-Collection Sync</h4>
+      <h4 className="text-sm font-medium text-white mb-2">Library Transfer</h4>
       <p className="text-sm text-slate-400 mb-4">
-        Automatically sync tags and collections. When a tag is added to a sample, it can be auto-added to a linked collection (and vice versa).
+        Move your full library between SampleSolution instances. This includes tracks, slices, tags, folders, collections, and metadata.
       </p>
 
-      {/* Existing sync links */}
-      {loadingConfigs ? (
-        <div className="text-sm text-slate-400 mb-4">Loading...</div>
-      ) : syncConfigs.length > 0 ? (
-        <div className="space-y-2 mb-4">
-          {syncConfigs.map((config) => (
-            <div
-              key={config.id}
-              className="flex items-center gap-3 p-2 bg-surface-base rounded-lg border border-surface-border"
-            >
-              <span
-                className="px-2 py-0.5 text-xs rounded-full"
-                style={{ backgroundColor: getTagColor(config.tagId) + '25', color: getTagColor(config.tagId) }}
-              >
-                {getTagName(config.tagId)}
-              </span>
-              <span className="text-slate-400 flex items-center gap-1 text-xs">
-                {directionIcon(config.syncDirection)}
-                {directionLabel(config.syncDirection)}
-              </span>
-              <span
-                className="px-2 py-0.5 text-xs rounded-full"
-                style={{ backgroundColor: getCollectionColor(config.collectionId) + '25', color: getCollectionColor(config.collectionId) }}
-              >
-                {getCollectionName(config.collectionId)}
-              </span>
-              <button
-                onClick={() => deleteMutation.mutate(config.id)}
-                className="ml-auto p-1 text-slate-400 hover:text-red-400 transition-colors"
-                title="Remove sync link"
-              >
-                <Trash2 size={14} />
-              </button>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-surface-base border border-surface-border rounded-lg p-4 space-y-3">
+          <div className="text-sm font-medium text-white">Export Library</div>
+          <input
+            type="text"
+            value={exportPath}
+            onChange={(e) => setExportPath(e.target.value)}
+            placeholder="Optional export path (default: data/library_exports/...)"
+            className="w-full px-3 py-2 bg-surface-raised border border-surface-border rounded text-sm text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
+          />
+          <button
+            onClick={() => openBrowse('export')}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded text-xs font-medium bg-surface-raised hover:bg-surface-overlay text-slate-200 border border-surface-border transition-colors"
+          >
+            <FolderOpen size={14} />
+            Browse
+          </button>
+          <button
+            onClick={() => exportMutation.mutate()}
+            disabled={exportMutation.isPending}
+            className={`inline-flex items-center gap-2 px-3 py-2 rounded text-sm font-medium transition-colors ${
+              exportMutation.isPending
+                ? 'bg-surface-overlay text-slate-500 cursor-not-allowed'
+                : 'bg-accent-primary hover:bg-accent-primary/90 text-white'
+            }`}
+          >
+            <Copy size={14} />
+            {exportMutation.isPending ? 'Exporting...' : 'Export Library'}
+          </button>
+
+          {exportMutation.data && (
+            <div className="text-xs text-green-400 break-all">
+              Exported to: {exportMutation.data.exportPath}
             </div>
-          ))}
+          )}
+          {exportMutation.isError && (
+            <div className="text-xs text-red-400">Failed to export library</div>
+          )}
         </div>
-      ) : (
-        <div className="text-sm text-slate-500 mb-4">No sync links configured.</div>
-      )}
 
-      {/* Create new sync link */}
-      <div className="flex items-end gap-2 flex-wrap">
-        <div>
-          <label className="text-[10px] text-slate-500 block mb-1">Tag</label>
-          <select
-            value={newTagId}
-            onChange={(e) => setNewTagId(e.target.value ? parseInt(e.target.value) : '')}
-            className="bg-surface-base border border-surface-border rounded px-2 py-1.5 text-xs text-white min-w-[120px]"
+        <div className="bg-surface-base border border-surface-border rounded-lg p-4 space-y-3">
+          <div className="text-sm font-medium text-white">Import Library</div>
+          <input
+            type="text"
+            value={importPath}
+            onChange={(e) => setImportPath(e.target.value)}
+            placeholder="Path to exported library folder"
+            className="w-full px-3 py-2 bg-surface-raised border border-surface-border rounded text-sm text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
+          />
+          <button
+            onClick={() => openBrowse('import')}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded text-xs font-medium bg-surface-raised hover:bg-surface-overlay text-slate-200 border border-surface-border transition-colors"
           >
-            <option value="">Select tag...</option>
-            {tags.map((tag) => (
-              <option key={tag.id} value={tag.id}>{tag.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="text-[10px] text-slate-500 block mb-1">Direction</label>
-          <select
-            value={newDirection}
-            onChange={(e) => setNewDirection(e.target.value as typeof newDirection)}
-            className="bg-surface-base border border-surface-border rounded px-2 py-1.5 text-xs text-white"
+            <FolderOpen size={14} />
+            Browse
+          </button>
+          <button
+            onClick={handleImportLibrary}
+            disabled={importMutation.isPending || !importPath.trim()}
+            className={`inline-flex items-center gap-2 px-3 py-2 rounded text-sm font-medium transition-colors ${
+              importMutation.isPending || !importPath.trim()
+                ? 'bg-surface-overlay text-slate-500 cursor-not-allowed'
+                : 'bg-accent-primary hover:bg-accent-primary/90 text-white'
+            }`}
           >
-            <option value="bidirectional">Bidirectional</option>
-            <option value="tag-to-collection">Tag → Collection</option>
-            <option value="collection-to-tag">Collection → Tag</option>
-          </select>
-        </div>
+            <Link2 size={14} />
+            {importMutation.isPending ? 'Importing...' : 'Import Library'}
+          </button>
 
-        <div>
-          <label className="text-[10px] text-slate-500 block mb-1">Collection</label>
-          <select
-            value={newCollectionId}
-            onChange={(e) => setNewCollectionId(e.target.value ? parseInt(e.target.value) : '')}
-            className="bg-surface-base border border-surface-border rounded px-2 py-1.5 text-xs text-white min-w-[120px]"
-          >
-            <option value="">Select collection...</option>
-            {collections.map((col) => (
-              <option key={col.id} value={col.id}>{col.name}</option>
-            ))}
-          </select>
-        </div>
+          <div className="text-xs text-amber-400">
+            This replaces your current library.
+          </div>
 
-        <button
-          onClick={() => createMutation.mutate()}
-          disabled={!newTagId || !newCollectionId || createMutation.isPending}
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-            !newTagId || !newCollectionId || createMutation.isPending
-              ? 'bg-surface-base text-slate-500 cursor-not-allowed'
-              : 'bg-accent-primary hover:bg-accent-primary/90 text-white'
-          }`}
-        >
-          <Link2 size={14} />
-          Create Link
-        </button>
+          {importMutation.data && (
+            <div className="text-xs text-green-400 break-all">
+              Imported. Backup saved at: {importMutation.data.backupPath}
+            </div>
+          )}
+          {importMutation.isError && (
+            <div className="text-xs text-red-400">Failed to import library</div>
+          )}
+        </div>
       </div>
 
-      {createMutation.isError && (
-        <div className="mt-2 text-xs text-red-400">Failed to create sync link</div>
+      <input
+        ref={exportDirInputRef}
+        type="file"
+        // @ts-expect-error webkitdirectory is not in TS lib but supported in Chromium
+        webkitdirectory=""
+        directory=""
+        multiple
+        className="hidden"
+        onChange={(e) => handleWebDirectoryPicked('export', e)}
+      />
+      <input
+        ref={importDirInputRef}
+        type="file"
+        // @ts-expect-error webkitdirectory is not in TS lib but supported in Chromium
+        webkitdirectory=""
+        directory=""
+        multiple
+        className="hidden"
+        onChange={(e) => handleWebDirectoryPicked('import', e)}
+      />
+
+      {pickerNotice && (
+        <div className="mt-3 text-xs text-amber-400">{pickerNotice}</div>
       )}
     </div>
   )
@@ -352,6 +365,21 @@ export function SourcesSettings() {
         analyzed: result.analyzed,
         failed: result.failed,
       })
+
+      if (result.warnings && result.warnings.totalWithWarnings > 0) {
+        const preview = result.warnings.messages.slice(0, 5)
+        const extra = Math.max(0, result.warnings.messages.length - preview.length)
+        const details = preview.map((m) => `• ${m}`).join('\n')
+        window.alert(
+          [
+            `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before re-analysis.`,
+            details,
+            extra > 0 ? `...and ${extra} more warning(s).` : '',
+          ]
+            .filter(Boolean)
+            .join('\n')
+        )
+      }
 
       // Invalidate queries to refresh the UI
       queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
@@ -495,11 +523,11 @@ export function SourcesSettings() {
           </div>
         </div>
 
-        {/* Tag-Collection Sync */}
+        {/* Library Transfer */}
         <div>
-          <h3 className="text-lg font-medium text-white mb-4">Sync</h3>
+          <h3 className="text-lg font-medium text-white mb-4">Library</h3>
           <div className="bg-surface-raised border border-surface-border rounded-lg p-6">
-            <TagCollectionSyncSection />
+            <LibraryTransferSection />
           </div>
         </div>
       </div>

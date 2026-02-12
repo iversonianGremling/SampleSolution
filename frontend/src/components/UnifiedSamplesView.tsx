@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
-import { useAllSlices, useTags, useCollections, useCreateCollection } from '../hooks/useTracks'
+import { useAllSlices, useTags, useFolders, useCreateFolder } from '../hooks/useTracks'
 import { useFilteredSlices } from '../hooks/useSliceFilters'
 import { SliceFilterPanel } from './SliceFilterPanel'
 import { SampleListPanel } from './SampleListPanel'
@@ -28,8 +28,8 @@ export function UnifiedSamplesView() {
   // Data fetching
   const { data: allSlices, isLoading: slicesLoading } = useAllSlices()
   const { data: allTags } = useTags()
-  const { data: collections } = useCollections()
-  const createCollection = useCreateCollection()
+  const { data: folders } = useFolders()
+  const createFolder = useCreateFolder()
 
   // Filter controls (shared between list and space)
   const {
@@ -39,7 +39,7 @@ export function UnifiedSamplesView() {
     setMinDuration,
     setMaxDuration,
     setShowFavoritesOnly,
-    setSelectedCollectionIds,
+    setSelectedFolderIds,
     setSelectedTrackId,
     filteredItems: filteredSlices,
     maxSliceDuration,
@@ -113,10 +113,10 @@ export function UnifiedSamplesView() {
                 setMinDuration(min)
                 setMaxDuration(max)
               }}
-              onCollectionChange={setSelectedCollectionIds}
-              onCreateCollection={(name) => createCollection.mutate({ name })}
+              onFolderChange={setSelectedFolderIds}
+              onCreateFolder={(name) => createFolder.mutate({ name })}
               allTags={allTags}
-              collections={collections}
+              folders={folders}
               maxDuration={maxSliceDuration}
               totalSampleCount={totalSampleCount}
               favoriteSampleCount={favoriteSampleCount}

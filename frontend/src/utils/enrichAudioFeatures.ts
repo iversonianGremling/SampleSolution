@@ -17,7 +17,7 @@ export function enrichAudioFeatures(
         ...feature,
         favorite: slice.favorite,
         tags: slice.tags,
-        collectionIds: slice.collectionIds,
+        folderIds: slice.folderIds,
         track: slice.track,
         startTime: feature.duration ? 0 : slice.startTime,
         endTime: feature.duration ?? slice.endTime,

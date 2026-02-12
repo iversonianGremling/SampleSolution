@@ -1,18 +1,18 @@
 import { useState, useRef, useEffect } from 'react'
 import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Scissors } from 'lucide-react'
-import type { SliceWithTrackExtended, Tag, Collection } from '../types'
+import type { SliceWithTrackExtended, Tag, Folder } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 
 interface SourcesDetailPaneProps {
   sample: SliceWithTrackExtended | null
   allTags: Tag[]
-  collections: Collection[]
+  folders: Folder[]
   onClose: () => void
   onToggleFavorite?: (id: number) => void
   onAddTag?: (sliceId: number, tagId: number) => void
   onRemoveTag?: (sliceId: number, tagId: number) => void
-  onAddToCollection?: (collectionId: number, sliceId: number) => void
-  onRemoveFromCollection?: (collectionId: number, sliceId: number) => void
+  onAddToFolder?: (folderId: number, sliceId: number) => void
+  onRemoveFromFolder?: (folderId: number, sliceId: number) => void
   onUpdateName?: (sliceId: number, name: string) => void
   onEdit?: () => void
 }
@@ -20,13 +20,13 @@ interface SourcesDetailPaneProps {
 export function SourcesDetailPane({
   sample,
   allTags,
-  collections,
+  folders,
   onClose,
   onToggleFavorite,
   onAddTag,
   onRemoveTag,
-  onAddToCollection,
-  onRemoveFromCollection,
+  onAddToFolder,
+  onRemoveFromFolder,
   onUpdateName,
   onEdit,
 }: SourcesDetailPaneProps) {
@@ -34,10 +34,10 @@ export function SourcesDetailPane({
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState('')
   const [isTagDropdownOpen, setIsTagDropdownOpen] = useState(false)
-  const [isCollectionDropdownOpen, setIsCollectionDropdownOpen] = useState(false)
+  const [isFolderDropdownOpen, setIsFolderDropdownOpen] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const tagDropdownRef = useRef<HTMLDivElement>(null)
-  const collectionDropdownRef = useRef<HTMLDivElement>(null)
+  const folderDropdownRef = useRef<HTMLDivElement>(null)
 
   // Reset state when sample changes
   useEffect(() => {
@@ -55,8 +55,8 @@ export function SourcesDetailPane({
       if (tagDropdownRef.current && !tagDropdownRef.current.contains(e.target as Node)) {
         setIsTagDropdownOpen(false)
       }
-      if (collectionDropdownRef.current && !collectionDropdownRef.current.contains(e.target as Node)) {
-        setIsCollectionDropdownOpen(false)
+      if (folderDropdownRef.current && !folderDropdownRef.current.contains(e.target as Node)) {
+        setIsFolderDropdownOpen(false)
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -112,8 +112,8 @@ export function SourcesDetailPane({
   }
 
   const availableTags = allTags.filter(t => !sample.tags.some(st => st.id === t.id))
-  const availableCollections = collections.filter(c => !sample.collectionIds.includes(c.id))
-  const sampleCollections = collections.filter(c => sample.collectionIds.includes(c.id))
+  const availableFolders = folders.filter(c => !sample.folderIds.includes(c.id))
+  const sampleFolders = folders.filter(c => sample.folderIds.includes(c.id))
 
   return (
     <div className="h-full flex flex-col bg-surface-raised border-l border-surface-border">
@@ -305,11 +305,11 @@ export function SourcesDetailPane({
           </div>
         </div>
 
-        {/* Collections */}
+        {/* Folders */}
         <div>
           <label className="text-xs font-medium text-slate-400 block mb-2">Folders</label>
           <div className="flex flex-wrap gap-1.5">
-            {sampleCollections.map(col => (
+            {sampleFolders.map(col => (
               <span
                 key={col.id}
                 className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium"
@@ -319,9 +319,9 @@ export function SourcesDetailPane({
                 }}
               >
                 {col.name}
-                {onRemoveFromCollection && (
+                {onRemoveFromFolder && (
                   <button
-                    onClick={() => onRemoveFromCollection(col.id, sample.id)}
+                    onClick={() => onRemoveFromFolder(col.id, sample.id)}
                     className="hover:opacity-70 transition-opacity"
                   >
                     <X size={10} />
@@ -330,25 +330,25 @@ export function SourcesDetailPane({
               </span>
             ))}
 
-            {/* Add to collection dropdown */}
-            {onAddToCollection && availableCollections.length > 0 && (
-              <div className="relative" ref={collectionDropdownRef}>
+            {/* Add to folder dropdown */}
+            {onAddToFolder && availableFolders.length > 0 && (
+              <div className="relative" ref={folderDropdownRef}>
                 <button
-                  onClick={() => setIsCollectionDropdownOpen(!isCollectionDropdownOpen)}
+                  onClick={() => setIsFolderDropdownOpen(!isFolderDropdownOpen)}
                   className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-surface-base text-slate-400 hover:text-slate-300 transition-colors"
                 >
                   <Plus size={10} />
                   <ChevronDown size={10} />
                 </button>
 
-                {isCollectionDropdownOpen && (
+                {isFolderDropdownOpen && (
                   <div className="absolute top-full mt-1 left-0 z-20 w-40 max-h-40 overflow-y-auto bg-surface-raised border border-surface-border rounded-lg shadow-xl">
-                    {availableCollections.map(col => (
+                    {availableFolders.map(col => (
                       <button
                         key={col.id}
                         onClick={() => {
-                          onAddToCollection(col.id, sample.id)
-                          setIsCollectionDropdownOpen(false)
+                          onAddToFolder(col.id, sample.id)
+                          setIsFolderDropdownOpen(false)
                         }}
                         className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-base flex items-center gap-2"
                       >

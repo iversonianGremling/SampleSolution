@@ -8,7 +8,7 @@ import {
   X,
   ChevronDown,
   Star,
-  Folder,
+  Folder as FolderIcon,
   FolderPlus,
   Trash2,
   Pencil,
@@ -19,9 +19,9 @@ import {
   useRemoveTagFromSlice,
   useGenerateAiTagsForSlice,
   useToggleFavorite,
-  useCollections,
-  useAddSliceToCollection,
-  useRemoveSliceFromCollection,
+  useFolders,
+  useAddSliceToFolder,
+  useRemoveSliceFromFolder,
   useCreateTag,
   useBatchGenerateAiTags,
   useDeleteSliceGlobal,
@@ -32,7 +32,7 @@ import {
 import { getSliceDownloadUrl } from '../api/client'
 import { TagSearchInput } from './TagSearchInput'
 import { CompactSliceRow } from './CompactSliceRow'
-import type { SliceWithTrack, Tag, Collection } from '../types'
+import type { SliceWithTrack, Tag, Folder } from '../types'
 
 interface SampleListPanelProps {
   slices: SliceWithTrack[]
@@ -56,7 +56,7 @@ export function SampleListPanel({
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   // Dropdown states
-  const [openCollectionDropdown, setOpenCollectionDropdown] = useState<number | null>(null)
+  const [openFolderDropdown, setOpenFolderDropdown] = useState<number | null>(null)
 
   // Batch selection state (works in both modes)
   const [selectedSliceIds, setSelectedSliceIds] = useState<Set<number>>(new Set())
@@ -159,12 +159,12 @@ export function SampleListPanel({
 
   // Data fetching
   const { data: allTags } = useTags()
-  const { data: collections } = useCollections()
+  const { data: folders } = useFolders()
   const addTagToSlice = useAddTagToSlice()
   const removeTagFromSlice = useRemoveTagFromSlice()
   const toggleFavorite = useToggleFavorite()
-  const addSliceToCollection = useAddSliceToCollection()
-  const removeSliceFromCollection = useRemoveSliceFromCollection()
+  const addSliceToFolder = useAddSliceToFolder()
+  const removeSliceFromFolder = useRemoveSliceFromFolder()
   const batchGenerateAiTags = useBatchGenerateAiTags()
   const batchDeleteSlices = useBatchDeleteSlices()
   const deleteSlice = useDeleteSliceGlobal()
@@ -270,7 +270,23 @@ export function SampleListPanel({
           <button
             onClick={() => {
               batchGenerateAiTags.mutate(Array.from(selectedSliceIds), {
-                onSuccess: () => setSelectedSliceIds(new Set()),
+                onSuccess: (result) => {
+                  if (result.warnings && result.warnings.totalWithWarnings > 0) {
+                    const preview = result.warnings.messages.slice(0, 3)
+                    const extra = Math.max(0, result.warnings.messages.length - preview.length)
+                    const details = preview.map((m) => `• ${m}`).join('\n')
+                    window.alert(
+                      [
+                        `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before analysis.`,
+                        details,
+                        extra > 0 ? `...and ${extra} more warning(s).` : '',
+                      ]
+                        .filter(Boolean)
+                        .join('\n')
+                    )
+                  }
+                  setSelectedSliceIds(new Set())
+                },
               })
             }}
             disabled={batchGenerateAiTags.isPending}
@@ -360,10 +376,10 @@ export function SampleListPanel({
                     onPlay={() => handlePlay(slice)}
                     formatTime={formatTime}
                     availableTags={getAvailableTags(slice)}
-                    collections={collections || []}
-                    isCollectionDropdownOpen={openCollectionDropdown === slice.id}
-                    onToggleCollectionDropdown={() =>
-                      setOpenCollectionDropdown(openCollectionDropdown === slice.id ? null : slice.id)
+                    folders={folders || []}
+                    isFolderDropdownOpen={openFolderDropdown === slice.id}
+                    onToggleFolderDropdown={() =>
+                      setOpenFolderDropdown(openFolderDropdown === slice.id ? null : slice.id)
                     }
                     onAddTag={(tagId) => handleAddTag(slice.id, tagId)}
                     onRemoveTag={(tagId) => handleRemoveTag(slice.id, tagId)}
@@ -373,12 +389,12 @@ export function SampleListPanel({
                     }}
                     isCreatingTag={createTag.isPending}
                     onToggleFavorite={() => toggleFavorite.mutate(slice.id)}
-                    onAddToCollection={(collectionId) => {
-                      addSliceToCollection.mutate({ collectionId, sliceId: slice.id })
-                      setOpenCollectionDropdown(null)
+                    onAddToFolder={(folderId) => {
+                      addSliceToFolder.mutate({ folderId, sliceId: slice.id })
+                      setOpenFolderDropdown(null)
                     }}
-                    onRemoveFromCollection={(collectionId) => {
-                      removeSliceFromCollection.mutate({ collectionId, sliceId: slice.id })
+                    onRemoveFromFolder={(folderId) => {
+                      removeSliceFromFolder.mutate({ folderId, sliceId: slice.id })
                     }}
                     onDelete={() => {
                       if (confirm(`Delete "${slice.name}"?`)) {
@@ -456,16 +472,16 @@ interface EditableSliceRowProps {
   onPlay: () => void
   formatTime: (s: number) => string
   availableTags: Tag[]
-  collections: Collection[]
-  isCollectionDropdownOpen: boolean
-  onToggleCollectionDropdown: () => void
+  folders: Folder[]
+  isFolderDropdownOpen: boolean
+  onToggleFolderDropdown: () => void
   onAddTag: (tagId: number) => void
   onRemoveTag: (tagId: number) => void
   onCreateTag: (name: string, color: string) => Promise<void>
   isCreatingTag: boolean
   onToggleFavorite: () => void
-  onAddToCollection: (collectionId: number) => void
-  onRemoveFromCollection: (collectionId: number) => void
+  onAddToFolder: (folderId: number) => void
+  onRemoveFromFolder: (folderId: number) => void
   onDelete: () => void
   isDeleting: boolean
   onUpdateSliceName: (name: string) => void
@@ -480,16 +496,16 @@ function EditableSliceRow({
   onPlay,
   formatTime,
   availableTags,
-  collections,
-  isCollectionDropdownOpen,
-  onToggleCollectionDropdown,
+  folders,
+  isFolderDropdownOpen,
+  onToggleFolderDropdown,
   onAddTag,
   onRemoveTag,
   onCreateTag,
   isCreatingTag,
   onToggleFavorite,
-  onAddToCollection,
-  onRemoveFromCollection,
+  onAddToFolder,
+  onRemoveFromFolder,
   onDelete,
   isDeleting,
   onUpdateSliceName,
@@ -534,8 +550,8 @@ function EditableSliceRow({
     setIsEditingTrack(false)
   }
 
-  const availableCollections = collections.filter((c) => !slice.collectionIds.includes(c.id))
-  const sliceCollections = collections.filter((c) => slice.collectionIds.includes(c.id))
+  const availableFolders = folders.filter((c) => !slice.folderIds.includes(c.id))
+  const sliceFolders = folders.filter((c) => slice.folderIds.includes(c.id))
 
   return (
     <div className={`px-3 py-2 hover:bg-gray-700/30 transition-colors ${isSelected ? 'bg-indigo-900/20' : ''}`}>
@@ -640,7 +656,22 @@ function EditableSliceRow({
         {/* Actions */}
         <div className="flex items-center gap-0.5">
           <button
-            onClick={() => generateAiTags.mutate(slice.id)}
+            onClick={() =>
+              generateAiTags.mutate(slice.id, {
+                onSuccess: (result) => {
+                  if (result.warning?.hadPotentialCustomState && result.warning.message) {
+                    window.alert(
+                      [
+                        'Warning: Potential custom state detected before analysis.',
+                        result.warning.message,
+                        `Removed tags: ${result.warning.removedTags.join(', ') || 'none'}`,
+                        `Added tags: ${result.warning.addedTags.join(', ') || 'none'}`,
+                      ].join('\n')
+                    )
+                  }
+                },
+              })
+            }
             disabled={generateAiTags.isPending}
             className="p-1.5 text-gray-400 hover:text-yellow-400 transition-colors"
             title="Generate AI tags"
@@ -674,19 +705,19 @@ function EditableSliceRow({
         </div>
       </div>
 
-      {/* Tags and Collections row */}
+      {/* Tags and Folders row */}
       <div className="mt-1.5 flex flex-wrap items-center gap-1">
-        {/* Collection badges */}
-        {sliceCollections.map((col) => (
+        {/* Folder badges */}
+        {sliceFolders.map((col) => (
           <span
             key={col.id}
             className="group inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs"
             style={{ backgroundColor: col.color + '40', color: col.color }}
           >
-            <Folder size={10} />
+            <FolderIcon size={10} />
             {col.name}
             <button
-              onClick={() => onRemoveFromCollection(col.id)}
+              onClick={() => onRemoveFromFolder(col.id)}
               className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/20 rounded"
             >
               <X size={10} />
@@ -711,25 +742,25 @@ function EditableSliceRow({
           </span>
         ))}
 
-        {/* Add to collection */}
+        {/* Add to folder */}
         <div className="relative">
           <button
-            onClick={onToggleCollectionDropdown}
+            onClick={onToggleFolderDropdown}
             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
           >
             <FolderPlus size={10} />
             <ChevronDown size={10} />
           </button>
 
-          {isCollectionDropdownOpen && (
+          {isFolderDropdownOpen && (
             <div className="absolute left-0 bottom-full mb-1 z-10 w-40 max-h-40 overflow-y-auto bg-gray-800 border border-gray-700 rounded-lg shadow-xl">
-              {availableCollections.length === 0 ? (
-                <div className="px-2 py-1.5 text-xs text-gray-500">No collections</div>
+              {availableFolders.length === 0 ? (
+                <div className="px-2 py-1.5 text-xs text-gray-500">No folders</div>
               ) : (
-                availableCollections.map((col) => (
+                availableFolders.map((col) => (
                   <button
                     key={col.id}
-                    onClick={() => onAddToCollection(col.id)}
+                    onClick={() => onAddToFolder(col.id)}
                     className="w-full px-2 py-1.5 text-left text-xs hover:bg-gray-700 transition-colors flex items-center gap-2"
                   >
                     <span

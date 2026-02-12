@@ -34,6 +34,8 @@ export const slices = sqliteTable('slices', {
   endTime: real('end_time').notNull(),
   filePath: text('file_path'),
   favorite: integer('favorite').notNull().default(0),
+  sampleModified: integer('sample_modified').notNull().default(0),
+  sampleModifiedAt: text('sample_modified_at'),
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -163,6 +165,7 @@ export const audioFeatures = sqliteTable('audio_features', {
   transientSpectralCentroid: real('transient_spectral_centroid'),
   transientSpectralFlatness: real('transient_spectral_flatness'),
   sampleTypeConfidence: real('sample_type_confidence'),
+  fundamentalFrequency: real('fundamental_frequency'),
   // Metadata
   analysisLevel: text('analysis_level', {
     enum: ['quick', 'standard', 'advanced'],
@@ -178,16 +181,27 @@ export const collections = sqliteTable('collections', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull(),
   color: text('color').notNull().default('#6366f1'),
-  parentId: integer('parent_id'),
+  sortOrder: integer('sort_order').notNull().default(0),
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 })
 
-export const collectionSlices = sqliteTable('collection_slices', {
-  collectionId: integer('collection_id')
+export const folders = sqliteTable('folders', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  color: text('color').notNull().default('#6366f1'),
+  parentId: integer('parent_id'),
+  collectionId: integer('collection_id').references(() => collections.id, { onDelete: 'cascade' }),
+  createdAt: text('created_at')
     .notNull()
-    .references(() => collections.id, { onDelete: 'cascade' }),
+    .$defaultFn(() => new Date().toISOString()),
+})
+
+export const folderSlices = sqliteTable('folder_slices', {
+  folderId: integer('folder_id')
+    .notNull()
+    .references(() => folders.id, { onDelete: 'cascade' }),
   sliceId: integer('slice_id')
     .notNull()
     .references(() => slices.id, { onDelete: 'cascade' }),
@@ -198,13 +212,29 @@ export const syncConfigs = sqliteTable('sync_configs', {
   tagId: integer('tag_id')
     .notNull()
     .references(() => tags.id, { onDelete: 'cascade' }),
-  collectionId: integer('collection_id')
+  folderId: integer('folder_id')
     .notNull()
-    .references(() => collections.id, { onDelete: 'cascade' }),
+    .references(() => folders.id, { onDelete: 'cascade' }),
   syncDirection: text('sync_direction', {
-    enum: ['tag-to-collection', 'collection-to-tag', 'bidirectional'],
+    enum: ['tag-to-folder', 'folder-to-tag', 'bidirectional'],
   }).notNull().default('bidirectional'),
   enabled: integer('enabled').notNull().default(1),
+  createdAt: text('created_at')
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+})
+
+export const reanalysisLogs = sqliteTable('reanalysis_logs', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  sliceId: integer('slice_id')
+    .notNull()
+    .references(() => slices.id, { onDelete: 'cascade' }),
+  beforeTags: text('before_tags').notNull().default('[]'),
+  afterTags: text('after_tags').notNull().default('[]'),
+  removedTags: text('removed_tags').notNull().default('[]'),
+  addedTags: text('added_tags').notNull().default('[]'),
+  hadPotentialCustomState: integer('had_potential_custom_state').notNull().default(0),
+  warningMessage: text('warning_message'),
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

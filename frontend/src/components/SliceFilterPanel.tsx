@@ -1,6 +1,6 @@
 import { Search, X, Heart, Plus, ChevronDown } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
-import type { SliceFilterState, Tag, Collection, FeatureWeights } from '../types'
+import type { SliceFilterState, Tag, Folder, FeatureWeights } from '../types'
 import type { ReductionMethod } from '../hooks/useDimensionReduction'
 import type { ClusterMethod } from '../hooks/useClustering'
 import { FeatureWeightsPanel } from './FeatureWeightsPanel'
@@ -12,10 +12,10 @@ interface SliceFilterPanelProps {
   onTrackFilterChange?: (trackId: number | null) => void
   onTagFilterChange?: (tagIds: number[]) => void
   onDurationChange?: (min: number, max: number) => void
-  onCollectionChange?: (collectionIds: number[]) => void
-  onCreateCollection?: (name: string) => void
+  onFolderChange?: (folderIds: number[]) => void
+  onCreateFolder?: (name: string) => void
   allTags?: Tag[]
-  collections?: Collection[]
+  folders?: Folder[]
   maxDuration?: number
   sliceTrackTitle?: string
   formatTime?: (seconds: number) => string
@@ -42,10 +42,10 @@ export function SliceFilterPanel({
   onTrackFilterChange,
   onTagFilterChange,
   onDurationChange,
-  onCollectionChange,
-  onCreateCollection,
+  onFolderChange,
+  onCreateFolder,
   allTags = [],
-  collections = [],
+  folders = [],
   maxDuration = 60,
   sliceTrackTitle,
   formatTime = (s) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`,
@@ -64,24 +64,24 @@ export function SliceFilterPanel({
   dbscanEpsilon,
   onDbscanEpsilonChange,
 }: SliceFilterPanelProps) {
-  const { searchQuery, showFavoritesOnly, selectedTrackId, selectedTags, minDuration, maxDuration: statMaxDuration, selectedCollectionIds } = filterState
+  const { searchQuery, showFavoritesOnly, selectedTrackId, selectedTags, minDuration, maxDuration: statMaxDuration, selectedFolderIds } = filterState
 
   // Tag search state
   const [tagSearchQuery, setTagSearchQuery] = useState('')
   const [isTagDropdownOpen, setIsTagDropdownOpen] = useState(false)
   const tagContainerRef = useRef<HTMLDivElement>(null)
 
-  // Collection dropdown state
-  const [isCollectionDropdownOpen, setIsCollectionDropdownOpen] = useState(false)
-  const [newCollectionName, setNewCollectionName] = useState('')
-  const [isCreatingCollection, setIsCreatingCollection] = useState(false)
-  const collectionContainerRef = useRef<HTMLDivElement>(null)
+  // Folder dropdown state
+  const [isFolderDropdownOpen, setIsFolderDropdownOpen] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false)
+  const folderContainerRef = useRef<HTMLDivElement>(null)
 
   // Default handlers for optional callbacks
   const handleTrackFilterChange = onTrackFilterChange ?? (() => {})
   const handleTagFilterChange = onTagFilterChange ?? (() => {})
   const handleDurationChange = onDurationChange ?? (() => {})
-  const handleCollectionChange = onCollectionChange ?? (() => {})
+  const handleFolderChange = onFolderChange ?? (() => {})
 
   // Filter available tags
   const availableTags = allTags.filter(tag => !selectedTags.includes(tag.id))
@@ -89,16 +89,16 @@ export function SliceFilterPanel({
     tag.name.toLowerCase().includes(tagSearchQuery.toLowerCase())
   )
 
-  // Filter available collections (not yet selected)
-  const availableCollections = collections.filter(col => !selectedCollectionIds.includes(col.id))
-  const selectedCollections = collections.filter(col => selectedCollectionIds.includes(col.id))
+  // Filter available folders (not yet selected)
+  const availableFolders = folders.filter(col => !selectedFolderIds.includes(col.id))
+  const selectedFolders = folders.filter(col => selectedFolderIds.includes(col.id))
 
-  const handleCreateCollection = () => {
-    if (newCollectionName.trim() && onCreateCollection) {
-      onCreateCollection(newCollectionName.trim())
-      setNewCollectionName('')
-      setIsCreatingCollection(false)
-      setIsCollectionDropdownOpen(false)
+  const handleCreateFolder = () => {
+    if (newFolderName.trim() && onCreateFolder) {
+      onCreateFolder(newFolderName.trim())
+      setNewFolderName('')
+      setIsCreatingFolder(false)
+      setIsFolderDropdownOpen(false)
     }
   }
 
@@ -109,10 +109,10 @@ export function SliceFilterPanel({
         setIsTagDropdownOpen(false)
         setTagSearchQuery('')
       }
-      if (collectionContainerRef.current && !collectionContainerRef.current.contains(e.target as Node)) {
-        setIsCollectionDropdownOpen(false)
-        setIsCreatingCollection(false)
-        setNewCollectionName('')
+      if (folderContainerRef.current && !folderContainerRef.current.contains(e.target as Node)) {
+        setIsFolderDropdownOpen(false)
+        setIsCreatingFolder(false)
+        setNewFolderName('')
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -127,11 +127,11 @@ export function SliceFilterPanel({
     }
   }
 
-  const toggleCollection = (collectionId: number) => {
-    if (selectedCollectionIds.includes(collectionId)) {
-      handleCollectionChange(selectedCollectionIds.filter(id => id !== collectionId))
+  const toggleFolder = (folderId: number) => {
+    if (selectedFolderIds.includes(folderId)) {
+      handleFolderChange(selectedFolderIds.filter(id => id !== folderId))
     } else {
-      handleCollectionChange([...selectedCollectionIds, collectionId])
+      handleFolderChange([...selectedFolderIds, folderId])
     }
   }
 
@@ -149,7 +149,7 @@ export function SliceFilterPanel({
         />
       </div>
 
-      {/* Collection & Favorites Filter - Multi-select */}
+      {/* Folder & Favorites Filter - Multi-select */}
       <div className="border-b border-surface-border/50 pb-2">
         <label className="text-xs font-semibold text-slate-300 block mb-1.5 tracking-wider uppercase">Category</label>
         <div className="flex flex-wrap gap-1.5 items-center">
@@ -157,10 +157,10 @@ export function SliceFilterPanel({
           <button
             onClick={() => {
               onFavoritesChange(false)
-              handleCollectionChange([])
+              handleFolderChange([])
             }}
             className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all duration-200 ${
-              !showFavoritesOnly && selectedCollectionIds.length === 0
+              !showFavoritesOnly && selectedFolderIds.length === 0
                 ? 'bg-slate-600 text-white shadow-sm'
                 : 'bg-slate-800/50 text-slate-400 hover:bg-slate-700/50 hover:text-slate-300'
             }`}
@@ -181,8 +181,8 @@ export function SliceFilterPanel({
             Favorites ({favoriteSampleCount})
           </button>
 
-          {/* Selected Collections as removable chips */}
-          {selectedCollections.map((col) => (
+          {/* Selected Folders as removable chips */}
+          {selectedFolders.map((col) => (
             <span
               key={col.id}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border shadow-sm"
@@ -194,7 +194,7 @@ export function SliceFilterPanel({
             >
               {col.name} ({col.sliceCount})
               <button
-                onClick={() => toggleCollection(col.id)}
+                onClick={() => toggleFolder(col.id)}
                 className="hover:opacity-70 transition-opacity"
               >
                 <X size={12} />
@@ -202,28 +202,28 @@ export function SliceFilterPanel({
             </span>
           ))}
 
-          {/* Add Collection Dropdown */}
-          <div className="relative" ref={collectionContainerRef}>
+          {/* Add Folder Dropdown */}
+          <div className="relative" ref={folderContainerRef}>
             <button
-              onClick={() => setIsCollectionDropdownOpen(!isCollectionDropdownOpen)}
+              onClick={() => setIsFolderDropdownOpen(!isFolderDropdownOpen)}
               className="px-2 py-1 rounded-md text-xs font-medium transition-all duration-200 bg-slate-800/50 text-slate-400 hover:bg-slate-700/50 hover:text-slate-300 flex items-center gap-1"
             >
               <Plus size={12} />
-              <ChevronDown size={10} className={`transition-transform ${isCollectionDropdownOpen ? 'rotate-180' : ''}`} />
+              <ChevronDown size={10} className={`transition-transform ${isFolderDropdownOpen ? 'rotate-180' : ''}`} />
             </button>
 
             {/* Dropdown */}
-            {isCollectionDropdownOpen && (
+            {isFolderDropdownOpen && (
               <div className="absolute top-full mt-1 left-0 z-20 min-w-48 bg-surface-raised border border-surface-border rounded-lg shadow-xl overflow-hidden">
-                {/* Available collections */}
-                {availableCollections.length > 0 && (
+                {/* Available folders */}
+                {availableFolders.length > 0 && (
                   <div className="max-h-40 overflow-y-auto">
-                    {availableCollections.map((col) => (
+                    {availableFolders.map((col) => (
                       <button
                         key={col.id}
                         onClick={() => {
-                          toggleCollection(col.id)
-                          setIsCollectionDropdownOpen(false)
+                          toggleFolder(col.id)
+                          setIsFolderDropdownOpen(false)
                         }}
                         className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-surface-base flex items-center gap-2"
                       >
@@ -238,39 +238,39 @@ export function SliceFilterPanel({
                   </div>
                 )}
 
-                {/* Create new collection */}
-                {onCreateCollection && (
+                {/* Create new folder */}
+                {onCreateFolder && (
                   <>
-                    {availableCollections.length > 0 && <div className="border-t border-surface-border" />}
-                    {isCreatingCollection ? (
+                    {availableFolders.length > 0 && <div className="border-t border-surface-border" />}
+                    {isCreatingFolder ? (
                       <div className="p-2">
                         <input
                           type="text"
-                          value={newCollectionName}
-                          onChange={(e) => setNewCollectionName(e.target.value)}
+                          value={newFolderName}
+                          onChange={(e) => setNewFolderName(e.target.value)}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleCreateCollection()
+                            if (e.key === 'Enter') handleCreateFolder()
                             if (e.key === 'Escape') {
-                              setIsCreatingCollection(false)
-                              setNewCollectionName('')
+                              setIsCreatingFolder(false)
+                              setNewFolderName('')
                             }
                           }}
-                          placeholder="Collection name..."
+                          placeholder="Folder name..."
                           className="w-full px-2 py-1.5 bg-surface-base border border-surface-border rounded text-sm text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
                           autoFocus
                         />
                         <div className="flex gap-1 mt-2">
                           <button
-                            onClick={handleCreateCollection}
-                            disabled={!newCollectionName.trim()}
+                            onClick={handleCreateFolder}
+                            disabled={!newFolderName.trim()}
                             className="flex-1 px-2 py-1 text-xs bg-accent-primary text-white rounded hover:bg-accent-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             Create
                           </button>
                           <button
                             onClick={() => {
-                              setIsCreatingCollection(false)
-                              setNewCollectionName('')
+                              setIsCreatingFolder(false)
+                              setNewFolderName('')
                             }}
                             className="px-2 py-1 text-xs bg-slate-700 text-slate-300 rounded hover:bg-slate-600"
                           >
@@ -280,7 +280,7 @@ export function SliceFilterPanel({
                       </div>
                     ) : (
                       <button
-                        onClick={() => setIsCreatingCollection(true)}
+                        onClick={() => setIsCreatingFolder(true)}
                         className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-surface-base flex items-center gap-2 text-slate-400"
                       >
                         <Plus size={14} />
@@ -291,7 +291,7 @@ export function SliceFilterPanel({
                 )}
 
                 {/* Empty state */}
-                {availableCollections.length === 0 && !onCreateCollection && (
+                {availableFolders.length === 0 && !onCreateFolder && (
                   <div className="px-3 py-2 text-sm text-slate-500">
                     All categories selected
                   </div>

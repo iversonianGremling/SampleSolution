@@ -37,6 +37,8 @@ function initDatabase() {
       start_time REAL NOT NULL,
       end_time REAL NOT NULL,
       file_path TEXT,
+      sample_modified INTEGER NOT NULL DEFAULT 0,
+      sample_modified_at TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -88,17 +90,17 @@ function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_audio_features_slice_id ON audio_features(slice_id);
 
-    CREATE TABLE IF NOT EXISTS collections (
+    CREATE TABLE IF NOT EXISTS folders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       color TEXT NOT NULL DEFAULT '#6366f1',
       created_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS collection_slices (
-      collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    CREATE TABLE IF NOT EXISTS folder_slices (
+      folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
       slice_id INTEGER NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
-      PRIMARY KEY (collection_id, slice_id)
+      PRIMARY KEY (folder_id, slice_id)
     );
   `)
 
@@ -116,6 +118,17 @@ function initDatabase() {
   if (!hasFavorite) {
     console.log('[DB] Migrating: Adding favorite column to slices table')
     sqlite.exec("ALTER TABLE slices ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+  }
+
+  // Migration: Add sample_modified tracking columns to slices if they don't exist
+  const slicesColumnsUpdated = sqlite.prepare("PRAGMA table_info(slices)").all() as { name: string }[]
+  const hasSampleModified = slicesColumnsUpdated.some(col => col.name === 'sample_modified')
+  if (!hasSampleModified) {
+    console.log('[DB] Migrating: Adding sample_modified columns to slices table')
+    sqlite.exec(`
+      ALTER TABLE slices ADD COLUMN sample_modified INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE slices ADD COLUMN sample_modified_at TEXT;
+    `)
   }
 
   // Migration: Add source column to tracks if it doesn't exist
@@ -150,13 +163,13 @@ function initDatabase() {
     `)
   }
 
-  // Migration: Add parent_id column to collections if it doesn't exist
-  const collectionsColumns = sqlite.prepare("PRAGMA table_info(collections)").all() as { name: string }[]
-  const hasParentId = collectionsColumns.some(col => col.name === 'parent_id')
+  // Migration: Add parent_id column to folders if it doesn't exist
+  const foldersColumns = sqlite.prepare("PRAGMA table_info(folders)").all() as { name: string }[]
+  const hasParentId = foldersColumns.some(col => col.name === 'parent_id')
   if (!hasParentId) {
-    console.log('[DB] Migrating: Adding parent_id column to collections table for nested folders')
+    console.log('[DB] Migrating: Adding parent_id column to folders table for nested folders')
     sqlite.exec(`
-      ALTER TABLE collections ADD COLUMN parent_id INTEGER REFERENCES collections(id) ON DELETE CASCADE;
+      ALTER TABLE folders ADD COLUMN parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE;
     `)
   }
 
@@ -307,16 +320,74 @@ function initDatabase() {
     `)
   }
 
+  // Migration: Add fundamental_frequency to audio_features
+  const audioFeaturesFundamental = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasFundamentalFrequency = audioFeaturesFundamental.some(col => col.name === 'fundamental_frequency')
+  if (!hasFundamentalFrequency) {
+    console.log('[DB] Migrating: Adding fundamental_frequency column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN fundamental_frequency REAL;`)
+  }
+
+  // Migration: Create collections table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS collections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#6366f1',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+  `)
+
+  // Migration: Add collection_id column to folders if it doesn't exist
+  const foldersColsPersp = sqlite.prepare("PRAGMA table_info(folders)").all() as { name: string }[]
+  const hasCollectionId = foldersColsPersp.some(col => col.name === 'collection_id')
+  if (!hasCollectionId) {
+    console.log('[DB] Migrating: Adding collection_id column to folders table')
+    sqlite.exec(`ALTER TABLE folders ADD COLUMN collection_id INTEGER REFERENCES collections(id) ON DELETE CASCADE;`)
+  }
+
+  // Migration: Create default collection and assign ungrouped folders
+  const collectionCount = (sqlite.prepare("SELECT COUNT(*) as count FROM collections").get() as { count: number }).count
+  if (collectionCount === 0) {
+    const ungroupedCount = (sqlite.prepare("SELECT COUNT(*) as count FROM folders WHERE collection_id IS NULL").get() as { count: number }).count
+    if (ungroupedCount > 0 || collectionCount === 0) {
+      console.log('[DB] Migrating: Creating default collection and assigning ungrouped folders')
+      sqlite.exec(`INSERT INTO collections (name, color, sort_order, created_at) VALUES ('My Folders', '#6366f1', 0, '${new Date().toISOString()}')`)
+      const defaultCollection = sqlite.prepare("SELECT id FROM collections WHERE name = 'My Folders' LIMIT 1").get() as { id: number }
+      if (defaultCollection) {
+        sqlite.exec(`UPDATE folders SET collection_id = ${defaultCollection.id} WHERE collection_id IS NULL`)
+      }
+    }
+  }
+
   // Migration: Create sync_configs table
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS sync_configs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-      collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
       sync_direction TEXT NOT NULL DEFAULT 'bidirectional',
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL
     );
+  `)
+
+  // Migration: Create reanalysis logs table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS reanalysis_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slice_id INTEGER NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+      before_tags TEXT NOT NULL DEFAULT '[]',
+      after_tags TEXT NOT NULL DEFAULT '[]',
+      removed_tags TEXT NOT NULL DEFAULT '[]',
+      added_tags TEXT NOT NULL DEFAULT '[]',
+      had_potential_custom_state INTEGER NOT NULL DEFAULT 0,
+      warning_message TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_reanalysis_logs_slice_id ON reanalysis_logs(slice_id);
+    CREATE INDEX IF NOT EXISTS idx_reanalysis_logs_created_at ON reanalysis_logs(created_at);
   `)
 
   return drizzleDb

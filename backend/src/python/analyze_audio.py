@@ -10,6 +10,7 @@ import time
 import warnings
 import numpy as np
 import os
+import re
 
 warnings.filterwarnings('ignore')
 
@@ -27,6 +28,89 @@ try:
 except ImportError as e:
     print(json.dumps({"error": f"Missing dependency: {e}. Install with: pip install librosa soundfile"}))
     sys.exit(1)
+
+
+def safe_onset_detect(y=None, sr=22050, onset_envelope=None, hop_length=512,
+                      units='frames', backtrack=False, **kwargs):
+    """
+    Drop-in replacement for librosa.onset.onset_detect that avoids the
+    numba-compiled peak_pick (which segfaults with numba 0.63 + numpy 2.x).
+
+    Uses librosa.onset.onset_strength for the envelope, then a pure-numpy
+    reimplementation of the same peak_pick algorithm (Böck et al., 2012)
+    with the same time-based defaults from librosa's hyper-parameter optimization.
+    """
+    # Get onset strength envelope
+    if onset_envelope is None:
+        onset_envelope = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+
+    # Normalize envelope to [0, 1] (same as librosa with normalize=True)
+    oenv = onset_envelope.astype(np.float64)
+    oenv_min = np.min(oenv)
+    oenv_max = np.max(oenv)
+    if oenv_max > oenv_min:
+        oenv = (oenv - oenv_min) / (oenv_max - oenv_min)
+    else:
+        return np.array([], dtype=int)
+
+    # Compute defaults exactly as librosa does (time-based, from sr/hop_length)
+    pre_max = int(kwargs.get('pre_max', 0.03 * sr // hop_length))       # 30ms
+    post_max = int(kwargs.get('post_max', 0.00 * sr // hop_length + 1)) # 0ms + 1
+    pre_avg = int(kwargs.get('pre_avg', 0.10 * sr // hop_length))       # 100ms
+    post_avg = int(kwargs.get('post_avg', 0.10 * sr // hop_length + 1)) # 100ms + 1
+    wait = int(kwargs.get('wait', 0.03 * sr // hop_length))             # 30ms
+    delta = float(kwargs.get('delta', 0.07))
+
+    # Pure-numpy peak picking — same 3-condition algorithm as librosa.util.peak_pick:
+    #   1. x[n] == max(x[n - pre_max : n + post_max])
+    #   2. x[n] >= mean(x[n - pre_avg : n + post_avg]) + delta
+    #   3. n - previous_n > wait
+    n = len(oenv)
+    peaks = []
+    last_peak = -wait - 1
+
+    for i in range(pre_max, n - post_max):
+        # Condition 1: local maximum
+        win_start = max(0, i - pre_max)
+        win_end = min(n, i + post_max + 1)
+        if oenv[i] != np.max(oenv[win_start:win_end]):
+            continue
+
+        # Condition 2: above local mean + delta
+        avg_start = max(0, i - pre_avg)
+        avg_end = min(n, i + post_avg + 1)
+        if oenv[i] < np.mean(oenv[avg_start:avg_end]) + delta:
+            continue
+
+        # Condition 3: minimum wait between peaks
+        if i - last_peak <= wait:
+            continue
+
+        peaks.append(i)
+        last_peak = i
+
+    onset_frames = np.array(peaks, dtype=int)
+
+    # Backtrack to nearest preceding energy minimum
+    if backtrack and len(onset_frames) > 0 and y is not None:
+        energy = librosa.feature.rms(y=y, hop_length=hop_length)[0]
+        backtracked = []
+        for frame in onset_frames:
+            search_start = max(0, frame - pre_max * 2)
+            segment = energy[search_start:frame + 1]
+            if len(segment) > 0:
+                backtracked.append(search_start + int(np.argmin(segment)))
+            else:
+                backtracked.append(frame)
+        onset_frames = np.array(backtracked, dtype=int)
+
+    # Convert units
+    if units == 'time':
+        return librosa.frames_to_time(onset_frames, sr=sr, hop_length=hop_length)
+    elif units == 'samples':
+        return librosa.frames_to_samples(onset_frames, hop_length=hop_length)
+    return onset_frames
+
 
 try:
     import essentia
@@ -95,12 +179,7 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
         duration = librosa.get_duration(y=y, sr=sr)
         debug_log(f"Audio preprocessed: trimmed duration={duration:.2f}s, trim_idx={trim_idx} [{(time.time()-step_start)*1000:.0f}ms]")
 
-        # Calculate basic properties
-        step_start = time.time()
-        is_one_shot, is_loop, sample_type_confidence = detect_sample_type(y, sr, duration, filename)
-        debug_log(f"Sample type detected: one_shot={is_one_shot}, loop={is_loop}, confidence={sample_type_confidence:.3f} [{(time.time()-step_start)*1000:.0f}ms]")
-
-        # Extract features (all levels)
+        # Extract features FIRST (needed for instrument and sample type detection)
         step_start = time.time()
         spectral_features = extract_spectral_features(y, sr, level=analysis_level)
         debug_log(f"Spectral features extracted [{(time.time()-step_start)*1000:.0f}ms]")
@@ -109,14 +188,39 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
         energy_features = extract_energy_features(y, sr)
         debug_log(f"Energy features extracted [{(time.time()-step_start)*1000:.0f}ms]")
 
+        # Detect instruments (needed for sample type classification)
+        step_start = time.time()
+        instrument_predictions = extract_instrument_predictions(
+            y, sr, spectral_features, energy_features, duration
+        )
+        debug_log(f"Instrument predictions: {len(instrument_predictions)} instruments [{(time.time()-step_start)*1000:.0f}ms]")
+
+        # NOW detect sample type with instrument context
+        step_start = time.time()
+        is_one_shot, is_loop, sample_type_confidence = detect_sample_type(
+            y, sr, duration, filename, instrument_predictions
+        )
+        debug_log(f"Sample type detected: one_shot={is_one_shot}, loop={is_loop}, confidence={sample_type_confidence:.3f} [{(time.time()-step_start)*1000:.0f}ms]")
+
         # Extract additional features (all levels - cheap to compute)
         step_start = time.time()
         additional_features = extract_additional_features(y, sr)
         debug_log(f"Additional features extracted [{(time.time()-step_start)*1000:.0f}ms]")
 
-        # Extract key features (standard and advanced only)
+        # Extract fundamental frequency for one-shots (excluding chords)
+        fundamental_freq = None
+        if is_one_shot:
+            step_start = time.time()
+            fundamental_freq = extract_fundamental_frequency(y, sr, filename, spectral_features)
+            if fundamental_freq:
+                debug_log(f"Fundamental frequency: {fundamental_freq:.1f} Hz [{(time.time()-step_start)*1000:.0f}ms]")
+            else:
+                debug_log(f"Fundamental frequency: None (chord or no pitch detected) [{(time.time()-step_start)*1000:.0f}ms]")
+
+        # Extract key features (standard and advanced only, loops only)
+        # Key detection is meaningless for one-shot samples (use fundamental frequency instead)
         key_features = {'key_estimate': None, 'key_strength': None}
-        if analysis_level in ['standard', 'advanced']:
+        if analysis_level in ['standard', 'advanced'] and not is_one_shot:
             step_start = time.time()
             key_features = extract_key_features(y, sr)
             debug_log(f"Key features extracted: {key_features['key_estimate']} [{(time.time()-step_start)*1000:.0f}ms]")
@@ -127,13 +231,6 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
             step_start = time.time()
             tempo_features = extract_tempo_features(y, sr)
             debug_log(f"Tempo extracted: {tempo_features.get('bpm')} BPM [{(time.time()-step_start)*1000:.0f}ms]")
-
-        # Detect instruments (all levels)
-        step_start = time.time()
-        instrument_predictions = extract_instrument_predictions(
-            y, sr, spectral_features, energy_features, duration
-        )
-        debug_log(f"Instrument predictions: {len(instrument_predictions)} instruments [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Build features dict
         features = {
@@ -168,6 +265,8 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
             'spectral_flatness': additional_features.get('spectral_flatness'),
             'temporal_centroid': additional_features.get('temporal_centroid'),
             'crest_factor': additional_features.get('crest_factor'),
+            # Fundamental frequency (one-shots only)
+            'fundamental_frequency': fundamental_freq,
         }
 
         # Advanced level: Add Phase 1 features (timbral, perceptual, spectral)
@@ -281,7 +380,7 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
         raise Exception(f"Audio analysis failed: {str(e)}")
 
 
-def detect_sample_type(y, sr, duration, filename=None):
+def detect_sample_type(y, sr, duration, filename=None, instrument_predictions=None):
     """
     Detect if audio is a one-shot or loop using multi-evidence voting.
 
@@ -289,6 +388,13 @@ def detect_sample_type(y, sr, duration, filename=None):
     strong, converging evidence. False negatives (loop classified as one-shot)
     are acceptable; false positives (one-shot classified as loop) are not.
     One-shot and loop are mutually exclusive.
+
+    Args:
+        y: Audio time series
+        sr: Sample rate
+        duration: Duration in seconds
+        filename: Original filename (optional)
+        instrument_predictions: Pre-calculated instrument predictions from heuristics (optional)
 
     Returns (is_one_shot, is_loop, confidence).
     """
@@ -300,22 +406,24 @@ def detect_sample_type(y, sr, duration, filename=None):
     if duration < 2.0:
         return (True, False, 1.0)
 
-    # --- Filename keywords (evaluated early, strong signal) ---
-    filename_is_percussion = False
+    # --- Percussion/one-shot keywords for both filename and instrument detection ---
+    perc_keywords = ['kick', 'snare', 'hat', 'hihat', 'hi-hat', 'hh',
+                     'crash', 'ride', 'tom', 'clap', 'rim', 'shaker',
+                     'tambourine', 'cowbell', 'perc', 'conga', 'bongo',
+                     'cymbal', 'openhat', 'closedhat', 'oh', 'ch']
+    os_keywords = ['shot', 'hit', 'one', 'single', 'oneshot', 'one-shot',
+                   'one_shot', 'stab', 'impact', 'fx', 'riser', 'sweep',
+                   'boom', 'whoosh', 'transition']
+    loop_keywords = ['loop', 'beat', 'groove', 'pattern', 'break', 'fill']
+
+    is_percussion_sample = False
+
+    # --- Check filename for keywords ---
     if filename:
         fname_lower = filename.lower()
-        # Percussion keywords -> always one-shot regardless of other evidence
-        perc_keywords = ['kick', 'snare', 'hat', 'hihat', 'hi-hat', 'hh',
-                         'crash', 'ride', 'tom', 'clap', 'rim', 'shaker',
-                         'tambourine', 'cowbell', 'perc', 'conga', 'bongo',
-                         'cymbal', 'openhat', 'closedhat', 'oh', 'ch']
-        os_keywords = ['shot', 'hit', 'one', 'single', 'oneshot', 'one-shot',
-                       'one_shot', 'stab', 'impact', 'fx', 'riser', 'sweep',
-                       'boom', 'whoosh', 'transition']
-        loop_keywords = ['loop', 'beat', 'groove', 'pattern', 'break', 'fill']
 
         if any(kw in fname_lower for kw in perc_keywords):
-            filename_is_percussion = True
+            is_percussion_sample = True
             os_score += 5.0  # Very strong one-shot signal
 
         if any(kw in fname_lower for kw in os_keywords):
@@ -324,14 +432,82 @@ def detect_sample_type(y, sr, duration, filename=None):
         if any(kw in fname_lower for kw in loop_keywords):
             loop_score += 4.0
 
+    # --- NEW: Check instrument predictions (from heuristic analysis) ---
+    # This catches percussion samples where the filename doesn't contain keywords
+    # Example: "sample_001.wav" that's actually a clap would get detected here
+    if instrument_predictions and not is_percussion_sample:
+        for pred in instrument_predictions:
+            instrument_name = pred.get('name', '').lower()
+            confidence = pred.get('confidence', 0.0)
+
+            # High-confidence percussion detection -> strong one-shot signal
+            if confidence >= 0.60:
+                for perc_kw in perc_keywords:
+                    if perc_kw in instrument_name:
+                        is_percussion_sample = True
+                        os_score += 4.0  # Strong one-shot signal (slightly less than filename)
+                        break
+                if is_percussion_sample:
+                    break  # Only apply bonus once
+
     # --- Evidence 1: RMS envelope shape (weight 2.0) ---
     rms = librosa.feature.rms(y=y)[0]
+
+    # Trim RMS to the "active" region using two complementary methods:
+    #   1. RMS threshold — frames below -30 dB relative to peak are noise/silence
+    #   2. Onset detection — first/last detected event marks content boundaries
+    # Onset detection can false-positive on vibrato/noise (known librosa issue),
+    # RMS alone can't distinguish low-energy content from background noise.
+    # We use the UNION of both (widest reasonable bounds) so neither method
+    # alone can over-trim real content.
+    rms_trimmed = rms
     if len(rms) > 10:
-        peak_idx = np.argmax(rms)
-        peak_pos_ratio = peak_idx / len(rms)
-        tail_start = min(peak_idx + 5, len(rms) - 1)
-        tail_mean = np.mean(rms[tail_start:]) + 1e-8
-        peak_tail_ratio = rms[peak_idx] / tail_mean
+        # Method 1: RMS energy threshold
+        rms_peak = np.max(rms)
+        noise_threshold = rms_peak * 0.03  # ~-30 dB below peak
+        active_mask = rms > noise_threshold
+        active_indices = np.where(active_mask)[0]
+        if len(active_indices) >= 2:
+            rms_start = active_indices[0]
+            rms_end = active_indices[-1]
+        else:
+            rms_start = 0
+            rms_end = len(rms) - 1
+
+        # Method 2: Onset detection (with stricter delta to reduce false positives)
+        try:
+            onset_frames = safe_onset_detect(
+                y=y, sr=sr, units='frames', hop_length=512, delta=0.15
+            )
+        except Exception:
+            onset_frames = np.array([])
+
+        if len(onset_frames) >= 1:
+            onset_start = onset_frames[0]
+            onset_end = onset_frames[-1]
+        else:
+            onset_start = rms_start
+            onset_end = rms_end
+
+        # Union: take the EARLIER start and LATER end so we don't accidentally
+        # clip real content that only one method detected
+        trim_start = min(rms_start, onset_start)
+        trim_end = max(rms_end, onset_end) + 1
+        if trim_end - trim_start >= 10:
+            rms_trimmed = rms[trim_start:trim_end]
+
+        # If trimming removed a significant portion, the sample has silence
+        # at the edges — this is strong evidence against a seamless loop
+        trim_ratio = len(rms_trimmed) / len(rms)
+        if trim_ratio < 0.75:
+            os_score += 1.5  # >25% of frames are noise floor -> not a loop
+
+    if len(rms_trimmed) > 10:
+        peak_idx = np.argmax(rms_trimmed)
+        peak_pos_ratio = peak_idx / len(rms_trimmed)
+        tail_start = min(peak_idx + 5, len(rms_trimmed) - 1)
+        tail_mean = np.mean(rms_trimmed[tail_start:]) + 1e-8
+        peak_tail_ratio = rms_trimmed[peak_idx] / tail_mean
 
         # Clear decay from early peak -> one-shot
         if peak_pos_ratio < 0.3 and peak_tail_ratio > 3.0:
@@ -342,17 +518,19 @@ def detect_sample_type(y, sr, duration, filename=None):
 
         # Very flat RMS is loop evidence, but only a weak signal
         # (many sustained sounds like pads/strings have flat RMS and aren't loops)
-        rms_cv = np.std(rms) / (np.mean(rms) + 1e-8)  # coefficient of variation
+        rms_cv = np.std(rms_trimmed) / (np.mean(rms_trimmed) + 1e-8)  # coefficient of variation
         if peak_tail_ratio < 1.3 and rms_cv < 0.15:
             loop_score += 1.0  # Very flat, low variance — mild loop signal
 
-    # --- Evidence 2: Start-end spectral similarity (weight 1.5) ---
-    # A seamless loop should have very similar spectral content at start and end
+    # --- Evidence 2: Start-end similarity on active content (weight 1.5) ---
+    # A seamless loop should have very similar energy at start and end.
+    # Uses the trimmed RMS so that matching silence/noise at edges doesn't
+    # produce a false high correlation.
     try:
-        n_frames = len(rms)
+        n_frames = len(rms_trimmed)
         window_frames = max(2, int(n_frames * 0.08))
-        start_segment = rms[:window_frames]
-        end_segment = rms[-window_frames:]
+        start_segment = rms_trimmed[:window_frames]
+        end_segment = rms_trimmed[-window_frames:]
         if len(start_segment) == len(end_segment) and len(start_segment) > 2:
             corr = np.corrcoef(start_segment, end_segment)[0, 1]
             if not np.isnan(corr):
@@ -387,7 +565,7 @@ def detect_sample_type(y, sr, duration, filename=None):
     # --- Evidence 4: Multiple onsets (required for loops) ---
     # A loop must contain multiple distinct rhythmic events
     try:
-        onsets = librosa.onset.onset_detect(y=y, sr=sr, units='frames', hop_length=512)
+        onsets = safe_onset_detect(y=y, sr=sr, units='frames', hop_length=512)
         n_onsets = len(onsets)
         if n_onsets <= 1:
             os_score += 2.0  # Single onset = definitively one-shot
@@ -404,16 +582,39 @@ def detect_sample_type(y, sr, duration, filename=None):
 
     # --- Final decision ---
     # Loop requires MINIMUM threshold of evidence to overcome one-shot default.
-    # If percussion keyword was found in filename, loop classification is effectively
-    # impossible (would need loop_score > os_score + 5.0, which can't happen).
     min_loop_threshold = 3.0  # Loop needs at least this much evidence to be considered
 
-    if loop_score >= min_loop_threshold and loop_score > os_score:
-        is_loop = True
-        is_one_shot = False
+    # Special handling for percussion samples
+    # If percussion detected BUT filename also contains "loop" or BPM, allow loop classification
+    # Examples: "clap_loop.wav", "ride_128bpm.wav" should still be able to become loops
+    percussion_override_applies = False
+    if is_percussion_sample and filename:
+        fname_lower = filename.lower()
+        # Check if filename suggests it's intentionally a loop
+        has_loop_hint = any(kw in fname_lower for kw in loop_keywords)
+        has_bpm_hint = bool(re.search(r'\d+\s*bpm', fname_lower))
+
+        if not (has_loop_hint or has_bpm_hint):
+            # Percussion with NO loop hints -> require overwhelming evidence for loop
+            percussion_override_applies = True
+
+    if percussion_override_applies:
+        # For percussion one-shots, require overwhelming evidence (basically impossible)
+        # This prevents "clap.wav" or "ride_sample.wav" from being labeled as loops
+        if loop_score > 8.0 and loop_score > os_score:
+            is_loop = True
+            is_one_shot = False
+        else:
+            is_loop = False
+            is_one_shot = True
     else:
-        is_loop = False
-        is_one_shot = True  # Default: one-shot
+        # Normal logic for non-percussion or percussion with loop hints
+        if loop_score >= min_loop_threshold and loop_score > os_score:
+            is_loop = True
+            is_one_shot = False
+        else:
+            is_loop = False
+            is_one_shot = True  # Default: one-shot
 
     confidence = abs(os_score - loop_score) / (os_score + loop_score + 1e-8)
     return (is_one_shot, is_loop, confidence)
@@ -422,7 +623,7 @@ def detect_sample_type(y, sr, duration, filename=None):
 def count_onsets(y, sr):
     """Count number of onsets in audio"""
     try:
-        onsets = librosa.onset.onset_detect(y=y, sr=sr, units='frames', hop_length=512)
+        onsets = safe_onset_detect(y=y, sr=sr, units='frames', hop_length=512)
         return len(onsets)
     except:
         return 0
@@ -861,7 +1062,7 @@ def extract_rhythm_features(y, sr, duration, tempo_features):
 
     try:
         # Detect onsets
-        onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units='frames', hop_length=512)
+        onset_frames = safe_onset_detect(y=y, sr=sr, units='frames', hop_length=512)
         onset_times = librosa.frames_to_time(onset_frames, sr=sr, hop_length=512)
 
         # Onset Rate: Onsets per second
@@ -1079,7 +1280,18 @@ def load_yamnet_model():
         with open(class_map_path) as f:
             reader = csv.reader(f)
             next(reader)  # Skip header row
-            _yamnet_class_names = [row[2] if len(row) >= 3 else row[0] for row in reader]
+            _yamnet_class_names = []
+            for row in reader:
+                if len(row) >= 3:
+                    name = row[2].strip()
+                else:
+                    # Fallback: try splitting by comma manually
+                    parts = row[0].split(',')
+                    name = parts[2].strip() if len(parts) >= 3 else parts[-1].strip()
+                # Validate: skip entries that look like raw ontology IDs
+                if '/m/' in name or name.isdigit():
+                    name = f"unknown_class_{len(_yamnet_class_names)}"
+                _yamnet_class_names.append(name)
 
         print(f"YAMNet model loaded successfully ({len(_yamnet_class_names)} classes)", file=sys.stderr)
         debug_log(f"YAMNet total load time: {(time.time()-load_start)*1000:.0f}ms")
@@ -1135,26 +1347,50 @@ def extract_instrument_ml(audio_path, y, sr):
         top_indices = np.argsort(mean_scores)[::-1][:20]  # Top 20
 
         # Filter for instrument-related classes
-        # YAMNet class categories we care about
+        # Blocklist: generic/useless YAMNet classes that don't help identify instruments
+        yamnet_blocklist = {
+            'music', 'singing', 'song', 'speech', 'tender music', 'sad music',
+            'happy music', 'music of asia', 'music of africa', 'music of latin america',
+            'pop music', 'rock music', 'hip hop music', 'electronic music',
+            'christian music', 'wedding music', 'new-age music', 'independent music',
+            'theme music', 'background music', 'video game music', 'christmas music',
+            'dance music', 'soul music', 'gospel music', 'disco', 'funk',
+            'musical instrument', 'plucked string instrument', 'bowed string instrument',
+            'wind instrument, woodwind instrument', 'sound effect', 'noise',
+            'inside, small room', 'outside, urban or manmade', 'outside, rural or natural',
+            'silence', 'white noise', 'pink noise', 'static',
+        }
+
+        # YAMNet class categories we care about (actual instruments/sounds)
         instrument_keywords = [
-            'music', 'guitar', 'drum', 'bass', 'piano', 'keyboard', 'synth',
+            'guitar', 'drum', 'bass', 'piano', 'keyboard', 'synth',
             'violin', 'brass', 'trumpet', 'saxophone', 'flute', 'organ',
-            'vocal', 'singing', 'speech', 'voice', 'percussion', 'cymbal',
+            'percussion', 'cymbal',
             'snare', 'kick', 'hi-hat', 'tom', 'clap', 'cowbell', 'shaker',
             'tambourine', 'bell', 'chime', 'pluck', 'strum', 'string',
             'marimba', 'xylophone', 'harmonica', 'harp', 'ukulele', 'banjo',
             'cello', 'viola', 'trombone', 'tuba', 'clarinet', 'oboe',
             'bass drum', 'gong', 'tabla', 'bongo', 'conga', 'woodblock',
-            'glockenspiel', 'vibraphone', 'steelpan', 'accordion'
+            'glockenspiel', 'vibraphone', 'steelpan', 'accordion',
+            'synthesizer', 'electric piano', 'drum kit', 'drum machine',
         ]
 
         instrument_predictions = []
         for idx in top_indices:
             class_name = class_names[idx]
             confidence = float(mean_scores[idx])
+            class_lower = class_name.lower()
+
+            # Skip blocklisted generic classes
+            if class_lower in yamnet_blocklist:
+                continue
+
+            # Skip entries with AudioSet ontology IDs leaking through
+            if '/m/' in class_name or class_name.replace(' ', '').replace(',', '').isdigit():
+                continue
 
             # Check if this class is instrument-related
-            if any(keyword in class_name.lower() for keyword in instrument_keywords):
+            if any(keyword in class_lower for keyword in instrument_keywords):
                 instrument_predictions.append({
                     'class': class_name,
                     'confidence': confidence
@@ -1521,7 +1757,15 @@ def extract_loudness_ebu(y, sr):
 
 def detect_sound_events(y, sr, duration):
     """
-    Detect discrete sound events using onset detection (Phase 5)
+    Detect discrete sound events using superflux onset detection (Phase 5).
+
+    Uses the superflux method (Böck & Widmer, 2013) which applies maximum
+    filtering to the onset strength envelope, suppressing false positives
+    from vibrato and spectral modulation — a known weakness of standard
+    spectral flux onset detection. Additionally validates detected onsets
+    against the RMS energy envelope to discard events that fall in
+    noise-floor regions.
+
     Args:
         y: Audio time series
         sr: Sample rate
@@ -1533,49 +1777,64 @@ def detect_sound_events(y, sr, duration):
         'event_count': None,
         'event_density': None,
     }
+    hop_length = 512
 
     try:
-        # Use onset detection with strict threshold to identify discrete events
-        # Higher threshold means only significant onsets are counted as "events"
-        onset_frames = librosa.onset.onset_detect(
-            y=y,
+        # --- Superflux onset detection ---
+        # Compute mel spectrogram for superflux (higher resolution than default)
+        S = librosa.feature.melspectrogram(
+            y=y, sr=sr, hop_length=hop_length,
+            n_fft=1024, n_mels=138, fmin=27.5, fmax=min(16000, sr // 2)
+        )
+        # Superflux onset strength: lag and max_size suppress vibrato artifacts
+        odf_sf = librosa.onset.onset_strength(
+            S=librosa.power_to_db(S, ref=np.max),
+            sr=sr, hop_length=hop_length,
+            lag=2,        # Compare across 2-frame lag (superflux)
+            max_size=3    # Maximum filter kernel size (superflux)
+        )
+        # Detect onsets from the superflux envelope
+        onset_frames = safe_onset_detect(
+            onset_envelope=odf_sf,
             sr=sr,
             units='frames',
-            hop_length=512,
+            hop_length=hop_length,
             backtrack=True,
-            # Use stronger threshold for event detection (not just any onset)
             delta=0.2,  # Stricter peak picking
         )
 
-        # Count events
-        event_count = len(onset_frames)
-        features['event_count'] = int(event_count)
+        # --- RMS energy validation ---
+        # Discard onsets that land in noise-floor regions (below -24 dB of peak)
+        rms = librosa.feature.rms(y=y, hop_length=hop_length)[0]
+        rms_peak = np.max(rms) if len(rms) > 0 else 0.0
+        noise_floor = rms_peak * 0.06  # ~-24 dB
 
-        # Event density (events per second)
-        if duration > 0:
-            features['event_density'] = float(event_count / duration)
-        else:
-            features['event_density'] = 0.0
+        if len(onset_frames) > 0 and len(rms) > 0:
+            valid_onsets = []
+            for frame in onset_frames:
+                rms_idx = min(frame, len(rms) - 1)
+                # Check a small neighborhood (±2 frames) for local energy
+                window_start = max(0, rms_idx - 2)
+                window_end = min(len(rms), rms_idx + 3)
+                local_rms = np.max(rms[window_start:window_end])
+                if local_rms > noise_floor:
+                    valid_onsets.append(frame)
+            onset_frames = np.array(valid_onsets)
 
-        # Additional filtering: group onsets that are very close together
-        # (< 100ms apart) into single events
+        # --- Group nearby onsets (<100ms) into single events ---
         if len(onset_frames) > 1:
-            onset_times = librosa.frames_to_time(onset_frames, sr=sr, hop_length=512)
-
-            # Group nearby onsets
+            onset_times = librosa.frames_to_time(onset_frames, sr=sr, hop_length=hop_length)
             min_event_gap = 0.1  # 100ms minimum between events
-            unique_events = []
-            last_time = -1.0
-
-            for onset_time in onset_times:
-                if onset_time - last_time >= min_event_gap:
+            unique_events = [onset_times[0]]
+            for onset_time in onset_times[1:]:
+                if onset_time - unique_events[-1] >= min_event_gap:
                     unique_events.append(onset_time)
-                    last_time = onset_time
+            event_count = len(unique_events)
+        else:
+            event_count = len(onset_frames)
 
-            # Update with filtered count
-            features['event_count'] = int(len(unique_events))
-            if duration > 0:
-                features['event_density'] = float(len(unique_events) / duration)
+        features['event_count'] = int(event_count)
+        features['event_density'] = float(event_count / duration) if duration > 0 else 0.0
 
     except Exception as e:
         print(f"Warning: Sound event detection failed: {e}", file=sys.stderr)
@@ -1659,6 +1918,69 @@ def extract_additional_features(y, sr):
         print(f"Warning: Additional feature extraction failed: {e}", file=sys.stderr)
 
     return features
+
+
+def extract_fundamental_frequency(y, sr, filename=None, spectral_features=None):
+    """
+    Extract fundamental frequency (F0) for one-shot samples.
+    Skips analysis if chord is detected or filename implies chord.
+
+    Args:
+        y: Audio time series
+        sr: Sample rate
+        filename: Original filename (optional)
+        spectral_features: Pre-calculated spectral features (optional)
+
+    Returns:
+        Fundamental frequency in Hz (float) or None if chord/no pitch detected
+    """
+    # Check if filename implies a chord or polyphonic content
+    if filename:
+        fname_lower = filename.lower()
+        chord_keywords = ['chord', 'chrd', 'triad', 'maj', 'min', 'dim', 'aug',
+                          'sus', '7th', 'ninth', '11th', '13th',
+                          'polyphonic', 'poly', 'stack']
+        if any(kw in fname_lower for kw in chord_keywords):
+            return None  # Skip F0 for chords
+
+    try:
+        # Use librosa.pyin (probabilistic YIN) for robust F0 tracking
+        # pyin is more robust than autocorrelation for musical signals
+        f0, voiced_flag, voiced_probs = librosa.pyin(
+            y,
+            fmin=librosa.note_to_hz('C2'),  # ~65 Hz (low bass)
+            fmax=librosa.note_to_hz('C7'),  # ~2093 Hz (high treble)
+            sr=sr,
+            frame_length=2048,
+            hop_length=512
+        )
+
+        # Filter out unvoiced frames and NaN values
+        valid_f0 = f0[~np.isnan(f0)]
+
+        if len(valid_f0) == 0:
+            return None  # No fundamental frequency detected (noise/unpitched)
+
+        # Check for chord: if F0 varies significantly, likely a chord or polyphonic content
+        f0_std = np.std(valid_f0)
+        f0_mean = np.mean(valid_f0)
+
+        # If standard deviation is > 10% of mean, likely chord, vibrato, or pitch glide
+        # For monophonic sounds (single note), F0 should be relatively stable
+        if f0_std / (f0_mean + 1e-8) > 0.10:
+            # Could be chord, vibrato, or glide - check spectral complexity
+            if spectral_features:
+                # High spectral contrast suggests multiple simultaneous notes (chord)
+                contrast = spectral_features.get('spectral_contrast', 0)
+                if contrast > 30:  # High contrast = likely chord
+                    return None
+
+        # Return median F0 (more robust than mean for outliers)
+        return float(np.median(valid_f0))
+
+    except Exception as e:
+        print(f"Warning: Fundamental frequency extraction failed: {e}", file=sys.stderr)
+        return None
 
 
 def extract_transient_features(y_percussive, sr):
@@ -1748,10 +2070,10 @@ def generate_tags(features):
     """
     tags = []
 
-    # Type tags
+    # Type tags (mutually exclusive — prefer one-shot if both are set)
     if features['is_one_shot']:
         tags.append('one-shot')
-    if features['is_loop']:
+    elif features['is_loop']:
         tags.append('loop')
 
     # BPM tags (only for loops with detected tempo)
@@ -1905,6 +2227,17 @@ def generate_tags(features):
 
     # ML Instrument tags (Phase 4)
     # Use ML predictions instead of heuristics if available
+    # Blocklist for tag generation (same as extraction, prevents junk tags)
+    tag_blocklist = {
+        'music', 'singing', 'song', 'speech', 'tender music', 'sad music',
+        'happy music', 'music of asia', 'music of africa', 'music of latin america',
+        'pop music', 'rock music', 'hip hop music', 'electronic music',
+        'christian music', 'wedding music', 'new-age music', 'independent music',
+        'theme music', 'background music', 'video game music', 'christmas music',
+        'dance music', 'soul music', 'gospel music', 'disco', 'funk',
+        'musical instrument', 'plucked string instrument', 'bowed string instrument',
+        'wind instrument, woodwind instrument', 'sound effect', 'noise',
+    }
     if features.get('instrument_classes') is not None:
         for instrument in features['instrument_classes']:
             if instrument['confidence'] >= 0.6:  # 60% threshold
@@ -1913,7 +2246,9 @@ def generate_tags(features):
                 # Remove common prefixes/suffixes
                 class_name = class_name.replace('musical instrument, ', '')
                 class_name = class_name.replace('music, ', '')
-                # Add as tag
+                # Skip blocklisted generic classes and malformed entries
+                if class_name in tag_blocklist or '/m/' in class_name:
+                    continue
                 tags.append(class_name)
 
     # Genre tags (Phase 4)

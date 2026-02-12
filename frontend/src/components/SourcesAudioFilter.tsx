@@ -1,13 +1,19 @@
 import { ArrowUpDown, ArrowUp, ArrowDown, ChevronDown, ChevronRight } from 'lucide-react'
 import { useState, useMemo } from 'react'
-import { getRelatedKeys } from '../utils/musicTheory'
+import { getRelatedKeys, getRelatedNotes } from '../utils/musicTheory'
 import { InstrumentIcon } from './InstrumentIcon'
 
 export interface AudioFilterState {
-  sortBy: 'bpm' | 'key' | 'name' | 'duration' | 'createdAt' | null
+  sortBy: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt' | null
   sortOrder: 'asc' | 'desc'
   minBpm: number
   maxBpm: number
+  // Pitch filter mode
+  pitchFilterMode: 'fundamental' | 'scale'
+  // Fundamental frequency filter (note names)
+  selectedNotes: string[]
+  relatedNotesLevels: number[]
+  // Scale filter (key estimates)
   selectedKeys: string[]
   selectedEnvelopeTypes: string[]
   // Perceptual features (0-1 range)
@@ -63,10 +69,16 @@ export function SourcesAudioFilter({
   const [showPerceptual, setShowPerceptual] = useState(false)
   const [showClassification, setShowClassification] = useState(false)
   const [showRelatedKeys, setShowRelatedKeys] = useState(false)
+  const [showRelatedNotes, setShowRelatedNotes] = useState(false)
 
   const relatedKeyGroups = useMemo(
     () => getRelatedKeys(filterState.selectedKeys),
     [filterState.selectedKeys]
+  )
+
+  const relatedNoteGroups = useMemo(
+    () => getRelatedNotes(filterState.selectedNotes || []),
+    [filterState.selectedNotes]
   )
 
   const handleRelatedLevelToggle = (level: number) => {
@@ -75,6 +87,26 @@ export function SourcesAudioFilter({
       ? current.filter(l => l !== level)
       : [...current, level]
     onChange({ ...filterState, relatedKeysLevels: newLevels })
+  }
+
+  const handleNoteToggle = (note: string) => {
+    const current = filterState.selectedNotes || []
+    const newNotes = current.includes(note)
+      ? current.filter(n => n !== note)
+      : [...current, note]
+    onChange({ ...filterState, selectedNotes: newNotes })
+  }
+
+  const handleRelatedNoteLevelToggle = (level: number) => {
+    const current = filterState.relatedNotesLevels || []
+    const newLevels = current.includes(level)
+      ? current.filter(l => l !== level)
+      : [...current, level]
+    onChange({ ...filterState, relatedNotesLevels: newLevels })
+  }
+
+  const handlePitchModeChange = (mode: 'fundamental' | 'scale') => {
+    onChange({ ...filterState, pitchFilterMode: mode })
   }
 
   const handleScaleDegreeToggle = () => {
@@ -297,148 +329,255 @@ export function SourcesAudioFilter({
         </div>
       </div>
 
-      {/* Key filter */}
+      {/* Pitch filter with mode switch */}
       <div className="flex items-start gap-3">
-        <span className="text-xs text-slate-400 whitespace-nowrap pt-1">Key:</span>
+        <div className="flex items-center gap-1.5 pt-1 flex-shrink-0">
+          <select
+            value={filterState.pitchFilterMode || 'fundamental'}
+            onChange={(e) => handlePitchModeChange(e.target.value as 'fundamental' | 'scale')}
+            className="text-xs text-slate-400 bg-transparent border border-surface-border rounded px-1 py-0.5 cursor-pointer hover:text-white hover:border-slate-500 transition-colors focus:outline-none focus:border-accent-primary appearance-none"
+            style={{ backgroundImage: 'none' }}
+          >
+            <option value="fundamental">Note</option>
+            <option value="scale">Scale</option>
+          </select>
+          <span className="text-[9px] text-slate-500">:</span>
+        </div>
         <div className="flex-1">
-          <div className="flex flex-wrap gap-1.5">
-            {KEY_DATA.map(({ note, hue }) => {
-              const majorKey = `${note} major`
-              const minorKey = `${note} minor`
-              const isMajorSelected = filterState.selectedKeys.includes(majorKey)
-              const isMinorSelected = filterState.selectedKeys.includes(minorKey)
-
-              return (
-                <div key={note} className="flex items-center rounded overflow-hidden border border-surface-border">
-                  {/* Major button */}
+          {/* Fundamental frequency mode */}
+          {(filterState.pitchFilterMode || 'fundamental') === 'fundamental' && (
+            <>
+              <div className="flex flex-wrap gap-1.5">
+                {KEY_DATA.map(({ note, hue }) => {
+                  const isSelected = (filterState.selectedNotes || []).includes(note)
+                  return (
+                    <button
+                      key={note}
+                      onClick={() => handleNoteToggle(note)}
+                      className="relative px-2.5 py-1 text-xs font-medium rounded border border-surface-border transition-all group"
+                      style={{
+                        backgroundColor: isSelected ? `hsl(${hue}, 60%, 45%)` : 'transparent',
+                        color: isSelected ? '#fff' : '#94a3b8',
+                        borderColor: isSelected ? `hsl(${hue}, 60%, 45%)` : undefined,
+                      }}
+                      title={`Filter by fundamental: ${note}`}
+                    >
+                      {note}
+                      {!isSelected && (
+                        <div
+                          className="absolute inset-0 rounded opacity-0 group-hover:opacity-20 transition-opacity"
+                          style={{ backgroundColor: `hsl(${hue}, 60%, 45%)` }}
+                        />
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+              {(filterState.selectedNotes || []).length > 0 && (
+                <div className="flex items-center gap-3 mt-2">
                   <button
-                    onClick={() => handleKeyToggle(majorKey)}
-                    className="relative px-2 py-1 text-xs font-medium transition-all group"
-                    style={{
-                      backgroundColor: isMajorSelected
-                        ? `hsl(${hue}, 60%, 45%)`
-                        : 'transparent',
-                      color: isMajorSelected ? '#fff' : '#94a3b8',
-                      borderRight: '1px solid rgb(51, 65, 85)'
-                    }}
-                    title={majorKey}
+                    onClick={() => onChange({ ...filterState, selectedNotes: [] })}
+                    className="text-xs text-slate-400 hover:text-white transition-colors"
                   >
-                    <div className="flex items-center gap-0.5">
-                      <span>{note}</span>
-                      <span className="text-[9px] opacity-70">M</span>
-                    </div>
-                    {!isMajorSelected && (
-                      <div
-                        className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity"
-                        style={{ backgroundColor: `hsl(${hue}, 60%, 45%)` }}
-                      />
-                    )}
-                  </button>
-
-                  {/* Minor button */}
-                  <button
-                    onClick={() => handleKeyToggle(minorKey)}
-                    className="relative px-2 py-1 text-xs font-medium transition-all group"
-                    style={{
-                      backgroundColor: isMinorSelected
-                        ? `hsl(${hue}, 40%, 35%)`
-                        : 'transparent',
-                      color: isMinorSelected ? '#fff' : '#94a3b8',
-                    }}
-                    title={minorKey}
-                  >
-                    <div className="flex items-center gap-0.5">
-                      <span className="text-[9px] opacity-70">m</span>
-                    </div>
-                    {!isMinorSelected && (
-                      <div
-                        className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity"
-                        style={{ backgroundColor: `hsl(${hue}, 40%, 35%)` }}
-                      />
-                    )}
+                    Clear ({(filterState.selectedNotes || []).length} selected)
                   </button>
                 </div>
-              )
-            })}
-          </div>
-          {filterState.selectedKeys.length > 0 && (
-            <div className="flex items-center gap-3 mt-2">
-              <button
-                onClick={clearKeyFilter}
-                className="text-xs text-slate-400 hover:text-white transition-colors"
-              >
-                Clear ({filterState.selectedKeys.length} selected)
-              </button>
-              {filterState.selectedKeys.length === 1 && (
-                <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={filterState.groupByScaleDegree}
-                    onChange={handleScaleDegreeToggle}
-                    className="accent-accent-primary"
-                  />
-                  Group by degree
-                </label>
               )}
-            </div>
+
+              {/* Related Notes (spiciness by interval) */}
+              {(filterState.selectedNotes || []).length > 0 && relatedNoteGroups.length > 0 && (
+                <div className="mt-2">
+                  <button
+                    onClick={() => setShowRelatedNotes(!showRelatedNotes)}
+                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
+                  >
+                    {showRelatedNotes ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    <span>Related Notes</span>
+                  </button>
+                  {showRelatedNotes && (
+                    <div className="mt-2 space-y-2 pl-4">
+                      {relatedNoteGroups.map(group => {
+                        const isActive = (filterState.relatedNotesLevels || []).includes(group.level)
+                        return (
+                          <div key={group.level} className="flex items-start gap-2">
+                            <button
+                              onClick={() => handleRelatedNoteLevelToggle(group.level)}
+                              className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border transition-colors flex-shrink-0 ${
+                                isActive
+                                  ? 'border-current bg-current/10 text-white'
+                                  : 'border-surface-border text-slate-500 hover:text-slate-300'
+                              }`}
+                              style={{ borderColor: isActive ? group.color : undefined, color: isActive ? group.color : undefined }}
+                            >
+                              <span>{group.emoji}</span>
+                              <span>{group.label}</span>
+                            </button>
+                            <div className="flex flex-wrap gap-0.5">
+                              {group.keys.map(n => {
+                                const keyData = KEY_DATA.find(kd => kd.note === n)
+                                const hue = keyData?.hue ?? 0
+                                return (
+                                  <button
+                                    key={n}
+                                    onClick={() => handleNoteToggle(n)}
+                                    className="px-1.5 py-0 text-[9px] rounded transition-colors"
+                                    style={{
+                                      backgroundColor: `hsla(${hue}, 60%, 45%, 0.3)`,
+                                      color: `hsl(${hue}, 50%, 70%)`,
+                                    }}
+                                    title={n}
+                                  >
+                                    {n}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
 
-          {/* Related Keys */}
-          {filterState.selectedKeys.length > 0 && relatedKeyGroups.length > 0 && (
-            <div className="mt-2">
-              <button
-                onClick={() => setShowRelatedKeys(!showRelatedKeys)}
-                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
-              >
-                {showRelatedKeys ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                <span>Related Keys</span>
-              </button>
-              {showRelatedKeys && (
-                <div className="mt-2 space-y-2 pl-4">
-                  {relatedKeyGroups.map(group => {
-                    const isActive = (filterState.relatedKeysLevels || []).includes(group.level)
-                    return (
-                      <div key={group.level} className="flex items-start gap-2">
-                        <button
-                          onClick={() => handleRelatedLevelToggle(group.level)}
-                          className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border transition-colors flex-shrink-0 ${
-                            isActive
-                              ? 'border-current bg-current/10 text-white'
-                              : 'border-surface-border text-slate-500 hover:text-slate-300'
-                          }`}
-                          style={{ borderColor: isActive ? group.color : undefined, color: isActive ? group.color : undefined }}
-                        >
-                          <span>{group.emoji}</span>
-                          <span>{group.label}</span>
-                        </button>
-                        <div className="flex flex-wrap gap-0.5">
-                          {group.keys.map(k => {
-                            const note = k.split(' ')[0]
-                            const keyData = KEY_DATA.find(kd => kd.note === note)
-                            const hue = keyData?.hue ?? 0
-                            const isMajor = k.includes('major')
-                            return (
-                              <button
-                                key={k}
-                                onClick={() => handleKeyToggle(k)}
-                                className="px-1 py-0 text-[9px] rounded transition-colors"
-                                style={{
-                                  backgroundColor: `hsla(${hue}, ${isMajor ? 60 : 40}%, ${isMajor ? 45 : 35}%, 0.3)`,
-                                  color: `hsl(${hue}, 50%, 70%)`,
-                                }}
-                                title={k}
-                              >
-                                {note}{isMajor ? '' : 'm'}
-                              </button>
-                            )
-                          })}
+          {/* Scale mode (existing key filter) */}
+          {filterState.pitchFilterMode === 'scale' && (
+            <>
+              <div className="flex flex-wrap gap-1.5">
+                {KEY_DATA.map(({ note, hue }) => {
+                  const majorKey = `${note} major`
+                  const minorKey = `${note} minor`
+                  const isMajorSelected = filterState.selectedKeys.includes(majorKey)
+                  const isMinorSelected = filterState.selectedKeys.includes(minorKey)
+
+                  return (
+                    <div key={note} className="flex items-center rounded overflow-hidden border border-surface-border">
+                      <button
+                        onClick={() => handleKeyToggle(majorKey)}
+                        className="relative px-2 py-1 text-xs font-medium transition-all group"
+                        style={{
+                          backgroundColor: isMajorSelected ? `hsl(${hue}, 60%, 45%)` : 'transparent',
+                          color: isMajorSelected ? '#fff' : '#94a3b8',
+                          borderRight: '1px solid rgb(51, 65, 85)'
+                        }}
+                        title={majorKey}
+                      >
+                        <div className="flex items-center gap-0.5">
+                          <span>{note}</span>
+                          <span className="text-[9px] opacity-70">M</span>
                         </div>
-                      </div>
-                    )
-                  })}
+                        {!isMajorSelected && (
+                          <div
+                            className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity"
+                            style={{ backgroundColor: `hsl(${hue}, 60%, 45%)` }}
+                          />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleKeyToggle(minorKey)}
+                        className="relative px-2 py-1 text-xs font-medium transition-all group"
+                        style={{
+                          backgroundColor: isMinorSelected ? `hsl(${hue}, 40%, 35%)` : 'transparent',
+                          color: isMinorSelected ? '#fff' : '#94a3b8',
+                        }}
+                        title={minorKey}
+                      >
+                        <div className="flex items-center gap-0.5">
+                          <span className="text-[9px] opacity-70">m</span>
+                        </div>
+                        {!isMinorSelected && (
+                          <div
+                            className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity"
+                            style={{ backgroundColor: `hsl(${hue}, 40%, 35%)` }}
+                          />
+                        )}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+              {filterState.selectedKeys.length > 0 && (
+                <div className="flex items-center gap-3 mt-2">
+                  <button
+                    onClick={clearKeyFilter}
+                    className="text-xs text-slate-400 hover:text-white transition-colors"
+                  >
+                    Clear ({filterState.selectedKeys.length} selected)
+                  </button>
+                  {filterState.selectedKeys.length === 1 && (
+                    <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={filterState.groupByScaleDegree}
+                        onChange={handleScaleDegreeToggle}
+                        className="accent-accent-primary"
+                      />
+                      Group by degree
+                    </label>
+                  )}
                 </div>
               )}
-            </div>
+
+              {/* Related Keys */}
+              {filterState.selectedKeys.length > 0 && relatedKeyGroups.length > 0 && (
+                <div className="mt-2">
+                  <button
+                    onClick={() => setShowRelatedKeys(!showRelatedKeys)}
+                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
+                  >
+                    {showRelatedKeys ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    <span>Related Keys</span>
+                  </button>
+                  {showRelatedKeys && (
+                    <div className="mt-2 space-y-2 pl-4">
+                      {relatedKeyGroups.map(group => {
+                        const isActive = (filterState.relatedKeysLevels || []).includes(group.level)
+                        return (
+                          <div key={group.level} className="flex items-start gap-2">
+                            <button
+                              onClick={() => handleRelatedLevelToggle(group.level)}
+                              className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border transition-colors flex-shrink-0 ${
+                                isActive
+                                  ? 'border-current bg-current/10 text-white'
+                                  : 'border-surface-border text-slate-500 hover:text-slate-300'
+                              }`}
+                              style={{ borderColor: isActive ? group.color : undefined, color: isActive ? group.color : undefined }}
+                            >
+                              <span>{group.emoji}</span>
+                              <span>{group.label}</span>
+                            </button>
+                            <div className="flex flex-wrap gap-0.5">
+                              {group.keys.map(k => {
+                                const note = k.split(' ')[0]
+                                const keyData = KEY_DATA.find(kd => kd.note === note)
+                                const hue = keyData?.hue ?? 0
+                                const isMajor = k.includes('major')
+                                return (
+                                  <button
+                                    key={k}
+                                    onClick={() => handleKeyToggle(k)}
+                                    className="px-1 py-0 text-[9px] rounded transition-colors"
+                                    style={{
+                                      backgroundColor: `hsla(${hue}, ${isMajor ? 60 : 40}%, ${isMajor ? 45 : 35}%, 0.3)`,
+                                      color: `hsl(${hue}, 50%, 70%)`,
+                                    }}
+                                    title={k}
+                                  >
+                                    {note}{isMajor ? '' : 'm'}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

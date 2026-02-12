@@ -1,135 +1,156 @@
 # Sample Solution
 
-A comprehensive audio sample management and analysis platform for music producers and sound designers. Import your audio library, extract and organize samples, and discover patterns through advanced audio feature analysis and interactive visualization.
+A practical audio sample management and analysis platform for music producers and sound designers. Import your library, slice audio quickly, auto-analyze features, and organize everything with tags, folders, and collections. Works as a webapp, running experiments for a desktop app (electron)
 
 <img width="1895" height="899" alt="image" src="https://github.com/user-attachments/assets/d5ca1454-722f-4e65-be19-2a8afe1cae42" />
-
-
 
 > **Legal Note**: Ensure you have appropriate rights to any content in your library. Use this tool responsibly and in accordance with copyright and intellectual property laws.
 
 ---
 
+## Project Status
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Web app (frontend + backend) | Stable | Main development path |
+| Docker deployment | Stable | Recommended quick start |
+| Electron desktop mode | Works, limited testing | Usable desktop path, needs more QA |
+| Sample Space view | Functional but needs extra tweaking | Useful for discovery, still being tuned |
+| Server/client architecture variants | Experimental | Possible, not fully documented |
+
+---
+
 ## What It Does
 
-### Audio Library Management
-- **Import Local Files**: Upload individual audio files directly to your library
-- **Batch Folder Import**: Import entire folder structures to organize your samples
-- **Flexible Organization**: Create hierarchical collections and organize by source
-- **Track Metadata**: Manage and edit information for all your audio tracks
+### Import
+- **Import Local Files**: Add individual audio files directly to your library
+- **Batch Folder Import**: Import full folder structures
+- **Source Organization**: Browse and manage by source/folder
 
-### Sample Creation & Professional Analysis
-- **Waveform Editor**: Precision visual interface for sample extraction
-  - Drag-to-select regions and create slices
-  - Zoom and navigate with minimap overview
-  - Real-time audio playback
-- **Automatic Audio Analysis**: Industry-standard feature extraction
-  - 15+ audio features computed per sample (spectral, temporal, perceptual)
-  - Features include: spectral centroid, RMS energy, tempo detection, attack time, and more
-  - Runs automatically when samples are created
-  - Enables intelligent search and discovery
-- **Slice Export**: Download processed samples in multiple formats
+### Slice & Analyze
+- **Waveform Editor**
+  - Drag-to-select and create slices
+  - Zoom + minimap navigation
+  - Real-time playback
+- **Automatic Audio Analysis**
+  - 15+ features per sample (spectral, temporal, perceptual)
+  - Includes centroid, RMS, tempo cues, attack-related metrics, and more
+  - Runs when slices are created
 
-### Smart Organization & Discovery
-- **AI-Assisted Tagging**: Intelligent sample categorization
-- **Advanced Filtering**: Find samples by duration, tags, collections, source, and more
-- **Full-Text Search**: Search across sample metadata
-- **Collections**: Organize samples into nested collections with custom colors
+### Organize
+- **AI-Assisted Tagging** using audio + naming context
+- **Collections** with flexible grouping and hierarchy
+- **Advanced Filtering** by tags, duration, source, collections, and metadata
+- **Full-Text Search** across sample metadata
 
-### Interactive Visualization
-- **Sample Space View**: Explore your sample library in an interactive 2D space
-  - Dimensionality reduction algorithms visualize sample relationships
-  - Visual cluster identification
-  - Custom feature weighting for exploration
+### Explore
+- **3 sample views**:
+  - **Cards** (visual browsing)
+  - **List** (dense, practical workflow)
+  - **Space** (XO-like similarity/discovery view)
 
 ---
 
-## Setup
+## Run Options
 
-### Requirements
-- Docker & Docker Compose
-- Optional: Google account (for OAuth features)
+### 1) Docker (Recommended)
 
-### Getting Started
+#### Requirements
+- Docker + Docker Compose
+- Optional: Google account (OAuth features)
 
-1. **Configure environment variables**
-   ```bash
-   cd backend
-   # Copy and edit .env.example with your settings
-   # See SETUP.md for detailed configuration options
-   ```
+#### Quick start
+```bash
+docker-compose up -d
+```
 
-2. **Start everything**
-   ```bash
-   docker-compose up -d
-   ```
+Access:
+- Frontend: http://localhost:3000
+- Backend: http://localhost:4000
 
-3. **Access the app**
-   - Frontend: http://localhost:3000
-   - Backend: http://localhost:4000
+Detailed setup and environment config: [SETUP.md](SETUP.md)
 
-4. **(Optional) Setup Ollama for metadata tagging** (the other AI models should still work on their own)
-   ```bash
-   docker exec -it sample_solution-ollama-1 ollama pull llama3.2:3b
-   ```
+### 2) Local Development (without Docker)
 
-**Detailed setup guide**: [SETUP.md](SETUP.md)
-
----
-
-## How to Use
-
-### Importing Audio
-1. Navigate to the **Sources** tab
-2. Upload individual files or import entire folders
-3. Files are automatically organized and indexed
-
-### Creating Samples
-1. Select a track from your library
-2. Open the **Editing** tab to access the waveform editor
-3. Drag across the waveform to select a region
-4. Name your slice and save
-5. Audio analysis runs automatically
-6. Organize with tags and collections
-7. Download the slice as needed
-
-### Discovering Samples
-1. Visit the **Samples** tab to view your library
-2. Use filters to find samples by duration, tags, or collection
-3. Search by name or metadata
-4. View the **Sample Space** visualization to explore relationships
-5. Adjust feature weights to focus on specific characteristics
-
-### Building Collections
-1. Create custom collections from the Collections menu
-2. Assign samples to multiple collections
-3. Organize hierarchically with parent/child relationships
-4. Use color coding for visual organization
-
----
-
-## Development
-
-### Running Locally (without Docker)
-
-**Backend:**
+**Backend**
 ```bash
 cd backend
 npm install
 npm run dev
 ```
 
-**Frontend:**
+**Frontend**
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### Building
+### 3) Electron Desktop (limited testing)
+
+Use this if you want desktop mode while still running backend separately.
+
 ```bash
-docker-compose build
+# terminal 1
+cd backend
+npm run dev
+
+# terminal 2
+cd frontend
+npm install
+npm run dev:electron
 ```
+
+More details: [frontend/ELECTRON.md](frontend/ELECTRON.md)
+
+---
+
+## How to Build the Electron Version
+
+If you want distributable desktop builds:
+
+### Standard Electron package
+```bash
+cd frontend
+npm install
+npm run build:electron
+```
+
+Artifacts are generated in:
+- `frontend/release/`
+
+Typical targets:
+- Linux: `.AppImage`, `.deb`
+- Windows: installer + portable
+- macOS: `.dmg`, `.zip`
+
+### Standalone build with embedded backend/Python (advanced)
+```bash
+cd frontend
+./build-standalone.sh
+```
+
+This path is intended for distribution and has more moving parts. See [frontend/BUILD.md](frontend/BUILD.md) for full details.
+
+---
+
+## Typical Workflow
+
+1. Import files/folders in **Sources**
+2. Open **Editing** to create slices
+3. Let analysis run automatically
+4. Tag and organize into collections
+5. Browse in Cards/List/Space depending on task
+
+---
+
+## Roadmap / TODO
+
+- [ ] Improve metadata import (e.g., artist and additional file metadata columns)
+- [ ] Validate folder import substructure behavior across all paths
+- [ ] Expand Electron QA across Linux/macOS/Windows
+- [ ] Validate export and backup flows more thoroughly
+- [ ] Continue tuning Space View placement/weighting and clustering quality
 
 ---
 
@@ -137,26 +158,25 @@ docker-compose build
 
 **Port issues:**
 ```bash
-fuser -k 4000/tcp  # Free port 4000
-fuser -k 3000/tcp  # Free port 3000
+fuser -k 4000/tcp
+fuser -k 3000/tcp
 ```
 
-**OAuth errors:** Verify your credentials in `.env` and check that required APIs are properly configured
+**OAuth errors:** verify credentials in backend `.env` and Google API setup.
 
-**TensorFlow warnings on startup:** These are informational messages about CPU optimizations and can be safely ignored
+**TensorFlow warnings on startup:** often informational CPU optimization logs.
 
-See [SETUP.md](SETUP.md) for detailed troubleshooting and configuration help.
+See [SETUP.md](SETUP.md) for deeper troubleshooting.
 
 ---
 
-### Using This Tool Responsibly
+## Responsible Use
 
-- **Verify Ownership**: Ensure you have the rights to any content you import into this system
-- **Respect Copyright**: Do not use this tool to infringe on intellectual property rights
-- **Follow Terms of Service**: Comply with all applicable laws and terms of service for any content sources
-- **Proper Licensing**: Use only content you own, have licensed, or that is properly licensed for your intended use
+- Verify ownership/rights for all imported or downloaded source material
+- Respect copyright and platform terms of service
+- Use only content you own, have licensed, or that is legally permitted for your use case
 
-The developers are not responsible for misuse of this tool.
+The developers are not responsible for misuse.
 
 ---
 
@@ -165,17 +185,5 @@ The developers are not responsible for misuse of this tool.
 - **Frontend**: React 18 + TypeScript, Vite, Tailwind CSS, WaveSurfer.js, Pixi.js
 - **Backend**: Node.js + Express, TypeScript, SQLite (Drizzle ORM)
 - **Audio Analysis**: TensorFlow.js, Python (Essentia + Librosa), Meyda
-- **Visualization**: UMAP/t-SNE for dimensionality reduction, K-means clustering
-- **Deployment**: Docker Compose
-
----
-
-## Libraries & Tools
-
-This project uses:
-- **FFmpeg** - Audio processing
-- **Essentia** & **Librosa** - Audio feature extraction
-- **WaveSurfer.js** - Waveform visualization
-- **TensorFlow.js** - Machine learning models
-- **Ollama** - Optional local LLM for advanced tagging
-- **Google APIs** - OAuth and data integration (optional)
+- **Visualization**: UMAP/t-SNE and clustering for similarity exploration
+- **Packaging/Deploy**: Docker Compose + Electron

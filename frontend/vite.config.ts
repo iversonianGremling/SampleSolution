@@ -13,6 +13,8 @@ export default defineConfig({
       },
     },
   },
+  // Set base to './' for Electron compatibility
+  base: './',
   test: {
     globals: true,
     environment: 'jsdom',
@@ -22,6 +24,9 @@ export default defineConfig({
   },
   build: {
     minify: false,
-    sourcemap: true
+    sourcemap: true,
+    // Optimize for Electron
+    outDir: 'dist',
+    emptyOutDir: true,
   },
 })

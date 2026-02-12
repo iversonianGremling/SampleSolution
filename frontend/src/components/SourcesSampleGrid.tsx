@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { Play, Pause, Heart, GripVertical, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Play, Pause, Heart, GripVertical, ArrowUpDown, ArrowUp, ArrowDown, Disc3 } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
-import { InstrumentIcon } from './InstrumentIcon'
+import { InstrumentIcon, resolveInstrumentType } from './InstrumentIcon'
+import { DrumRackPadPicker } from './DrumRackPadPicker'
 import type { SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 
@@ -42,13 +43,14 @@ export function SourcesSampleGrid({
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [draggedId, setDraggedId] = useState<number | null>(null)
+  const [padPickerSample, setPadPickerSample] = useState<SliceWithTrackExtended | null>(null)
   const [sortField, setSortField] = useState<SortField | null>(null)
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
   const [tagPopupId, setTagPopupId] = useState<number | null>(null)
   const [popupPosition, setPopupPosition] = useState<Record<number, { bottom: number; left: number }>>({})
   const dragPreviewRef = useRef<HTMLElement | null>(null)
   const tagTriggerRefs = useRef<Record<number, HTMLDivElement | null>>({})
-  const closeTimeoutRef = useRef<number | null>(null)
+  const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Stop audio when unmounting
   useEffect(() => {
@@ -68,6 +70,59 @@ export function SourcesSampleGrid({
     const mins = Math.floor(duration / 60)
     const secs = Math.floor(duration % 60)
     return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const clamp01 = (value: number) => Math.max(0, Math.min(1, value))
+
+  const normalizeLoudness = (loudness: number | null | undefined) => {
+    if (loudness === null || loudness === undefined || Number.isNaN(loudness)) return 0.5
+    // Typical sample loudness range in dB
+    return clamp01((loudness + 48) / 42)
+  }
+
+  const normalizeHarmonicity = (sample: SliceWithTrackExtended) => {
+    const ratio = (sample as SliceWithTrackExtended & { harmonicPercussiveRatio?: number | null }).harmonicPercussiveRatio
+    if (ratio !== null && ratio !== undefined && Number.isFinite(ratio) && ratio >= 0) {
+      // Squash to 0..1 where 0.5 means balanced, >0.5 means more harmonic
+      return clamp01(ratio / (1 + ratio))
+    }
+
+    // Fallback: roughness is usually inverse-correlated with harmonicity
+    const roughness = clamp01(sample.roughness ?? 0.5)
+    return 1 - roughness
+  }
+
+  const getMetricGradient = (sample: SliceWithTrackExtended) => {
+    const brightness = clamp01(sample.brightness ?? 0.5)
+    const loudness = normalizeLoudness(sample.loudness)
+    const harmonicity = normalizeHarmonicity(sample)
+    const noisiness = 1 - harmonicity
+
+    // Dark high-contrast base: still calm, but with much clearer value separation.
+    const baseHue = 220 - brightness * 32
+    const baseSaturation = 30 + loudness * 26
+    const baseLightTop = 10 + loudness * 12 + brightness * 5
+    const baseLightBottom = 2 + loudness * 5
+
+    // Semantic accents:
+    // - harmonic (teal)
+    // - noisy (amber)
+    // Stronger alpha for readability, capped to stay non-neon.
+    const brightnessColor = `hsla(${204 - brightness * 20}, ${52 + brightness * 14}%, ${54 + brightness * 8}%, ${0.18 + brightness * 0.28})`
+    const loudnessColor = `hsla(${246 - loudness * 14}, ${40 + loudness * 16}%, ${46 + loudness * 10}%, ${0.2 + loudness * 0.3})`
+    const harmonicColor = `hsla(166, 64%, 50%, ${0.14 + harmonicity * 0.34})`
+    const noisyColor = `hsla(30, 72%, 54%, ${0.12 + noisiness * 0.34})`
+
+    return {
+      backgroundImage: `
+        radial-gradient(105% 95% at 18% 20%, ${brightnessColor} 0%, transparent 54%),
+        radial-gradient(105% 95% at 84% 18%, ${loudnessColor} 0%, transparent 54%),
+        radial-gradient(115% 105% at 18% 90%, ${harmonicColor} 0%, transparent 56%),
+        radial-gradient(115% 105% at 86% 92%, ${noisyColor} 0%, transparent 56%),
+        linear-gradient(145deg, hsl(${baseHue} ${baseSaturation}% ${baseLightTop}%) 0%, hsl(${baseHue - 10} ${baseSaturation - 6}% ${baseLightBottom}%) 100%)
+      `,
+      boxShadow: `inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 -24px 42px rgba(2, 6, 23, 0.62)`,
+    }
   }
 
   const handleSortClick = (field: SortField) => {
@@ -297,6 +352,13 @@ export function SourcesSampleGrid({
         const isChecked = selectedIds.has(sample.id)
         const isPlaying = playingId === sample.id
         const isDragging = draggedId === sample.id
+        const resolvedInstrumentType = resolveInstrumentType(
+          sample.instrumentType,
+          sample.instrumentPrimary,
+          ...sample.tags.map(t => t.name),
+          sample.name,
+          sample.filePath,
+        )
 
         return (
           <div
@@ -313,26 +375,10 @@ export function SourcesSampleGrid({
                 : 'hover:bg-surface-base hover:shadow-md'
             } ${isDragging ? 'opacity-50' : ''}`}
           >
-            {/* Waveform placeholder / thumbnail area */}
-            <div className="aspect-[4/3] bg-gradient-to-br from-slate-800 to-slate-900 relative flex items-center justify-center">
-              {/* Simple waveform visualization placeholder */}
-              <div className="absolute inset-0 flex items-center justify-center px-2">
-                <div className="flex items-end gap-0.5 h-8 w-full">
-                  {Array.from({ length: 24 }).map((_, i) => {
-                    // Create consistent waveform based on sample.id (not random)
-                    const baseHeight = 30
-                    const variation = Math.abs(Math.sin((i / 24) * Math.PI * 4 + (sample.id % 100) / 10)) * 70
-                    return (
-                      <div
-                        key={i}
-                        className="flex-1 bg-accent-primary/40 rounded-t"
-                        style={{
-                          height: `${baseHeight + variation}%`,
-                        }}
-                      />
-                    )
-                  })}
-                </div>
+            {/* Instrument visual area */}
+            <div className="aspect-[4/3] relative flex items-center justify-center" style={getMetricGradient(sample)}>
+              <div className="absolute inset-0 flex items-center justify-center text-white/90">
+                <InstrumentIcon type={resolvedInstrumentType} size={56} className="drop-shadow-[0_2px_8px_rgba(0,0,0,0.45)]" />
               </div>
 
               {/* Play button overlay */}
@@ -400,6 +446,18 @@ export function SourcesSampleGrid({
                 </button>
               )}
 
+              {/* Send to Drum Rack button */}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setPadPickerSample(sample)
+                }}
+                className="absolute top-1.5 right-8 p-1 rounded text-slate-400 opacity-0 group-hover:opacity-100 hover:text-accent-primary hover:bg-accent-primary/20 transition-all"
+                title="Send to Drum Rack"
+              >
+                <Disc3 size={14} />
+              </button>
+
               {/* Drag handle */}
               {!onToggleSelect && (
                 <div className="absolute top-1.5 left-1.5 p-1 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab">
@@ -413,11 +471,13 @@ export function SourcesSampleGrid({
               </span>
 
               {/* Instrument type badge */}
-              {(sample.instrumentType || sample.instrumentPrimary) && (
-                <div className="absolute bottom-1.5 left-1.5 p-1 bg-black/60 rounded text-slate-300" title={sample.instrumentType || sample.instrumentPrimary || ''}>
-                  <InstrumentIcon type={sample.instrumentType || sample.instrumentPrimary || 'other'} size={12} />
-                </div>
-              )}
+              <div
+                className="absolute bottom-1.5 left-1.5 p-1 rounded text-white/90"
+                title={`${resolvedInstrumentType} • brightness + loudness + harmonic/noisy`}
+                style={{ ...getMetricGradient(sample), backgroundSize: '220% 220%' }}
+              >
+                <InstrumentIcon type={resolvedInstrumentType} size={12} />
+              </div>
             </div>
 
             {/* Info */}
@@ -569,6 +629,14 @@ export function SourcesSampleGrid({
         <div className={gridClass}>
           {sortedSamples.map(sample => renderSampleCard(sample))}
         </div>
+      )}
+
+      {/* Drum Rack Pad Picker */}
+      {padPickerSample && (
+        <DrumRackPadPicker
+          sample={padPickerSample}
+          onClose={() => setPadPickerSample(null)}
+        />
       )}
     </div>
   )

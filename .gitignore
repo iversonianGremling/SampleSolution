@@ -89,3 +89,16 @@ temp/
 .parcel-cache/
 .next/
 out/
+
+# Electron
+frontend/release/
+frontend/dist-electron/
+frontend/embedded-backend/
+frontend/embedded-python/
+*.AppImage
+*.deb
+*.rpm
+*.snap
+*.exe
+*.dmg
+*.pkg

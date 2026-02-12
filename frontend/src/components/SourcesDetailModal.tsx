@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Scissors, Search, ChevronLeft, ChevronRight, Sparkles, Activity } from 'lucide-react'
-import type { SliceWithTrackExtended, Tag, Collection, AudioFeatures } from '../types'
+import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Scissors, Search, ChevronLeft, ChevronRight, Sparkles, Activity, Disc3 } from 'lucide-react'
+import type { SliceWithTrackExtended, Tag, Folder, AudioFeatures } from '../types'
 import { getSliceDownloadUrl, updateTrack } from '../api/client'
 import { InstrumentIcon } from './InstrumentIcon'
+import { freqToNoteName } from '../utils/musicTheory'
 import { SliceWaveform, type SliceWaveformRef } from './SliceWaveform'
+import { DrumRackPadPicker } from './DrumRackPadPicker'
 
 // Helper component to display a feature value
 function FeatureItem({
@@ -175,13 +177,13 @@ function SimilarSamplesSection({ sampleId }: { sampleId: number }) {
 interface SourcesDetailModalProps {
   sample: SliceWithTrackExtended | null
   allTags: Tag[]
-  collections: Collection[]
+  folders: Folder[]
   onClose: () => void
   onToggleFavorite?: (id: number) => void
   onAddTag?: (sliceId: number, tagId: number) => void
   onRemoveTag?: (sliceId: number, tagId: number) => void
-  onAddToCollection?: (collectionId: number, sliceId: number) => void
-  onRemoveFromCollection?: (collectionId: number, sliceId: number) => void
+  onAddToFolder?: (folderId: number, sliceId: number) => void
+  onRemoveFromFolder?: (folderId: number, sliceId: number) => void
   onUpdateName?: (sliceId: number, name: string) => void
   onEdit?: () => void
   onTagClick?: (tagId: number) => void
@@ -194,13 +196,13 @@ interface SourcesDetailModalProps {
 export function SourcesDetailModal({
   sample,
   allTags,
-  collections,
+  folders,
   onClose,
   onToggleFavorite,
   onAddTag,
   onRemoveTag,
-  onAddToCollection,
-  onRemoveFromCollection,
+  onAddToFolder,
+  onRemoveFromFolder,
   onUpdateName,
   onEdit,
   onTagClick,
@@ -214,23 +216,24 @@ export function SourcesDetailModal({
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState('')
   const [isTagDropdownOpen, setIsTagDropdownOpen] = useState(false)
-  const [isCollectionDropdownOpen, setIsCollectionDropdownOpen] = useState(false)
+  const [isFolderDropdownOpen, setIsFolderDropdownOpen] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
   const [isEntering, setIsEntering] = useState(true)
   const [tagDropdownPosition, setTagDropdownPosition] = useState<{ top: number; left: number } | null>(null)
-  const [collectionDropdownPosition, setCollectionDropdownPosition] = useState<{ top: number; left: number } | null>(null)
+  const [folderDropdownPosition, setFolderDropdownPosition] = useState<{ top: number; left: number } | null>(null)
   const [tagSearchQuery, setTagSearchQuery] = useState('')
-  const [collectionSearchQuery, setCollectionSearchQuery] = useState('')
+  const [folderSearchQuery, setFolderSearchQuery] = useState('')
   const [activeTab, setActiveTab] = useState<'details' | 'advanced'>('details')
+  const [showPadPicker, setShowPadPicker] = useState(false)
   const [editingArtist, setEditingArtist] = useState(false)
   const [editingAlbum, setEditingAlbum] = useState(false)
   const [artistValue, setArtistValue] = useState('')
   const [albumValue, setAlbumValue] = useState('')
   const waveformRef = useRef<SliceWaveformRef>(null)
   const tagDropdownRef = useRef<HTMLDivElement>(null)
-  const collectionDropdownRef = useRef<HTMLDivElement>(null)
+  const folderDropdownRef = useRef<HTMLDivElement>(null)
   const tagButtonRef = useRef<HTMLButtonElement>(null)
-  const collectionButtonRef = useRef<HTMLButtonElement>(null)
+  const folderButtonRef = useRef<HTMLButtonElement>(null)
 
   // Fetch audio features for the advanced tab
   const { data: audioFeatures } = useQuery<AudioFeatures>({
@@ -277,18 +280,18 @@ export function SourcesDetailModal({
         }
       }
 
-      // Check if click is outside collection dropdown (both button and dropdown menu)
-      if (isCollectionDropdownOpen) {
-        const clickedButton = collectionDropdownRef.current?.contains(target)
-        const clickedDropdown = (e.target as Element).closest('.collection-dropdown-menu')
+      // Check if click is outside folder dropdown (both button and dropdown menu)
+      if (isFolderDropdownOpen) {
+        const clickedButton = folderDropdownRef.current?.contains(target)
+        const clickedDropdown = (e.target as Element).closest('.folder-dropdown-menu')
         if (!clickedButton && !clickedDropdown) {
-          setIsCollectionDropdownOpen(false)
+          setIsFolderDropdownOpen(false)
         }
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [isTagDropdownOpen, isCollectionDropdownOpen])
+  }, [isTagDropdownOpen, isFolderDropdownOpen])
 
   if (!sample) {
     return null
@@ -355,34 +358,34 @@ export function SourcesDetailModal({
     setIsTagDropdownOpen(!isTagDropdownOpen)
   }
 
-  const handleToggleCollectionDropdown = () => {
-    if (!isCollectionDropdownOpen && collectionButtonRef.current) {
-      const rect = collectionButtonRef.current.getBoundingClientRect()
+  const handleToggleFolderDropdown = () => {
+    if (!isFolderDropdownOpen && folderButtonRef.current) {
+      const rect = folderButtonRef.current.getBoundingClientRect()
       const dropdownHeight = 192 // max-h-48 = 12rem = 192px
 
       // Always position dropdown above the button
-      setCollectionDropdownPosition({
+      setFolderDropdownPosition({
         top: rect.top - dropdownHeight - 4, // 4px gap
         left: rect.left,
       })
-      setCollectionSearchQuery('') // Reset search when opening
+      setFolderSearchQuery('') // Reset search when opening
     } else {
-      setCollectionSearchQuery('') // Reset search when closing
+      setFolderSearchQuery('') // Reset search when closing
     }
-    setIsCollectionDropdownOpen(!isCollectionDropdownOpen)
+    setIsFolderDropdownOpen(!isFolderDropdownOpen)
   }
 
   const availableTags = allTags.filter(t => !sample.tags.some(st => st.id === t.id))
-  const availableCollections = collections.filter(c => !sample.collectionIds.includes(c.id))
+  const availableFolders = folders.filter(c => !sample.folderIds.includes(c.id))
 
-  // Filter tags and collections based on search query
+  // Filter tags and folders based on search query
   const filteredTags = availableTags.filter(tag =>
     tag.name.toLowerCase().includes(tagSearchQuery.toLowerCase())
   )
-  const filteredCollections = availableCollections.filter(col =>
-    col.name.toLowerCase().includes(collectionSearchQuery.toLowerCase())
+  const filteredFolders = availableFolders.filter(col =>
+    col.name.toLowerCase().includes(folderSearchQuery.toLowerCase())
   )
-  const sampleCollections = collections.filter(c => sample.collectionIds.includes(c.id))
+  const sampleFolders = folders.filter(c => sample.folderIds.includes(c.id))
 
   return (
     <>
@@ -503,8 +506,16 @@ export function SourcesDetailModal({
               <button
                 onClick={handleDownload}
                 className="p-2.5 text-slate-400 hover:text-white hover:bg-surface-base rounded-lg transition-colors"
+                title="Download"
               >
                 <Download size={20} />
+              </button>
+              <button
+                onClick={() => setShowPadPicker(true)}
+                className="p-2.5 text-slate-400 hover:text-accent-primary hover:bg-accent-primary/20 rounded-lg transition-colors"
+                title="Send to Drum Rack"
+              >
+                <Disc3 size={20} />
               </button>
               {onEdit && (
                 <button
@@ -713,11 +724,11 @@ export function SourcesDetailModal({
               </div>
             </div>
 
-            {/* Collections */}
+            {/* Folders */}
             <div>
               <label className="text-sm font-medium text-slate-400 block mb-2">Folders</label>
               <div className="flex flex-wrap gap-2">
-                {sampleCollections.map(col => (
+                {sampleFolders.map(col => (
                   <span
                     key={col.id}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium"
@@ -727,9 +738,9 @@ export function SourcesDetailModal({
                     }}
                   >
                     {col.name}
-                    {onRemoveFromCollection && (
+                    {onRemoveFromFolder && (
                       <button
-                        onClick={() => onRemoveFromCollection(col.id, sample.id)}
+                        onClick={() => onRemoveFromFolder(col.id, sample.id)}
                         className="hover:opacity-70 transition-opacity"
                       >
                         <X size={12} />
@@ -738,12 +749,12 @@ export function SourcesDetailModal({
                   </span>
                 ))}
 
-                {/* Add to collection dropdown */}
-                {onAddToCollection && availableCollections.length > 0 && (
-                  <div ref={collectionDropdownRef}>
+                {/* Add to folder dropdown */}
+                {onAddToFolder && availableFolders.length > 0 && (
+                  <div ref={folderDropdownRef}>
                     <button
-                      ref={collectionButtonRef}
-                      onClick={handleToggleCollectionDropdown}
+                      ref={folderButtonRef}
+                      onClick={handleToggleFolderDropdown}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-surface-base text-slate-400 hover:text-slate-300 transition-colors"
                     >
                       <Plus size={12} />
@@ -879,26 +890,53 @@ export function SourcesDetailModal({
                       </div>
                     )}
 
-                    {/* Key Detection */}
-                    {audioFeatures.keyEstimate && (
-                      <div className="bg-surface-base rounded-lg p-4">
-                        <h4 className="text-sm font-semibold text-white mb-3">Key Detection</h4>
-                        <div className="grid grid-cols-2 gap-3">
-                          <FeatureItem label="Key" value={audioFeatures.keyEstimate} isText />
-                          <FeatureItem label="Key Strength" value={audioFeatures.keyStrength} decimals={3} />
+                    {/* Fundamental Frequency (one-shots) or Key Detection (loops) */}
+                    {audioFeatures.isOneShot ? (
+                      audioFeatures.fundamentalFrequency && (
+                        <div className="bg-surface-base rounded-lg p-4">
+                          <h4 className="text-sm font-semibold text-white mb-3">Fundamental Frequency</h4>
+                          <div className="grid grid-cols-2 gap-3">
+                            <FeatureItem label="Frequency" value={audioFeatures.fundamentalFrequency} unit="Hz" decimals={1} />
+                            <FeatureItem label="Note" value={freqToNoteName(audioFeatures.fundamentalFrequency)} isText />
+                          </div>
                         </div>
-                      </div>
+                      )
+                    ) : (
+                      audioFeatures.keyEstimate && (
+                        <div className="bg-surface-base rounded-lg p-4">
+                          <h4 className="text-sm font-semibold text-white mb-3">Key Detection</h4>
+                          <div className="grid grid-cols-2 gap-3">
+                            <FeatureItem label="Key" value={audioFeatures.keyEstimate} isText />
+                            <FeatureItem label="Key Strength" value={audioFeatures.keyStrength} decimals={3} />
+                          </div>
+                        </div>
+                      )
                     )}
 
                     {/* ML Classifications */}
-                    {(audioFeatures.instrumentClasses || audioFeatures.genreClasses) && (
+                    {(audioFeatures.instrumentClasses || audioFeatures.genreClasses) && (() => {
+                      // Filter out generic/useless YAMNet classes
+                      const ML_BLOCKLIST = new Set([
+                        'music', 'singing', 'song', 'speech', 'tender music', 'sad music',
+                        'happy music', 'music of asia', 'music of africa', 'music of latin america',
+                        'pop music', 'rock music', 'hip hop music', 'electronic music',
+                        'christian music', 'wedding music', 'new-age music', 'independent music',
+                        'musical instrument', 'plucked string instrument', 'bowed string instrument',
+                        'sound effect', 'noise',
+                      ])
+                      const filteredInstruments = audioFeatures.instrumentClasses
+                        ?.filter(inst => !ML_BLOCKLIST.has(inst.class.toLowerCase()) && !inst.class.includes('/m/'))
+                      const hasInstruments = filteredInstruments && filteredInstruments.length > 0
+                      const hasGenres = audioFeatures.genreClasses && audioFeatures.genreClasses.length > 0
+                      if (!hasInstruments && !hasGenres) return null
+                      return (
                       <div className="bg-surface-base rounded-lg p-4">
                         <h4 className="text-sm font-semibold text-white mb-3">ML Classifications</h4>
-                        {audioFeatures.instrumentClasses && audioFeatures.instrumentClasses.length > 0 && (
+                        {hasInstruments && (
                           <div className="mb-3">
                             <div className="text-xs text-slate-400 mb-1.5">Instruments:</div>
                             <div className="space-y-1">
-                              {audioFeatures.instrumentClasses.slice(0, 5).map((inst, idx) => (
+                              {filteredInstruments!.slice(0, 5).map((inst, idx) => (
                                 <div key={idx} className="flex items-center gap-2">
                                   <div className="flex-1 h-1.5 bg-surface-raised rounded-full overflow-hidden">
                                     <div
@@ -913,11 +951,11 @@ export function SourcesDetailModal({
                             </div>
                           </div>
                         )}
-                        {audioFeatures.genreClasses && audioFeatures.genreClasses.length > 0 && (
+                        {hasGenres && (
                           <div>
                             <div className="text-xs text-slate-400 mb-1.5">Genres:</div>
                             <div className="space-y-1">
-                              {audioFeatures.genreClasses.slice(0, 5).map((genre, idx) => (
+                              {audioFeatures.genreClasses!.slice(0, 5).map((genre, idx) => (
                                 <div key={idx} className="flex items-center gap-2">
                                   <div className="flex-1 h-1.5 bg-surface-raised rounded-full overflow-hidden">
                                     <div
@@ -933,7 +971,8 @@ export function SourcesDetailModal({
                           </div>
                         )}
                       </div>
-                    )}
+                      )
+                    })()}
                   </>
                 )}
               </div>
@@ -993,13 +1032,21 @@ export function SourcesDetailModal({
         </div>
       )}
 
-      {/* Collection dropdown - rendered with fixed positioning */}
-      {isCollectionDropdownOpen && collectionDropdownPosition && (
+      {/* Drum Rack Pad Picker */}
+      {showPadPicker && (
+        <DrumRackPadPicker
+          sample={sample}
+          onClose={() => setShowPadPicker(false)}
+        />
+      )}
+
+      {/* Folder dropdown - rendered with fixed positioning */}
+      {isFolderDropdownOpen && folderDropdownPosition && (
         <div
-          className="collection-dropdown-menu fixed z-[60] w-48 bg-surface-raised border border-surface-border rounded-lg shadow-xl"
+          className="folder-dropdown-menu fixed z-[60] w-48 bg-surface-raised border border-surface-border rounded-lg shadow-xl"
           style={{
-            top: `${collectionDropdownPosition.top}px`,
-            left: `${collectionDropdownPosition.left}px`,
+            top: `${folderDropdownPosition.top}px`,
+            left: `${folderDropdownPosition.left}px`,
           }}
         >
           {/* Search input */}
@@ -1008,8 +1055,8 @@ export function SourcesDetailModal({
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
               <input
                 type="text"
-                value={collectionSearchQuery}
-                onChange={(e) => setCollectionSearchQuery(e.target.value)}
+                value={folderSearchQuery}
+                onChange={(e) => setFolderSearchQuery(e.target.value)}
                 placeholder="Search folders..."
                 className="w-full pl-7 pr-2 py-1.5 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
                 autoFocus
@@ -1018,15 +1065,15 @@ export function SourcesDetailModal({
             </div>
           </div>
 
-          {/* Collection list */}
+          {/* Folder list */}
           <div className="max-h-40 overflow-y-auto">
-            {filteredCollections.length > 0 ? (
-              filteredCollections.map(col => (
+            {filteredFolders.length > 0 ? (
+              filteredFolders.map(col => (
                 <button
                   key={col.id}
                   onClick={() => {
-                    onAddToCollection?.(col.id, sample.id)
-                    setIsCollectionDropdownOpen(false)
+                    onAddToFolder?.(col.id, sample.id)
+                    setIsFolderDropdownOpen(false)
                   }}
                   className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-surface-base flex items-center gap-2"
                 >

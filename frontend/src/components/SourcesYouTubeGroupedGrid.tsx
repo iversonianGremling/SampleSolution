@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Play, Pause, Heart, ChevronDown, ChevronRight, GripVertical } from 'lucide-react'
+import { Play, Pause, Heart, ChevronDown, ChevronRight, GripVertical, Scissors } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended } from '../types'
@@ -23,6 +23,7 @@ interface SourcesYouTubeGroupedGridProps {
   onToggleSelect?: (id: number) => void
   onToggleSelectAll?: () => void
   onToggleFavorite?: (id: number) => void
+  onEditTrack?: (trackId: number) => void
   onTagClick?: (tagId: number) => void
   isLoading?: boolean
   playMode?: PlayMode
@@ -37,6 +38,7 @@ export function SourcesYouTubeGroupedGrid({
   onToggleSelect,
   onToggleSelectAll,
   onToggleFavorite,
+  onEditTrack,
   onTagClick,
   isLoading = false,
   playMode = 'normal',
@@ -50,7 +52,7 @@ export function SourcesYouTubeGroupedGrid({
   const [tagPopupId, setTagPopupId] = useState<number | null>(null)
   const [popupPosition, setPopupPosition] = useState<Record<number, { bottom: number; left: number }>>({})
   const tagTriggerRefs = useRef<Record<number, HTMLDivElement | null>>({})
-  const closeTimeoutRef = useRef<number | null>(null)
+  const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Stop audio when unmounting
   useEffect(() => {
@@ -306,7 +308,7 @@ export function SourcesYouTubeGroupedGrid({
             <div className="w-px h-5 bg-surface-border" />
           </>
         )}
-        <span className="text-sm text-slate-400">
+        <span className="min-w-0 flex-1 truncate text-sm text-slate-400">
           {videoGroups.length} video{videoGroups.length !== 1 ? 's' : ''}, {samples.length} slice{samples.length !== 1 ? 's' : ''}
         </span>
       </div>
@@ -322,10 +324,8 @@ export function SourcesYouTubeGroupedGrid({
           const allVideoSlicesSelected = selectedInVideo === videoSliceIds.length && videoSliceIds.length > 0
           const someVideoSlicesSelected = selectedInVideo > 0 && selectedInVideo < videoSliceIds.length
 
-          const handleToggleVideoSelection = (e: React.MouseEvent) => {
-            e.stopPropagation()
+          const toggleVideoSelection = () => {
             if (!onToggleSelect) return
-
             if (allVideoSlicesSelected) {
               // Deselect all slices from this video
               videoSliceIds.forEach(id => {
@@ -343,13 +343,18 @@ export function SourcesYouTubeGroupedGrid({
             }
           }
 
+          const handleVideoCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+            e.stopPropagation()
+            toggleVideoSelection()
+          }
+
           return (
             <div key={group.trackId} className="bg-surface-raised rounded-lg overflow-hidden">
               {/* Video header */}
-              <div className="flex items-center gap-3 p-3 hover:bg-surface-base transition-colors">
+              <div className="flex items-center gap-2 sm:gap-3 p-2 sm:p-3 hover:bg-surface-base transition-colors">
                 <button
                   onClick={() => toggleVideoExpanded(group.trackId)}
-                  className="flex items-center gap-3 flex-1"
+                  className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0"
                 >
                   {isExpanded ? <ChevronDown size={18} className="text-slate-400" /> : <ChevronRight size={18} className="text-slate-400" />}
 
@@ -358,26 +363,39 @@ export function SourcesYouTubeGroupedGrid({
                     <img
                       src={group.thumbnailUrl}
                       alt={group.trackTitle}
-                      className="w-24 h-14 object-cover rounded"
+                      className="w-16 h-10 sm:w-24 sm:h-14 object-cover rounded flex-shrink-0"
                     />
                   )}
 
-                  <div className="flex-1 text-left">
-                    <p className="text-sm font-medium text-white truncate">{group.trackTitle}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{group.slices.length} slice{group.slices.length !== 1 ? 's' : ''}</p>
+                  <div className="flex-1 min-w-0 text-left">
+                    <p className="text-xs sm:text-sm font-medium text-white truncate">{group.trackTitle}</p>
+                    <p className="text-[10px] sm:text-xs text-slate-400 mt-0.5 truncate">{group.slices.length} slice{group.slices.length !== 1 ? 's' : ''}</p>
                   </div>
                 </button>
 
+                {/* Open sample cut editor for this video */}
+                {onEditTrack && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onEditTrack(group.trackId)
+                    }}
+                    className="p-1.5 sm:p-2 flex-shrink-0 text-slate-400 hover:text-white hover:bg-surface-base rounded transition-colors"
+                    title="Open sample cut view"
+                  >
+                    <Scissors size={16} />
+                  </button>
+                )}
+
                 {/* Select all checkbox for this video */}
                 {onToggleSelect && (
-                  <div onClick={handleToggleVideoSelection}>
-                    <CustomCheckbox
-                      checked={allVideoSlicesSelected}
-                      indeterminate={someVideoSlicesSelected}
-                      onChange={() => {}}
-                      title={`Select all slices from ${group.trackTitle}`}
-                    />
-                  </div>
+                  <CustomCheckbox
+                    checked={allVideoSlicesSelected}
+                    indeterminate={someVideoSlicesSelected}
+                    onChange={handleVideoCheckboxChange}
+                    className="flex-shrink-0"
+                    title={`Select all slices from ${group.trackTitle}`}
+                  />
                 )}
               </div>
 

@@ -63,6 +63,7 @@ export function useAddTagToSlice() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
     },
   })
 }
@@ -75,6 +76,7 @@ export function useRemoveTagFromSlice() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
     },
   })
 }
@@ -115,7 +117,7 @@ export function useDeleteSlice(trackId: number) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
-      queryClient.invalidateQueries({ queryKey: ['collections'] })
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
     },
   })
 }
@@ -127,7 +129,7 @@ export function useDeleteSliceGlobal() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
-      queryClient.invalidateQueries({ queryKey: ['collections'] })
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
     },
   })
 }
@@ -166,6 +168,17 @@ export function useCreateTag() {
   })
 }
 
+export function useUpdateTag() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: { name?: string; color?: string; category?: string } }) =>
+      api.updateTag(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tags'] })
+    },
+  })
+}
+
 export function useGenerateAiTagsForSlice(trackId: number) {
   const queryClient = useQueryClient()
   return useMutation({
@@ -196,7 +209,30 @@ export function useBatchDeleteSlices() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
-      queryClient.invalidateQueries({ queryKey: ['collections'] })
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+    },
+  })
+}
+
+export function useBatchReanalyzeSlices() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      sliceIds,
+      analysisLevel,
+      concurrency,
+      includeFilenameTags,
+    }: {
+      sliceIds?: number[]
+      analysisLevel?: 'quick' | 'standard' | 'advanced'
+      concurrency?: number
+      includeFilenameTags?: boolean
+    }) => api.batchReanalyzeSamples(sliceIds, analysisLevel, concurrency, includeFilenameTags),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      queryClient.invalidateQueries({ queryKey: ['tags'] })
     },
   })
 }
@@ -308,6 +344,14 @@ export function useToggleFavorite() {
   })
 }
 
+// Folders
+export function useFolders(params?: { collectionId?: number; ungrouped?: boolean }) {
+  return useQuery({
+    queryKey: ['folders', params],
+    queryFn: () => api.getFolders(params),
+  })
+}
+
 // Collections
 export function useCollections() {
   return useQuery({
@@ -326,20 +370,10 @@ export function useCreateCollection() {
   })
 }
 
-export function useCreateCollectionFromTag() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: api.createCollectionFromTag,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['collections'] })
-    },
-  })
-}
-
 export function useUpdateCollection() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: { name?: string; color?: string; parentId?: number | null } }) =>
+    mutationFn: ({ id, data }: { id: number; data: { name?: string; color?: string; sortOrder?: number } }) =>
       api.updateCollection(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['collections'] })
@@ -353,39 +387,186 @@ export function useDeleteCollection() {
     mutationFn: api.deleteCollection,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['collections'] })
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
     },
   })
 }
 
-export function useAddSliceToCollection() {
+// Facets
+export function useFolderFacets(folderId: number | null) {
+  return useQuery({
+    queryKey: ['folder-facets', folderId],
+    queryFn: () => api.getFolderFacets(folderId!),
+    enabled: folderId !== null,
+  })
+}
+
+export function useCollectionFacets(collectionId: number | null) {
+  return useQuery({
+    queryKey: ['collection-facets', collectionId],
+    queryFn: () => api.getCollectionFacets(collectionId!),
+    enabled: collectionId !== null,
+  })
+}
+
+// Split folder
+export function useSplitFolder() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ collectionId, sliceId }: { collectionId: number; sliceId: number }) =>
-      api.addSliceToCollection(collectionId, sliceId),
+    mutationFn: ({ folderId, data }: { folderId: number; data: { facetType: 'tag-category' | 'metadata'; facetKey: string; selectedValues?: string[] } }) =>
+      api.splitFolder(folderId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['folder-facets'] })
       queryClient.invalidateQueries({ queryKey: ['collections'] })
     },
   })
 }
 
-export function useRemoveSliceFromCollection() {
+export function useSplitCollection() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ collectionId, sliceId }: { collectionId: number; sliceId: number }) =>
-      api.removeSliceFromCollection(collectionId, sliceId),
+    mutationFn: ({ collectionId, data }: { collectionId: number; data: { facetType: 'tag-category' | 'metadata'; facetKey: string; selectedValues?: string[] } }) =>
+      api.splitCollection(collectionId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['collection-facets'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+    },
+  })
+}
+
+export function useCreateFolder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.createFolder,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+    },
+  })
+}
+
+export function useCreateFolderFromTag() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.createFolderFromTag,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+    onError: (error) => {
+      console.error('Failed to create folder from tag:', error)
+    },
+  })
+}
+
+export function useCreateTagFromFolder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.createTagFromFolder,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tags'] })
+      queryClient.invalidateQueries({ queryKey: ['sources-samples'] })
+    },
+  })
+}
+
+export function useUpdateFolder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: number
+      data: { name?: string; color?: string; parentId?: number | null; collectionId?: number | null }
+    }) =>
+      api.updateFolder(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+    },
+  })
+}
+
+export function useDeleteFolder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.deleteFolder,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+    },
+  })
+}
+
+export function useAddSliceToFolder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ folderId, sliceId }: { folderId: number; sliceId: number }) =>
+      api.addSliceToFolder(folderId, sliceId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+    },
+  })
+}
+
+export function useBatchAddSlicesToFolder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ folderId, sliceIds }: { folderId: number; sliceIds: number[] }) =>
+      api.batchAddSlicesToFolder(folderId, sliceIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+    },
+  })
+}
+
+export function useBatchCreateFolders() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ collectionId, folders }: { collectionId: number; folders: api.BatchCreateFolderInput[] }) =>
+      api.batchCreateFolders(collectionId, folders),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
       queryClient.invalidateQueries({ queryKey: ['collections'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+    },
+  })
+}
+
+export function useBatchApplyTagToSlices() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: { tagId?: number; name?: string; color?: string; sliceIds: number[] }) =>
+      api.batchApplyTagToSlices(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tags'] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+    },
+  })
+}
+
+export function useRemoveSliceFromFolder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ folderId, sliceId }: { folderId: number; sliceId: number }) =>
+      api.removeSliceFromFolder(folderId, sliceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
     },
   })
 }
 
 // Export
-export function useExportCollection() {
+export function useExportFolder() {
   return useMutation({
-    mutationFn: ({ collectionId, exportPath }: { collectionId: number; exportPath?: string }) =>
-      api.exportCollection(collectionId, exportPath),
+    mutationFn: ({ folderId, exportPath }: { folderId: number; exportPath?: string }) =>
+      api.exportFolder(folderId, exportPath),
   })
 }
 

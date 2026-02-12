@@ -288,6 +288,16 @@ export function WebGLScatter({
         const containerWidth = Math.round(rect.width)
         const containerHeight = Math.round(rect.height)
 
+        // Debug: test raw WebGL context creation
+        const testCanvas = document.createElement('canvas')
+        const testGl = testCanvas.getContext('webgl2') || testCanvas.getContext('webgl')
+        console.log('[WebGLScatter] Raw WebGL context test:', testGl ? 'OK' : 'FAILED')
+        if (testGl) {
+          const dbg = testGl.getExtension('WEBGL_debug_renderer_info')
+          console.log('[WebGLScatter] Renderer:', dbg ? testGl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : testGl.getParameter(testGl.RENDERER))
+        }
+        console.log('[WebGLScatter] Container size:', containerWidth, 'x', containerHeight)
+
         // Update state with actual container size
         setActualContainerSize({ width: containerWidth, height: containerHeight })
 
@@ -295,6 +305,7 @@ export function WebGLScatter({
         const dpr = Math.min(window.devicePixelRatio || 1, 2) // Cap at 2x for performance
 
         await app.init({
+          preference: 'webgl', // Force WebGL (WebGPU fallback is broken in some Electron/Linux setups)
           width: containerWidth,
           height: containerHeight,
           backgroundColor: 0x0a0b0e, // Match surface-base
@@ -304,6 +315,7 @@ export function WebGLScatter({
           roundPixels: true, // NEW: Snap to pixel boundaries
           powerPreference: 'high-performance', // NEW: GPU preference
         })
+        console.log('[WebGLScatter] PixiJS init SUCCESS, renderer type:', app.renderer.type)
 
         if (containerRef.current && !appRef.current) {
           const canvas = app.canvas as HTMLCanvasElement
@@ -321,9 +333,14 @@ export function WebGLScatter({
         }
       } catch (error) {
         console.error('Failed to initialize PixiJS:', error)
+        const errorMessage = error instanceof Error ? error.message : String(error)
         if (containerRef.current) {
           containerRef.current.innerHTML =
-            '<div style="padding: 20px; color: #ef4444; text-align: center;">WebGL not supported. Please update your browser or enable hardware acceleration.</div>'
+            `<div style="padding: 20px; color: #ef4444; text-align: center;">
+              <div style="font-weight: bold; margin-bottom: 8px;">WebGL initialization failed</div>
+              <div style="font-size: 12px; opacity: 0.8;">${errorMessage}</div>
+              <div style="font-size: 11px; opacity: 0.6; margin-top: 8px;">Check the console for details</div>
+            </div>`
         }
       }
     }

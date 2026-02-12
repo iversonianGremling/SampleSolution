@@ -1,8 +1,8 @@
 import { Router } from 'express'
-import { eq, inArray, and, isNull, like, or, sql } from 'drizzle-orm'
+import { eq, inArray, and, isNull, isNotNull, like, or, sql } from 'drizzle-orm'
 import fs from 'fs/promises'
 import path from 'path'
-import { db, schema } from '../db/index.js'
+import { db, schema, getRawDb } from '../db/index.js'
 import { extractSlice } from '../services/ffmpeg.js'
 import {
   analyzeAudioFeatures,
@@ -15,20 +15,73 @@ import {
 const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
 
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
+const AUTO_REANALYSIS_TAG_CATEGORIES = ['type', 'tempo', 'spectral', 'energy', 'instrument', 'general'] as const
+
+/** Convert a frequency in Hz to the nearest note name (e.g., 440 -> "A"). */
+function freqToNoteName(hz: number): string | null {
+  if (!hz || hz <= 0) return null
+  const midi = Math.round(12 * Math.log2(hz / 440) + 69)
+  return NOTE_NAMES[((midi % 12) + 12) % 12]
+}
+
+function normalizeFolderPathValue(value: string): string {
+  return value
+    .replace(/\\+/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/\/+$/, '')
+}
+
+function normalizeIdentityPathValue(value: string): string {
+  return normalizeFolderPathValue(value).toLowerCase()
+}
+
+function isPathInFolderScope(candidatePath: string | null, scopePath: string): boolean {
+  if (!candidatePath) return false
+  const normalizedCandidate = normalizeFolderPathValue(candidatePath)
+  const normalizedScope = normalizeFolderPathValue(scopePath)
+  if (!normalizedCandidate || !normalizedScope) return false
+  return (
+    normalizedCandidate === normalizedScope ||
+    normalizedCandidate.startsWith(`${normalizedScope}/`)
+  )
+}
+
+function computeTagDiff(beforeTags: string[], afterTags: string[]) {
+  const beforeSet = new Set(beforeTags)
+  const afterSet = new Set(afterTags)
+
+  const removedTags = beforeTags.filter((tag) => !afterSet.has(tag))
+  const addedTags = afterTags.filter((tag) => !beforeSet.has(tag))
+
+  return { removedTags, addedTags }
+}
+
+async function getSliceTagNames(sliceId: number): Promise<string[]> {
+  const rows = await db
+    .select({ name: schema.tags.name })
+    .from(schema.sliceTags)
+    .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
+    .where(eq(schema.sliceTags.sliceId, sliceId))
+
+  return rows.map((row) => row.name)
+}
+
 // GET /api/sources/samples - Returns samples filtered by scope
 // Query params:
-//   scope: 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'collection:{id}' | 'all'
+//   scope: 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'my-folder:{id}' | 'folder:{id}' | 'all'
 //   tags: comma-separated tag IDs (optional)
 //   search: search term (optional)
 //   favorites: 'true' to show only favorites (optional)
-//   sortBy: 'bpm' | 'key' | 'name' | 'duration' | 'createdAt' (optional)
+//   sortBy: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt' (optional)
 //   sortOrder: 'asc' | 'desc' (optional, default: 'asc')
 //   minBpm: minimum BPM (optional)
 //   maxBpm: maximum BPM (optional)
 //   keys: comma-separated key names (optional, e.g., 'C major,D minor')
+//   notes: comma-separated note names for fundamental frequency filter (optional, e.g., 'C,D,E')
 router.get('/sources/samples', async (req, res) => {
   try {
-    const { scope = 'all', tags, search, favorites, sortBy, sortOrder = 'asc', minBpm, maxBpm, keys } = req.query as {
+    const { scope = 'all', tags, search, favorites, sortBy, sortOrder = 'asc', minBpm, maxBpm, keys, notes } = req.query as {
       scope?: string
       tags?: string
       search?: string
@@ -38,10 +91,119 @@ router.get('/sources/samples', async (req, res) => {
       minBpm?: string
       maxBpm?: string
       keys?: string
+      notes?: string
     }
 
     // Build base query conditions
     const conditions: any[] = []
+    const sqlite = getRawDb()
+    const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
+    const hasModernFolders = tables.some((t) => t.name === 'folders')
+    const hasModernFolderSlices = tables.some((t) => t.name === 'folder_slices')
+    const hasLegacyCollections = tables.some((t) => t.name === 'collections')
+    const hasLegacyCollectionSlices = tables.some((t) => t.name === 'collection_slices')
+
+    let hasLegacyPerspectiveId = false
+    if (hasLegacyCollections) {
+      const collectionColumns = sqlite.prepare('PRAGMA table_info(collections)').all() as Array<{ name: string }>
+      hasLegacyPerspectiveId = collectionColumns.some((col) => col.name === 'perspective_id')
+    }
+    const useLegacyHierarchy = hasLegacyCollections && hasLegacyPerspectiveId && hasLegacyCollectionSlices
+
+    // Resolve folder membership links in a schema-agnostic way.
+    // Some deployments can carry legacy and modern tables at the same time.
+    // We intentionally merge both sources and de-duplicate.
+    const getFolderSliceIds = async (folderIds: number[]): Promise<number[]> => {
+      if (folderIds.length === 0) return []
+
+      const found = new Set<number>()
+
+      if (hasLegacyCollectionSlices) {
+        const placeholders = folderIds.map(() => '?').join(',')
+        const legacyRows = sqlite
+          .prepare(`SELECT slice_id as sliceId FROM collection_slices WHERE collection_id IN (${placeholders})`)
+          .all(...folderIds) as Array<{ sliceId: number }>
+
+        for (const row of legacyRows) {
+          found.add(row.sliceId)
+        }
+      }
+
+      if (hasModernFolderSlices) {
+        const modernRows = await db
+          .select({ sliceId: schema.folderSlices.sliceId })
+          .from(schema.folderSlices)
+          .where(inArray(schema.folderSlices.folderId, folderIds))
+
+        for (const row of modernRows) {
+          found.add(row.sliceId)
+        }
+      }
+
+      return Array.from(found)
+    }
+
+    const getFolderIdsForCollection = async (collectionId: number): Promise<number[]> => {
+      const ids = new Set<number>()
+
+      // Legacy rename model: collections table stores folders and links to perspectives via perspective_id.
+      if (useLegacyHierarchy) {
+        const legacyFolders = sqlite
+          .prepare('SELECT id FROM collections WHERE perspective_id = ?')
+          .all(collectionId) as Array<{ id: number }>
+        for (const row of legacyFolders) ids.add(row.id)
+      }
+
+      if (hasModernFolders) {
+        const modernFolders = await db
+          .select({ id: schema.folders.id })
+          .from(schema.folders)
+          .where(eq(schema.folders.collectionId, collectionId))
+        for (const row of modernFolders) ids.add(row.id)
+      }
+
+      return Array.from(ids)
+    }
+
+    const getFolderLinksForSliceIds = async (sliceIdsToResolve: number[]): Promise<Array<{ sliceId: number; folderId: number }>> => {
+      if (sliceIdsToResolve.length === 0) return []
+
+      const links: Array<{ sliceId: number; folderId: number }> = []
+      const dedupe = new Set<string>()
+
+      if (hasLegacyCollectionSlices) {
+        const placeholders = sliceIdsToResolve.map(() => '?').join(',')
+        const legacyLinks = sqlite
+          .prepare(`SELECT slice_id as sliceId, collection_id as folderId FROM collection_slices WHERE slice_id IN (${placeholders})`)
+          .all(...sliceIdsToResolve) as Array<{ sliceId: number; folderId: number }>
+
+        for (const row of legacyLinks) {
+          const key = `${row.sliceId}:${row.folderId}`
+          if (!dedupe.has(key)) {
+            dedupe.add(key)
+            links.push(row)
+          }
+        }
+      }
+
+      if (hasModernFolderSlices) {
+        const modernRows = await db
+          .select()
+          .from(schema.folderSlices)
+          .where(inArray(schema.folderSlices.sliceId, sliceIdsToResolve))
+
+        for (const row of modernRows) {
+          const link = { sliceId: row.sliceId, folderId: row.folderId }
+          const key = `${link.sliceId}:${link.folderId}`
+          if (!dedupe.has(key)) {
+            dedupe.add(key)
+            links.push(link)
+          }
+        }
+      }
+
+      return links
+    }
 
     // Parse scope
     if (scope === 'youtube') {
@@ -59,20 +221,28 @@ router.get('/sources/samples', async (req, res) => {
           isNull(schema.tracks.folderPath)
         )
       )
-    } else if (scope.startsWith('folder:')) {
-      // Samples from a specific folder (and subfolders)
-      const folderPath = scope.slice(7) // Remove 'folder:' prefix
-      conditions.push(
-        and(
-          eq(schema.tracks.source, 'local'),
-          or(
-            eq(schema.tracks.folderPath, folderPath),
-            like(schema.tracks.folderPath, `${folderPath}/%`)
+    } else if (scope.startsWith('folder:') || scope.startsWith('my-folder:')) {
+      // Two folder scope variants share the same prefix:
+      // - folder:{path}  => imported local folder path (string)
+      // - my-folder:{id} => app "My Folder" membership (numeric id)
+      // - folder:{id}    => backward-compatible app "My Folder" membership
+      // Only apply path-based track filtering for imported-folder scopes.
+      const isMyFolderScope = scope.startsWith('my-folder:')
+      const folderScopeValue = isMyFolderScope ? scope.slice('my-folder:'.length) : scope.slice('folder:'.length)
+      const folderId = Number.parseInt(folderScopeValue, 10)
+      const isFolderIdScope =
+        isMyFolderScope || (!Number.isNaN(folderId) && String(folderId) === folderScopeValue)
+
+      if (!isFolderIdScope) {
+        conditions.push(
+          and(
+            eq(schema.tracks.source, 'local'),
+            isNotNull(schema.tracks.folderPath)
           )
         )
-      )
+      }
     } else if (scope.startsWith('collection:')) {
-      // Samples in a specific collection - handled separately below
+      // Samples across all folders in a collection - handled separately below
     }
     // 'all' has no additional conditions
 
@@ -99,6 +269,8 @@ router.get('/sources/samples', async (req, res) => {
         endTime: schema.slices.endTime,
         filePath: schema.slices.filePath,
         favorite: schema.slices.favorite,
+        sampleModified: schema.slices.sampleModified,
+        sampleModifiedAt: schema.slices.sampleModifiedAt,
         createdAt: schema.slices.createdAt,
         trackTitle: schema.tracks.title,
         trackYoutubeId: schema.tracks.youtubeId,
@@ -110,9 +282,13 @@ router.get('/sources/samples', async (req, res) => {
         // Audio features
         bpm: schema.audioFeatures.bpm,
         keyEstimate: schema.audioFeatures.keyEstimate,
+        fundamentalFrequency: schema.audioFeatures.fundamentalFrequency,
         envelopeType: schema.audioFeatures.envelopeType,
         genrePrimary: schema.audioFeatures.genrePrimary,
         instrumentType: schema.audioFeatures.instrumentType,
+        brightness: schema.audioFeatures.brightness,
+        loudness: schema.audioFeatures.loudness,
+        roughness: schema.audioFeatures.roughness,
       })
       .from(schema.slices)
       .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
@@ -125,16 +301,42 @@ router.get('/sources/samples', async (req, res) => {
 
     let slices = await slicesQuery
 
-    // Handle collection scope (post-filter since it requires join)
+    // Defensive dedupe for mixed-schema deployments where join paths can duplicate rows.
+    slices = Array.from(new Map(slices.map((slice) => [slice.id, slice])).values())
+
+    // Handle folder scope (post-filter since it requires join)
+    if (scope.startsWith('folder:') || scope.startsWith('my-folder:')) {
+      const folderScopeValue = scope.startsWith('my-folder:')
+        ? scope.slice('my-folder:'.length)
+        : scope.slice('folder:'.length)
+      const folderId = Number.parseInt(folderScopeValue, 10)
+      const isFolderIdScope =
+        scope.startsWith('my-folder:') || (!Number.isNaN(folderId) && String(folderId) === folderScopeValue)
+
+      if (isFolderIdScope) {
+        const folderSliceIds = await getFolderSliceIds([folderId])
+        const sliceIdSet = new Set(folderSliceIds)
+        slices = slices.filter(s => sliceIdSet.has(s.id))
+      } else {
+        slices = slices.filter((slice) =>
+          isPathInFolderScope(slice.trackFolderPath, folderScopeValue)
+        )
+      }
+    }
+
+    // Handle collection scope (all samples across all folders in the collection)
     if (scope.startsWith('collection:')) {
       const collectionId = parseInt(scope.split(':')[1])
-      const collectionSliceIds = await db
-        .select({ sliceId: schema.collectionSlices.sliceId })
-        .from(schema.collectionSlices)
-        .where(eq(schema.collectionSlices.collectionId, collectionId))
 
-      const sliceIdSet = new Set(collectionSliceIds.map(c => c.sliceId))
-      slices = slices.filter(s => sliceIdSet.has(s.id))
+      const folderIds = await getFolderIdsForCollection(collectionId)
+
+      if (folderIds.length > 0) {
+        const collectionSliceIds = await getFolderSliceIds(folderIds)
+        const sliceIdSet = new Set(collectionSliceIds)
+        slices = slices.filter(s => sliceIdSet.has(s.id))
+      } else {
+        slices = []
+      }
     }
 
     // Get tags for all slices
@@ -188,6 +390,19 @@ router.get('/sources/samples', async (req, res) => {
       })
     }
 
+    // Fundamental frequency note filter
+    if (notes && notes.trim()) {
+      const noteList = notes.split(',').map(n => n.trim())
+      filteredSlices = filteredSlices.filter(slice => {
+        if (!slice.fundamentalFrequency) return false
+        const noteName = freqToNoteName(slice.fundamentalFrequency)
+        return noteName !== null && noteList.includes(noteName)
+      })
+    }
+
+    // Keep payload unique by slice id after all post-filters.
+    filteredSlices = Array.from(new Map(filteredSlices.map((slice) => [slice.id, slice])).values())
+
     // Sorting
     if (sortBy) {
       filteredSlices.sort((a, b) => {
@@ -202,6 +417,10 @@ router.get('/sources/samples', async (req, res) => {
           case 'key':
             aVal = a.keyEstimate ?? ''
             bVal = b.keyEstimate ?? ''
+            break
+          case 'note':
+            aVal = a.fundamentalFrequency ?? -1
+            bVal = b.fundamentalFrequency ?? -1
             break
           case 'name':
             aVal = a.name.toLowerCase()
@@ -229,21 +448,16 @@ router.get('/sources/samples', async (req, res) => {
       })
     }
 
-    // Get collection memberships for filtered slices
+    // Get folder memberships for filtered slices
     const filteredSliceIds = filteredSlices.map(s => s.id)
-    const collectionLinks = filteredSliceIds.length > 0
-      ? await db
-          .select()
-          .from(schema.collectionSlices)
-          .where(inArray(schema.collectionSlices.sliceId, filteredSliceIds))
-      : []
+    const folderLinks = await getFolderLinksForSliceIds(filteredSliceIds)
 
-    const collectionsBySlice = new Map<number, number[]>()
-    for (const row of collectionLinks) {
-      if (!collectionsBySlice.has(row.sliceId)) {
-        collectionsBySlice.set(row.sliceId, [])
+    const foldersBySlice = new Map<number, Set<number>>()
+    for (const row of folderLinks) {
+      if (!foldersBySlice.has(row.sliceId)) {
+        foldersBySlice.set(row.sliceId, new Set())
       }
-      collectionsBySlice.get(row.sliceId)!.push(row.collectionId)
+      foldersBySlice.get(row.sliceId)!.add(row.folderId)
     }
 
     const result = filteredSlices.map(slice => ({
@@ -254,14 +468,20 @@ router.get('/sources/samples', async (req, res) => {
       endTime: slice.endTime,
       filePath: slice.filePath,
       favorite: slice.favorite === 1,
+      sampleModified: slice.sampleModified === 1,
+      sampleModifiedAt: slice.sampleModifiedAt,
       createdAt: slice.createdAt,
       tags: tagsBySlice.get(slice.id) || [],
-      collectionIds: collectionsBySlice.get(slice.id) || [],
+      folderIds: Array.from(foldersBySlice.get(slice.id) || []),
       bpm: slice.bpm,
       keyEstimate: slice.keyEstimate,
+      fundamentalFrequency: slice.fundamentalFrequency,
       envelopeType: slice.envelopeType,
       genrePrimary: slice.genrePrimary,
       instrumentType: slice.instrumentType,
+      brightness: slice.brightness,
+      loudness: slice.loudness,
+      roughness: slice.roughness,
       track: {
         title: slice.trackTitle,
         youtubeId: slice.trackYoutubeId,
@@ -378,6 +598,8 @@ router.get('/slices', async (_req, res) => {
         endTime: schema.slices.endTime,
         filePath: schema.slices.filePath,
         favorite: schema.slices.favorite,
+        sampleModified: schema.slices.sampleModified,
+        sampleModifiedAt: schema.slices.sampleModifiedAt,
         createdAt: schema.slices.createdAt,
         trackTitle: schema.tracks.title,
         trackYoutubeId: schema.tracks.youtubeId,
@@ -406,21 +628,21 @@ router.get('/slices', async (_req, res) => {
       tagsBySlice.get(sliceId)!.push(row.tags)
     }
 
-    // Get collection memberships for all slices
-    const collectionLinks =
+    // Get folder memberships for all slices
+    const folderLinks =
       sliceIds.length > 0
         ? await db
             .select()
-            .from(schema.collectionSlices)
-            .where(inArray(schema.collectionSlices.sliceId, sliceIds))
+            .from(schema.folderSlices)
+            .where(inArray(schema.folderSlices.sliceId, sliceIds))
         : []
 
-    const collectionsBySlice = new Map<number, number[]>()
-    for (const row of collectionLinks) {
-      if (!collectionsBySlice.has(row.sliceId)) {
-        collectionsBySlice.set(row.sliceId, [])
+    const foldersBySlice = new Map<number, number[]>()
+    for (const row of folderLinks) {
+      if (!foldersBySlice.has(row.sliceId)) {
+        foldersBySlice.set(row.sliceId, [])
       }
-      collectionsBySlice.get(row.sliceId)!.push(row.collectionId)
+      foldersBySlice.get(row.sliceId)!.push(row.folderId)
     }
 
     const result = slices.map((slice) => ({
@@ -431,9 +653,11 @@ router.get('/slices', async (_req, res) => {
       endTime: slice.endTime,
       filePath: slice.filePath,
       favorite: slice.favorite === 1,
+      sampleModified: slice.sampleModified === 1,
+      sampleModifiedAt: slice.sampleModifiedAt,
       createdAt: slice.createdAt,
       tags: tagsBySlice.get(slice.id) || [],
-      collectionIds: collectionsBySlice.get(slice.id) || [],
+      folderIds: foldersBySlice.get(slice.id) || [],
       track: {
         title: slice.trackTitle,
         youtubeId: slice.trackYoutubeId,
@@ -596,6 +820,11 @@ router.put('/slices/:id', async (req, res) => {
     if (startTime !== undefined) updates.startTime = startTime
     if (endTime !== undefined) updates.endTime = endTime
 
+    if (name !== undefined || startTime !== undefined || endTime !== undefined) {
+      updates.sampleModified = 1
+      updates.sampleModifiedAt = new Date().toISOString()
+    }
+
     // If time changed, regenerate slice audio
     if (startTime !== undefined || endTime !== undefined) {
       const track = await db
@@ -704,7 +933,17 @@ router.post('/slices/batch-ai-tags', async (req, res) => {
       .from(schema.slices)
       .where(inArray(schema.slices.id, sliceIds))
 
-    const results: { sliceId: number; success: boolean; error?: string }[] = []
+    const results: {
+      sliceId: number
+      success: boolean
+      error?: string
+      hadPotentialCustomState?: boolean
+      warningMessage?: string
+      removedTags?: string[]
+      addedTags?: string[]
+    }[] = []
+    const warningMessages: string[] = []
+    const warningSliceIds = new Set<number>()
 
     // Process slices with concurrency limit
     const CONCURRENCY = 3
@@ -716,8 +955,72 @@ router.post('/slices/batch-ai-tags', async (req, res) => {
             return { sliceId: slice.id, success: false, error: 'No audio file' }
           }
           try {
+            const beforeTags = await getSliceTagNames(slice.id)
+            const beforeAutoTagRows = await db
+              .select({ name: schema.tags.name })
+              .from(schema.sliceTags)
+              .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
+              .where(
+                and(
+                  eq(schema.sliceTags.sliceId, slice.id),
+                  inArray(schema.tags.category, [...AUTO_REANALYSIS_TAG_CATEGORIES])
+                )
+              )
+            const beforeAutoTags = beforeAutoTagRows.map((row) => row.name.toLowerCase())
+
             await autoTagSlice(slice.id, slice.filePath)
-            return { sliceId: slice.id, success: true }
+
+            const afterTags = await getSliceTagNames(slice.id)
+            const { removedTags, addedTags } = computeTagDiff(beforeTags, afterTags)
+            const afterAutoTagRows = await db
+              .select({ name: schema.tags.name })
+              .from(schema.sliceTags)
+              .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
+              .where(
+                and(
+                  eq(schema.sliceTags.sliceId, slice.id),
+                  inArray(schema.tags.category, [...AUTO_REANALYSIS_TAG_CATEGORIES])
+                )
+              )
+            const afterAutoTags = afterAutoTagRows.map((row) => row.name.toLowerCase())
+
+            const autoTagChanged =
+              beforeAutoTags.length > 0 &&
+              (
+                beforeAutoTags.some((tag) => !afterAutoTags.includes(tag)) ||
+                afterAutoTags.some((tag) => !beforeAutoTags.includes(tag))
+              )
+
+            let warningMessage: string | null = null
+            if (autoTagChanged || slice.sampleModified === 1) {
+              warningMessage = autoTagChanged
+                ? `Slice ${slice.id} had custom/changed AI tag state before analysis. Changes detected: -${removedTags.length} +${addedTags.length}.`
+                : `Slice ${slice.id} was manually modified before analysis.`
+            }
+
+            await db.insert(schema.reanalysisLogs).values({
+              sliceId: slice.id,
+              beforeTags: JSON.stringify(beforeTags),
+              afterTags: JSON.stringify(afterTags),
+              removedTags: JSON.stringify(removedTags),
+              addedTags: JSON.stringify(addedTags),
+              hadPotentialCustomState: warningMessage ? 1 : 0,
+              warningMessage,
+            })
+
+            if (warningMessage) {
+              warningMessages.push(warningMessage)
+              warningSliceIds.add(slice.id)
+            }
+
+            return {
+              sliceId: slice.id,
+              success: true,
+              hadPotentialCustomState: Boolean(warningMessage),
+              warningMessage: warningMessage ?? undefined,
+              removedTags,
+              addedTags,
+            }
           } catch (error) {
             return {
               sliceId: slice.id,
@@ -734,6 +1037,11 @@ router.post('/slices/batch-ai-tags', async (req, res) => {
       total: sliceIds.length,
       processed: results.length,
       successful: results.filter((r) => r.success).length,
+      warnings: {
+        totalWithWarnings: warningSliceIds.size,
+        sliceIds: Array.from(warningSliceIds),
+        messages: warningMessages,
+      },
       results,
     })
   } catch (error) {
@@ -838,6 +1146,9 @@ router.get('/slices/:id/features', async (req, res) => {
       name: slice[0].name,
       trackId: slice[0].trackId,
       filePath: slice[0].filePath,
+      isOneShot: feature.isOneShot,
+      isLoop: feature.isLoop,
+      fundamentalFrequency: feature.fundamentalFrequency,
       duration: feature.duration,
       bpm: feature.bpm,
       onsetCount: feature.onsetCount,
@@ -1004,6 +1315,7 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
             name: schema.slices.name,
             filePath: schema.slices.filePath,
             trackId: schema.slices.trackId,
+            sampleModified: schema.slices.sampleModified,
             folderPath: schema.tracks.folderPath,
           })
           .from(schema.slices)
@@ -1015,6 +1327,7 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
             name: schema.slices.name,
             filePath: schema.slices.filePath,
             trackId: schema.slices.trackId,
+            sampleModified: schema.slices.sampleModified,
             folderPath: schema.tracks.folderPath,
           })
           .from(schema.slices)
@@ -1029,9 +1342,31 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
       })
     }
 
-    // Configurable concurrency (1-50, default 5)
-    const CHUNK_SIZE = Math.max(1, Math.min(50, concurrency || 5))
-    const results: Array<{ sliceId: number; success: boolean; error?: string }> = []
+    // Clean up bad tags (AudioSet ontology labels that leaked through)
+    const badTags = await db
+      .select({ id: schema.tags.id })
+      .from(schema.tags)
+      .where(like(schema.tags.name, '%/m/%'))
+    if (badTags.length > 0) {
+      const badTagIds = badTags.map(t => t.id)
+      await db.delete(schema.sliceTags).where(inArray(schema.sliceTags.tagId, badTagIds))
+      await db.delete(schema.tags).where(inArray(schema.tags.id, badTagIds))
+      console.log(`Cleaned up ${badTags.length} bad AudioSet ontology tags`)
+    }
+
+    // Configurable concurrency (1-10, default 2 to avoid OOM with heavy Python processes)
+    const CHUNK_SIZE = Math.max(1, Math.min(10, concurrency || 2))
+    const results: Array<{
+      sliceId: number
+      success: boolean
+      error?: string
+      hadPotentialCustomState?: boolean
+      warningMessage?: string
+      removedTags?: string[]
+      addedTags?: string[]
+    }> = []
+    const warningMessages: string[] = []
+    const warningSliceIds = new Set<number>()
 
     // Process in chunks
     for (let i = 0; i < slicesToAnalyze.length; i += CHUNK_SIZE) {
@@ -1071,11 +1406,36 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
               return
             }
 
+            const beforeTags = await getSliceTagNames(slice.id)
+            const beforeAutoTagRows = await db
+              .select({ name: schema.tags.name })
+              .from(schema.sliceTags)
+              .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
+              .where(
+                and(
+                  eq(schema.sliceTags.sliceId, slice.id),
+                  inArray(schema.tags.category, [...AUTO_REANALYSIS_TAG_CATEGORIES])
+                )
+              )
+            const beforeAutoTags = beforeAutoTagRows.map((row) => row.name.toLowerCase())
+
             // Re-analyze the audio
             const features = await analyzeAudioFeatures(filePath, analysisLevel)
+            const suggestedAutoTags = Array.from(
+              new Set((features.suggestedTags || []).map((tag: string) => tag.toLowerCase()))
+            )
 
             // Store updated features
             await storeAudioFeatures(slice.id, features)
+
+            // Clear existing auto-generated tags before adding new ones
+            // Keep only filename-category tags (user-created from filenames)
+            await db.run(sql`
+              DELETE FROM slice_tags WHERE slice_id = ${slice.id}
+              AND tag_id IN (
+                SELECT id FROM tags WHERE category IN (${AUTO_REANALYSIS_TAG_CATEGORIES[0]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[1]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[2]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[3]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[4]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[5]})
+              )
+            `)
 
             // Update tags if suggestedTags exist
             if (features.suggestedTags && features.suggestedTags.length > 0) {
@@ -1107,8 +1467,6 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
 
               const tags = await Promise.all(tagPromises)
 
-              // Clear existing auto-generated tags (keep user tags)
-              // For simplicity, we'll just add new tags without removing old ones
               // Link tags to slice
               for (const tag of tags) {
                 await db
@@ -1155,7 +1513,53 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
               }
             }
 
-            results.push({ sliceId: slice.id, success: true })
+            const afterTags = await getSliceTagNames(slice.id)
+            const { removedTags, addedTags } = computeTagDiff(beforeTags, afterTags)
+
+            const beforeAutoSet = new Set(beforeAutoTags)
+            const suggestedAutoSet = new Set(suggestedAutoTags)
+            const autoTagStateChanged =
+              beforeAutoTags.some((tag) => !suggestedAutoSet.has(tag)) ||
+              suggestedAutoTags.some((tag) => !beforeAutoSet.has(tag))
+
+            let warningMessage: string | null = null
+            if (autoTagStateChanged || slice.sampleModified === 1) {
+              warningMessage = autoTagStateChanged
+                ? `Slice ${slice.id} had custom/changed AI tag state before re-analysis. Changes detected: -${removedTags.length} +${addedTags.length}.`
+                : `Slice ${slice.id} was manually modified before re-analysis.`
+            }
+
+            await db.insert(schema.reanalysisLogs).values({
+              sliceId: slice.id,
+              beforeTags: JSON.stringify(beforeTags),
+              afterTags: JSON.stringify(afterTags),
+              removedTags: JSON.stringify(removedTags),
+              addedTags: JSON.stringify(addedTags),
+              hadPotentialCustomState: warningMessage ? 1 : 0,
+              warningMessage,
+            })
+
+            if (warningMessage) {
+              warningMessages.push(warningMessage)
+              warningSliceIds.add(slice.id)
+            }
+
+            results.push({
+              sliceId: slice.id,
+              success: true,
+              hadPotentialCustomState: Boolean(warningMessage),
+              warningMessage: warningMessage ?? undefined,
+              removedTags,
+              addedTags,
+            })
+
+            await db
+              .update(schema.slices)
+              .set({
+                sampleModified: 0,
+                sampleModifiedAt: null,
+              })
+              .where(eq(schema.slices.id, slice.id))
           } catch (error) {
             console.error(`Error re-analyzing slice ${slice.id}:`, error)
             results.push({
@@ -1180,6 +1584,11 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
       total: slicesToAnalyze.length,
       analyzed,
       failed,
+      warnings: {
+        totalWithWarnings: warningSliceIds.size,
+        sliceIds: Array.from(warningSliceIds),
+        messages: warningMessages,
+      },
       results,
     })
   } catch (error) {
@@ -1286,45 +1695,78 @@ router.get('/slices/:id/similar', async (req, res) => {
 // GET /api/slices/duplicates - Find potential duplicate samples based on chromaprint fingerprint
 router.get('/slices/duplicates', async (_req, res) => {
   try {
-    // Get all slices with chromaprint fingerprints
-    const allFeatures = await db
+    // Collect fingerprint + path identity data so we can catch both true audio dupes
+    // and obvious duplicated imports when fingerprint is missing.
+    const allRows = await db
       .select({
-        sliceId: schema.audioFeatures.sliceId,
+        sliceId: schema.slices.id,
         chromaprintFingerprint: schema.audioFeatures.chromaprintFingerprint,
+        filePath: schema.slices.filePath,
+        startTime: schema.slices.startTime,
+        endTime: schema.slices.endTime,
+        trackOriginalPath: schema.tracks.originalPath,
       })
-      .from(schema.audioFeatures)
-      .where(sql`${schema.audioFeatures.chromaprintFingerprint} IS NOT NULL`)
+      .from(schema.slices)
+      .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .leftJoin(schema.audioFeatures, eq(schema.slices.id, schema.audioFeatures.sliceId))
 
-    if (allFeatures.length === 0) {
+    if (allRows.length === 0) {
       return res.json({ groups: [], total: 0 })
     }
 
-    // Group by exact fingerprint match
-    const exactGroups = new Map<string, number[]>()
+    const exactGroups = new Map<string, Set<number>>()
+    const fileIdentityGroups = new Map<string, Set<number>>()
 
-    for (const feature of allFeatures) {
-      const fp = feature.chromaprintFingerprint!
-      if (!exactGroups.has(fp)) {
-        exactGroups.set(fp, [])
+    for (const row of allRows) {
+      if (row.chromaprintFingerprint) {
+        if (!exactGroups.has(row.chromaprintFingerprint)) {
+          exactGroups.set(row.chromaprintFingerprint, new Set<number>())
+        }
+        exactGroups.get(row.chromaprintFingerprint)!.add(row.sliceId)
       }
-      exactGroups.get(fp)!.push(feature.sliceId)
+
+      const identityPath = row.trackOriginalPath || row.filePath
+      if (identityPath) {
+        const identityKey = [
+          normalizeIdentityPathValue(identityPath),
+          Math.round(row.startTime * 1000),
+          Math.round(row.endTime * 1000),
+        ].join('|')
+
+        if (!fileIdentityGroups.has(identityKey)) {
+          fileIdentityGroups.set(identityKey, new Set<number>())
+        }
+        fileIdentityGroups.get(identityKey)!.add(row.sliceId)
+      }
     }
 
-    const duplicateGroups: Array<{
+    const dedupedGroups = new Map<string, {
       sliceIds: number[]
-      matchType: 'exact'
+      matchType: 'exact' | 'file'
       hashSimilarity: number
-    }> = []
+    }>()
 
-    for (const [_fp, sliceIds] of exactGroups.entries()) {
-      if (sliceIds.length > 1) {
-        duplicateGroups.push({
+    const addGroup = (sliceIdSet: Set<number>, matchType: 'exact' | 'file') => {
+      const sliceIds = Array.from(sliceIdSet).sort((a, b) => a - b)
+      if (sliceIds.length <= 1) return
+
+      const signature = sliceIds.join(',')
+      const existing = dedupedGroups.get(signature)
+
+      // Prefer exact fingerprint classification when both strategies match same ids.
+      if (!existing || (existing.matchType !== 'exact' && matchType === 'exact')) {
+        dedupedGroups.set(signature, {
           sliceIds,
-          matchType: 'exact',
+          matchType,
           hashSimilarity: 1.0,
         })
       }
     }
+
+    for (const set of exactGroups.values()) addGroup(set, 'exact')
+    for (const set of fileIdentityGroups.values()) addGroup(set, 'file')
+
+    const duplicateGroups = Array.from(dedupedGroups.values())
 
     // Get slice details for all duplicates
     const allDuplicateIds = new Set<number>()
@@ -1347,11 +1789,13 @@ router.get('/slices/duplicates', async (_req, res) => {
 
     const sliceMap = new Map(slices.map(s => [s.id, s]))
 
-    const groups = duplicateGroups.map(g => ({
-      matchType: g.matchType,
-      hashSimilarity: g.hashSimilarity,
-      samples: g.sliceIds.map(id => sliceMap.get(id)!).filter(Boolean),
-    }))
+    const groups = duplicateGroups
+      .map(g => ({
+        matchType: g.matchType,
+        hashSimilarity: g.hashSimilarity,
+        samples: g.sliceIds.map(id => sliceMap.get(id)!).filter(Boolean),
+      }))
+      .sort((a, b) => b.samples.length - a.samples.length)
 
     res.json({
       groups,

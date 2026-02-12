@@ -132,6 +132,9 @@ export interface AudioFeatures {
   transientSpectralFlatness?: number
   sampleTypeConfidence?: number
 
+  // Fundamental frequency (one-shots only, excluding chords)
+  fundamentalFrequency?: number
+
   // Metadata
   analysisLevel?: AnalysisLevel
   analysisDurationMs: number
@@ -179,11 +182,6 @@ export async function analyzeAudioFeatures(
     let stdout = ''
     let stderr = ''
     let pythonError = ''
-
-    const timeoutHandle = setTimeout(() => {
-      proc.kill()
-      reject(new Error(`Audio analysis timeout (>${timeoutMs / 1000}s)`))
-    }, timeoutMs)
 
     proc.stdout.on('data', (data) => {
       const chunk = data.toString()
@@ -237,10 +235,19 @@ export async function analyzeAudioFeatures(
       }
     })
 
-    proc.on('close', (code) => {
-      clearTimeout(timeoutHandle)
+    proc.on('close', (code, signal) => {
 
       if (code !== 0) {
+        // Process killed by signal (OOM, timeout, etc.)
+        if (signal || code === null) {
+          const reason = signal === 'SIGTERM' ? 'process timed out or was terminated'
+            : signal === 'SIGKILL' ? 'process was killed (likely out of memory)'
+            : `process received signal ${signal || 'unknown'}`
+          console.error(`Audio analysis killed for ${audioPath}: ${reason}`)
+          reject(new Error(`Audio analysis failed: ${reason}`))
+          return
+        }
+
         // Try to extract actual error from stdout (JSON error format)
         try {
           // Find JSON object in stdout (might be after warnings)
@@ -348,6 +355,7 @@ export async function analyzeAudioFeatures(
           transientSpectralCentroid: result.transient_spectral_centroid,
           transientSpectralFlatness: result.transient_spectral_flatness,
           sampleTypeConfidence: result.sample_type_confidence,
+          fundamentalFrequency: result.fundamental_frequency,
           // Metadata
           analysisLevel: result.analysis_level,
           analysisDurationMs: result.analysis_duration_ms,
@@ -362,7 +370,6 @@ export async function analyzeAudioFeatures(
     })
 
     proc.on('error', (err) => {
-      clearTimeout(timeoutHandle)
       reject(
         new Error(
           `Failed to spawn Python process: ${err.message}. Make sure Python is installed: python3 --version`
@@ -530,9 +537,10 @@ export async function storeAudioFeatures(
     transientSpectralCentroid: features.transientSpectralCentroid ?? null,
     transientSpectralFlatness: features.transientSpectralFlatness ?? null,
     sampleTypeConfidence: features.sampleTypeConfidence ?? null,
+    fundamentalFrequency: features.fundamentalFrequency ?? null,
     // Metadata
     analysisLevel: features.analysisLevel ?? 'standard',
-    analysisVersion: '1.4', // Updated for Phase 4
+    analysisVersion: '1.5', // Updated for fundamental frequency
     createdAt,
     analysisDurationMs: features.analysisDurationMs,
   }
@@ -641,6 +649,7 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     transientSpectralCentroid: row.transientSpectralCentroid ?? undefined,
     transientSpectralFlatness: row.transientSpectralFlatness ?? undefined,
     sampleTypeConfidence: row.sampleTypeConfidence ?? undefined,
+    fundamentalFrequency: row.fundamentalFrequency ?? undefined,
     // Metadata
     analysisLevel: row.analysisLevel as AnalysisLevel | undefined,
     analysisDurationMs: row.analysisDurationMs || 0,

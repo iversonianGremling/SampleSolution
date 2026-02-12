@@ -1,12 +1,13 @@
 import { useState } from 'react'
-import { Music, FileUp, LogOut, Settings } from 'lucide-react'
+import { Music, FileUp, LogOut, Settings, Disc3 } from 'lucide-react'
 import { YouTubeHub } from './components/YouTubeHub'
 import { SourcesView } from './components/SourcesView'
 import { SourcesSettings } from './components/SourcesSettings'
+import { DrumRackView } from './components/DrumRackView'
 import { useAuthStatus } from './hooks/useTracks'
 import { logout } from './api/client'
 
-type Tab = 'sources' | 'youtube' | 'settings'
+type Tab = 'sources' | 'drumrack' | 'youtube' | 'settings'
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('sources')
@@ -19,6 +20,7 @@ function App() {
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'sources', label: 'Sources', icon: <Music size={18} /> },
+    { id: 'drumrack', label: 'Drum Rack', icon: <Disc3 size={18} /> },
     { id: 'youtube', label: 'Import', icon: <FileUp size={18} /> },
     { id: 'settings', label: 'Settings', icon: <Settings size={18} /> },
   ]
@@ -79,8 +81,9 @@ function App() {
       </nav>
 
       {/* Main Content */}
-      <main className={activeTab === 'sources' || activeTab === 'youtube' ? 'h-[calc(100vh-120px)]' : 'max-w-7xl mx-auto px-4 py-6'}>
+      <main className={activeTab === 'sources' || activeTab === 'youtube' || activeTab === 'drumrack' ? 'h-[calc(100vh-120px)]' : 'max-w-7xl mx-auto px-4 py-6'}>
         {activeTab === 'sources' && <SourcesView />}
+        {activeTab === 'drumrack' && <DrumRackView />}
         {activeTab === 'youtube' && (
           <YouTubeHub onTracksAdded={() => setActiveTab('sources')} />
         )}

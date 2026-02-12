@@ -1,21 +1,27 @@
-import { Download, Trash2, X, Loader2 } from 'lucide-react'
+import { Download, Trash2, X, Loader2, RefreshCw } from 'lucide-react'
 
 interface SourcesBatchActionsProps {
   selectedCount: number
   selectedIds: Set<number>
+  modifiedSelectedCount: number
   onBatchDelete: (ids: number[]) => void
   onBatchDownload: (ids: number[]) => void
+  onAnalyzeSelected: (ids: number[]) => void
   onClearSelection: () => void
   isDeleting?: boolean
+  isAnalyzing?: boolean
 }
 
 export function SourcesBatchActions({
   selectedCount,
   selectedIds,
+  modifiedSelectedCount,
   onBatchDelete,
   onBatchDownload,
+  onAnalyzeSelected,
   onClearSelection,
   isDeleting = false,
+  isAnalyzing = false,
 }: SourcesBatchActionsProps) {
   return (
     <div className="px-4 py-2 border-b border-accent-primary/30 bg-accent-primary/10 flex items-center gap-3 flex-shrink-0">
@@ -35,6 +41,21 @@ export function SourcesBatchActions({
       >
         <Download size={14} />
         Download
+      </button>
+
+      {/* Analyze selected modified button */}
+      <button
+        onClick={() => onAnalyzeSelected(Array.from(selectedIds))}
+        disabled={isAnalyzing || selectedCount === 0}
+        className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/20 hover:bg-violet-500/30 disabled:bg-surface-base text-violet-300 disabled:text-slate-400 text-xs font-medium rounded transition-colors"
+        title={
+          modifiedSelectedCount > 0
+            ? `Analyze ${selectedCount} selected sample${selectedCount === 1 ? '' : 's'} (${modifiedSelectedCount} modified)`
+            : `Analyze ${selectedCount} selected sample${selectedCount === 1 ? '' : 's'}`
+        }
+      >
+        {isAnalyzing ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+        Analyze selected
       </button>
 
       {/* Delete button */}

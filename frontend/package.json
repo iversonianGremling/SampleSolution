@@ -3,14 +3,81 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
+  "homepage": "https://github.com/yourusername/sample-extractor",
+  "author": {
+    "name": "Sample Extractor Team",
+    "email": "contact@sample-extractor.local"
+  },
   "scripts": {
     "dev": "vite",
+    "dev:electron": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
     "build": "tsc && vite build",
+    "build:electron": "npm run build && electron-builder",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "build": {
+    "appId": "com.sample-extractor.app",
+    "productName": "Sample Extractor",
+    "files": [
+      "dist/**/*",
+      "electron/**/*.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "embedded-backend",
+        "to": "embedded-backend",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "embedded-python",
+        "to": "embedded-python",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "embedded-backend/**/*",
+      "embedded-python/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Audio",
+      "maintainer": "Sample Extractor Team <contact@sample-extractor.local>"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.music"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
   "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
     "@saehrimnir/druidjs": "^0.7.3",
     "@tanstack/react-query": "^5.17.0",
     "axios": "^1.6.5",
@@ -22,6 +89,7 @@
     "wavesurfer.js": "^7.6.2"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
     "@testing-library/jest-dom": "^6.2.0",
     "@testing-library/react": "^14.1.2",
     "@testing-library/user-event": "^14.5.2",
@@ -29,12 +97,17 @@
     "@types/react-dom": "^18.2.18",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.17",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.1",
     "jsdom": "^23.2.0",
     "msw": "^2.1.4",
     "postcss": "^8.4.33",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.3.3",
     "vite": "^5.0.12",
-    "vitest": "^1.2.0"
+    "vitest": "^1.2.0",
+    "wait-on": "^7.2.0"
   }
 }

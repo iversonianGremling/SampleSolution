@@ -8,18 +8,64 @@ import type {
   YouTubePlaylist,
   AuthStatus,
   ImportResult,
+  Folder,
   Collection,
+  FacetGroup,
+  SplitResult,
   ExportResult,
   AudioFeatures,
   SourceTree,
   SourcesSamplesResponse,
   SyncConfig,
 } from '../types'
+import { getApiBaseUrl } from '../utils/api-config'
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: getApiBaseUrl(),
   withCredentials: true,
 })
+
+type HierarchyApiMode = 'modern' | 'legacy'
+let hierarchyApiModePromise: Promise<HierarchyApiMode> | null = null
+
+async function getHierarchyApiMode(): Promise<HierarchyApiMode> {
+  if (hierarchyApiModePromise) return hierarchyApiModePromise
+
+  hierarchyApiModePromise = (async () => {
+    try {
+      const { data } = await api.get<Array<{ id: number }>>('/perspectives')
+      if (Array.isArray(data)) return 'legacy'
+      return 'modern'
+    } catch {
+      return 'modern'
+    }
+  })()
+
+  return hierarchyApiModePromise
+}
+
+function mapLegacyPerspectiveToCollection(p: any): Collection {
+  return {
+    id: p.id,
+    name: p.name,
+    color: p.color,
+    sortOrder: p.sortOrder ?? 0,
+    folderCount: p.collectionCount ?? 0,
+    createdAt: p.createdAt,
+  }
+}
+
+function mapLegacyCollectionToFolder(c: any): Folder {
+  return {
+    id: c.id,
+    name: c.name,
+    color: c.color,
+    parentId: c.parentId ?? null,
+    collectionId: c.perspectiveId ?? null,
+    sliceCount: c.sliceCount ?? 0,
+    createdAt: c.createdAt,
+  }
+}
 
 // Interceptor to handle FormData properly
 api.interceptors.request.use((config) => {
@@ -41,7 +87,7 @@ export const deleteTrack = (id: number) => api.delete(`/tracks/${id}`)
 export const updateTrack = (id: number, data: { title?: string; artist?: string; album?: string }) =>
   api.put<Track>(`/tracks/${id}`, data).then((r) => r.data)
 
-export const getTrackAudioUrl = (id: number) => `/api/tracks/${id}/audio`
+export const getTrackAudioUrl = (id: number) => `${getApiBaseUrl()}/tracks/${id}/audio`
 
 export const getTrackPeaks = (id: number) =>
   api.get<number[]>(`/tracks/${id}/peaks`).then((r) => r.data)
@@ -65,7 +111,7 @@ export const updateSlice = (
 
 export const deleteSlice = (id: number) => api.delete(`/slices/${id}`)
 
-export const getSliceDownloadUrl = (id: number) => `/api/slices/${id}/download`
+export const getSliceDownloadUrl = (id: number) => `${getApiBaseUrl()}/slices/${id}/download`
 
 // YouTube
 export const searchYouTube = (query: string) =>
@@ -88,17 +134,25 @@ export const importLinks = (text: string) =>
 export const getAuthStatus = () =>
   api.get<AuthStatus>('/auth/status').then((r) => r.data)
 
-export const getGoogleAuthUrl = () => '/api/auth/google'
+export const getGoogleAuthUrl = () => `${getApiBaseUrl()}/auth/google`
 
 export const logout = () => api.post('/auth/logout')
 
 // Tags
 export const getTags = () => api.get<Tag[]>('/tags').then((r) => r.data)
 
-export const createTag = (data: { name: string; color: string }) =>
+export const createTag = (data: { name: string; color: string; category?: string }) =>
   api.post<Tag>('/tags', data).then((r) => r.data)
+export const updateTag = (id: number, data: { name?: string; color?: string; category?: string }) =>
+  api.put<Tag>(`/tags/${id}`, data).then((r) => r.data)
 
 export const deleteTag = (id: number) => api.delete(`/tags/${id}`)
+
+export const createTagFromFolder = (data: { folderId: number; name?: string; color?: string }) =>
+  api.post<Tag & { slicesTagged: number }>('/tags/from-folder', data).then((r) => r.data)
+
+export const batchApplyTagToSlices = (data: { tagId?: number; name?: string; color?: string; sliceIds: number[] }) =>
+  api.post<{ tag: Tag; slicesTagged: number }>('/tags/batch-apply', data).then((r) => r.data)
 
 export const addTagToTrack = (trackId: number, tagId: number) =>
   api.post(`/tracks/${trackId}/tags`, { tagId })
@@ -113,13 +167,43 @@ export const removeTagFromSlice = (sliceId: number, tagId: number) =>
   api.delete(`/slices/${sliceId}/tags/${tagId}`)
 
 export const generateAiTagsForSlice = (sliceId: number) =>
-  api.post<{ tags: string[] }>(`/slices/${sliceId}/ai-tags`).then((r) => r.data)
+  api
+    .post<{
+      tags: string[]
+      warning?: {
+        hadPotentialCustomState: boolean
+        message: string | null
+        removedTags: string[]
+        addedTags: string[]
+      }
+      features?: {
+        isOneShot: boolean
+        isLoop: boolean
+        bpm: number | null
+        spectralCentroid: number
+        analysisDurationMs: number
+      }
+    }>(`/slices/${sliceId}/ai-tags`)
+    .then((r) => r.data)
 
 export interface BatchAiTagsResult {
   total: number
   processed: number
   successful: number
-  results: { sliceId: number; success: boolean; error?: string }[]
+  warnings?: {
+    totalWithWarnings: number
+    sliceIds: number[]
+    messages: string[]
+  }
+  results: {
+    sliceId: number
+    success: boolean
+    error?: string
+    hadPotentialCustomState?: boolean
+    warningMessage?: string
+    removedTags?: string[]
+    addedTags?: string[]
+  }[]
 }
 
 export const batchGenerateAiTags = (sliceIds: number[]) =>
@@ -138,31 +222,196 @@ export const batchDeleteSlices = (sliceIds: number[]) =>
 export const toggleFavorite = (sliceId: number) =>
   api.post<{ favorite: boolean }>(`/slices/${sliceId}/favorite`).then((r) => r.data)
 
+// Folders
+export const getFolders = async (params?: { collectionId?: number; ungrouped?: boolean }) => {
+  const mode = await getHierarchyApiMode()
+
+  if (mode === 'legacy') {
+    const legacyParams: { perspectiveId?: number; ungrouped?: boolean } = {}
+    if (params?.collectionId !== undefined) legacyParams.perspectiveId = params.collectionId
+    if (params?.ungrouped !== undefined) legacyParams.ungrouped = params.ungrouped
+
+    const r = await api.get<any[]>('/collections', { params: legacyParams })
+    return r.data.map(mapLegacyCollectionToFolder)
+  }
+
+  const r = await api.get<Folder[]>('/folders', { params })
+  return r.data
+}
+
+export const createFolder = (data: { name: string; color?: string; parentId?: number; collectionId?: number }) =>
+  getHierarchyApiMode().then(async (mode) => {
+    if (mode === 'legacy') {
+      const r = await api.post<any>('/collections', {
+        name: data.name,
+        color: data.color,
+        parentId: data.parentId,
+        perspectiveId: data.collectionId,
+      })
+      return mapLegacyCollectionToFolder(r.data)
+    }
+
+    const r = await api.post<Folder>('/folders', data)
+    return r.data
+  })
+
+export const updateFolder = (
+  id: number,
+  data: { name?: string; color?: string; parentId?: number | null; collectionId?: number | null }
+) =>
+  getHierarchyApiMode().then(async (mode) => {
+    if (mode === 'legacy') {
+      const r = await api.put<any>(`/collections/${id}`, {
+        name: data.name,
+        color: data.color,
+        parentId: data.parentId,
+        perspectiveId: data.collectionId,
+      })
+      return mapLegacyCollectionToFolder(r.data)
+    }
+
+    const r = await api.put<Folder>(`/folders/${id}`, data)
+    return r.data
+  })
+
+export const createFolderFromTag = (data: { tagId: number; name?: string; color?: string; collectionId?: number }) =>
+  getHierarchyApiMode().then(async (mode) => {
+    if (mode === 'legacy') {
+      const r = await api.post<any>('/collections/from-tag', {
+        tagId: data.tagId,
+        name: data.name,
+        color: data.color,
+        perspectiveId: data.collectionId,
+      })
+      return mapLegacyCollectionToFolder(r.data)
+    }
+
+    const r = await api.post<Folder>('/folders/from-tag', data)
+    return r.data
+  })
+
+export const deleteFolder = (id: number) =>
+  getHierarchyApiMode().then((mode) =>
+    mode === 'legacy' ? api.delete(`/collections/${id}`) : api.delete(`/folders/${id}`)
+  )
+
+export const addSliceToFolder = (folderId: number, sliceId: number) =>
+  getHierarchyApiMode().then((mode) =>
+    mode === 'legacy'
+      ? api.post(`/collections/${folderId}/slices`, { sliceId })
+      : api.post(`/folders/${folderId}/slices`, { sliceId })
+  )
+
+export const removeSliceFromFolder = (folderId: number, sliceId: number) =>
+  getHierarchyApiMode().then((mode) =>
+    mode === 'legacy'
+      ? api.delete(`/collections/${folderId}/slices/${sliceId}`)
+      : api.delete(`/folders/${folderId}/slices/${sliceId}`)
+  )
+
+export const batchAddSlicesToFolder = (folderId: number, sliceIds: number[]) =>
+  getHierarchyApiMode().then(async (mode) => {
+    const r = await api.post<{ success: boolean; added: number }>(
+      mode === 'legacy' ? `/collections/${folderId}/slices/batch` : `/folders/${folderId}/slices/batch`,
+      { sliceIds }
+    )
+    return r.data
+  })
+
+export interface BatchCreateFolderInput {
+  tempId: string
+  name: string
+  color?: string
+  parentTempId?: string
+  parentId?: number
+  sliceIds: number[]
+}
+
+export interface BatchCreateResult {
+  created: Array<{ tempId: string; id: number; name: string; sliceCount: number }>
+}
+
+export const batchCreateFolders = (collectionId: number, folders: BatchCreateFolderInput[]) =>
+  getHierarchyApiMode().then(async (mode) => {
+    const r = await api.post<BatchCreateResult>(
+      mode === 'legacy' ? '/collections/batch-create' : '/folders/batch-create',
+      mode === 'legacy' ? { perspectiveId: collectionId, folders } : { collectionId, folders }
+    )
+    return r.data
+  })
+
 // Collections
-export const getCollections = () =>
-  api.get<Collection[]>('/collections').then((r) => r.data)
+export const getCollections = async () => {
+  const mode = await getHierarchyApiMode()
 
-export const createCollection = (data: { name: string; color?: string; parentId?: number }) =>
-  api.post<Collection>('/collections', data).then((r) => r.data)
+  if (mode === 'legacy') {
+    const r = await api.get<any[]>('/perspectives')
+    return r.data.map(mapLegacyPerspectiveToCollection)
+  }
 
-export const updateCollection = (id: number, data: { name?: string; color?: string; parentId?: number | null }) =>
-  api.put<Collection>(`/collections/${id}`, data).then((r) => r.data)
+  const r = await api.get<Collection[]>('/collections')
+  return r.data
+}
 
-export const createCollectionFromTag = (data: { tagId: number; name?: string; color?: string }) =>
-  api.post<Collection>('/collections/from-tag', data).then((r) => r.data)
+export const createCollection = (data: { name: string; color?: string }) =>
+  getHierarchyApiMode().then(async (mode) => {
+    if (mode === 'legacy') {
+      const r = await api.post<any>('/perspectives', data)
+      return mapLegacyPerspectiveToCollection(r.data)
+    }
+
+    const r = await api.post<Collection>('/collections', data)
+    return r.data
+  })
+
+export const updateCollection = (id: number, data: { name?: string; color?: string; sortOrder?: number }) =>
+  getHierarchyApiMode().then(async (mode) => {
+    if (mode === 'legacy') {
+      const r = await api.put<any>(`/perspectives/${id}`, data)
+      return mapLegacyPerspectiveToCollection(r.data)
+    }
+
+    const r = await api.put<Collection>(`/collections/${id}`, data)
+    return r.data
+  })
 
 export const deleteCollection = (id: number) =>
-  api.delete(`/collections/${id}`)
+  getHierarchyApiMode().then((mode) =>
+    mode === 'legacy' ? api.delete(`/perspectives/${id}`) : api.delete(`/collections/${id}`)
+  )
 
-export const addSliceToCollection = (collectionId: number, sliceId: number) =>
-  api.post(`/collections/${collectionId}/slices`, { sliceId })
+// Facets
+export const getFolderFacets = (folderId: number) =>
+  getHierarchyApiMode().then(async (mode) => {
+    const r = await api.get<FacetGroup>(mode === 'legacy' ? `/collections/${folderId}/facets` : `/folders/${folderId}/facets`)
+    return r.data
+  })
 
-export const removeSliceFromCollection = (collectionId: number, sliceId: number) =>
-  api.delete(`/collections/${collectionId}/slices/${sliceId}`)
+export const getCollectionFacets = (collectionId: number) =>
+  getHierarchyApiMode().then(async (mode) => {
+    const r = await api.get<FacetGroup>(mode === 'legacy' ? `/perspectives/${collectionId}/facets` : `/collections/${collectionId}/facets`)
+    return r.data
+  })
+
+// Split
+export const splitFolder = (folderId: number, data: { facetType: 'tag-category' | 'metadata'; facetKey: string; selectedValues?: string[] }) =>
+  getHierarchyApiMode().then(async (mode) => {
+    const r = await api.post<SplitResult>(mode === 'legacy' ? `/collections/${folderId}/split` : `/folders/${folderId}/split`, data)
+    return r.data
+  })
+
+export const splitCollection = (collectionId: number, data: { facetType: 'tag-category' | 'metadata'; facetKey: string; selectedValues?: string[] }) =>
+  getHierarchyApiMode().then(async (mode) => {
+    const r = await api.post<SplitResult>(mode === 'legacy' ? `/perspectives/${collectionId}/split` : `/collections/${collectionId}/split`, data)
+    return r.data
+  })
 
 // Export
-export const exportCollection = (collectionId: number, exportPath?: string) =>
-  api.post<ExportResult>(`/collections/${collectionId}/export`, { exportPath }).then((r) => r.data)
+export const exportFolder = (folderId: number, exportPath?: string) =>
+  getHierarchyApiMode().then(async (mode) => {
+    const r = await api.post<ExportResult>(mode === 'legacy' ? `/collections/${folderId}/export` : `/folders/${folderId}/export`, { exportPath })
+    return r.data
+  })
 
 export const exportSlices = (favoritesOnly?: boolean, exportPath?: string) =>
   api.post<ExportResult>('/slices/export', { favoritesOnly, exportPath }).then((r) => r.data)
@@ -233,6 +482,33 @@ export interface BrowseResult {
 export const browseDirectory = (path?: string) =>
   api.get<BrowseResult>('/import/browse', { params: { path } }).then((r) => r.data)
 
+// Full library transfer
+export interface LibraryExportResult {
+  success: boolean
+  exportPath: string
+  manifest: {
+    version: number
+    exportedAt: string
+    includes: {
+      database: string
+      directories: string[]
+      optionalFiles: string[]
+    }
+  }
+}
+
+export interface LibraryImportResult {
+  success: boolean
+  importedFrom: string
+  backupPath: string
+}
+
+export const exportLibrary = (exportPath?: string) =>
+  api.post<LibraryExportResult>('/library/export', { exportPath }).then((r) => r.data)
+
+export const importLibrary = (libraryPath: string) =>
+  api.post<LibraryImportResult>('/library/import', { libraryPath }).then((r) => r.data)
+
 // Sample Space - Audio Features
 export const getSliceFeatures = () =>
   api.get<AudioFeatures[]>('/slices/features').then((r) => r.data)
@@ -242,15 +518,16 @@ export const getSourceTree = () =>
   api.get<SourceTree>('/sources/tree').then((r) => r.data)
 
 export interface SourcesSamplesParams {
-  scope?: string  // 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'collection:{id}' | 'all'
+  scope?: string  // 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'folder:{id}' | 'all'
   tags?: number[]
   search?: string
   favorites?: boolean
-  sortBy?: 'bpm' | 'key' | 'name' | 'duration' | 'createdAt'
+  sortBy?: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt'
   sortOrder?: 'asc' | 'desc'
   minBpm?: number
   maxBpm?: number
   keys?: string[]
+  notes?: string[]
 }
 
 export const getSourcesSamples = (params: SourcesSamplesParams) => {
@@ -264,16 +541,43 @@ export const getSourcesSamples = (params: SourcesSamplesParams) => {
   if (params.minBpm !== undefined) queryParams.minBpm = params.minBpm.toString()
   if (params.maxBpm !== undefined) queryParams.maxBpm = params.maxBpm.toString()
   if (params.keys && params.keys.length > 0) queryParams.keys = params.keys.join(',')
+  if (params.notes && params.notes.length > 0) queryParams.notes = params.notes.join(',')
 
   return api.get<SourcesSamplesResponse>('/sources/samples', { params: queryParams }).then((r) => r.data)
 }
+
+export interface DuplicateGroup {
+  matchType: 'exact' | 'file'
+  hashSimilarity: number
+  samples: Array<{
+    id: number
+    name: string
+    trackTitle: string
+  }>
+}
+
+export const getDuplicateSlices = () =>
+  api.get<{ groups: DuplicateGroup[]; total: number }>('/slices/duplicates').then((r) => r.data)
 
 // Batch re-analyze samples
 export interface BatchReanalyzeResponse {
   total: number
   analyzed: number
   failed: number
-  results: Array<{ sliceId: number; success: boolean; error?: string }>
+  warnings?: {
+    totalWithWarnings: number
+    sliceIds: number[]
+    messages: string[]
+  }
+  results: Array<{
+    sliceId: number
+    success: boolean
+    error?: string
+    hadPotentialCustomState?: boolean
+    warningMessage?: string
+    removedTags?: string[]
+    addedTags?: string[]
+  }>
 }
 
 export const batchReanalyzeSamples = (
@@ -288,7 +592,7 @@ export const batchReanalyzeSamples = (
 export const getSyncConfigs = () =>
   api.get<SyncConfig[]>('/sync-configs').then((r) => r.data)
 
-export const createSyncConfig = (data: { tagId: number; collectionId: number; direction: string }) =>
+export const createSyncConfig = (data: { tagId: number; folderId: number; direction: string }) =>
   api.post<SyncConfig>('/sync-configs', data).then((r) => r.data)
 
 export const deleteSyncConfig = (id: number) =>

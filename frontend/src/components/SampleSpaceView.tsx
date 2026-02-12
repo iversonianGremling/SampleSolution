@@ -125,8 +125,13 @@ export function SampleSpaceView({
     if (!filteredFeatures || filteredFeatures.length === 0) {
       return { matrix: [], validIndices: [] }
     }
-    // Cast back to AudioFeatures for buildFeatureMatrix
-    return buildFeatureMatrix(filteredFeatures as any, weights, normalizationMethod)
+    return buildFeatureMatrix(filteredFeatures, weights, normalizationMethod, {
+      tags: {
+        enabled: true,
+        weight: 1.8,
+        excludeDerived: true,
+      },
+    })
   }, [filteredFeatures, weights, normalizationMethod])
 
   // Run dimensionality reduction

@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
-import { Play, Pause, Heart, Trash2, Pencil } from 'lucide-react'
+import { Play, Pause, Heart, Trash2, Pencil, Disc3 } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import { InstrumentIcon } from './InstrumentIcon'
+import { DrumRackPadPicker } from './DrumRackPadPicker'
 import type { SliceWithTrackExtended } from '../types'
+import { freqToNoteName } from '../utils/musicTheory'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
@@ -46,9 +48,9 @@ export function SourcesSampleListRow({
   const [isEditingName, setIsEditingName] = useState(false)
   const [editingName, setEditingName] = useState(sample.name)
   const [showTagsPopup, setShowTagsPopup] = useState(false)
+  const [showPadPicker, setShowPadPicker] = useState(false)
   const nameInputRef = useRef<HTMLInputElement>(null)
-  const tagTriggerRef = useRef<HTMLDivElement>(null)
-  const closeTimeoutRef = useRef<number | null>(null)
+  const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (isEditingName && nameInputRef.current) {
@@ -74,7 +76,9 @@ export function SourcesSampleListRow({
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const maxVisibleTags = 3
+  // Keep list rows compact: show one tag chip and group the rest behind a +n hover.
+  // This avoids tags spilling into other columns.
+  const maxVisibleTags = 1
   const visibleTags = sample.tags.slice(0, maxVisibleTags)
   const remainingTags = sample.tags.length - maxVisibleTags
 
@@ -208,7 +212,7 @@ export function SourcesSampleListRow({
         </div>
 
         {/* Tags (hidden on small screens) */}
-        <div className="hidden sm:flex items-center gap-1 flex-shrink-0 pl-1">
+        <div className="hidden sm:flex items-center justify-end gap-1 max-w-20 md:max-w-24 lg:max-w-28 xl:max-w-32 flex-shrink-0 pl-1 min-w-0 overflow-hidden">
           {visibleTags.map((tag) => (
             <span
               key={tag.id}
@@ -218,19 +222,18 @@ export function SourcesSampleListRow({
                   onTagClick(tag.id)
                 }
               }}
-              className={`inline-block px-1.5 py-0 text-[10px] rounded-full flex-shrink-0 ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+              className={`inline-flex max-w-full items-center px-1.5 py-0 text-[10px] rounded-full min-w-0 ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
               style={{
                 backgroundColor: tag.color + '25',
                 color: tag.color,
               }}
               title={onTagClick ? `Filter by ${tag.name}` : tag.name}
             >
-              {tag.name.length > 10 ? tag.name.slice(0, 10) + '…' : tag.name}
+              <span className="truncate max-w-12 md:max-w-16 lg:max-w-20 xl:max-w-24">{tag.name}</span>
             </span>
           ))}
           {remainingTags > 0 && (
             <div
-              ref={tagTriggerRef}
               className="relative flex-shrink-0"
               onMouseEnter={handleTagPopupOpen}
               onMouseLeave={handleTagPopupClose}
@@ -240,10 +243,9 @@ export function SourcesSampleListRow({
               </span>
               {showTagsPopup && (
                 <div
-                  className="absolute left-full ml-2 top-1/2 bg-surface-raised border border-surface-border rounded-lg shadow-lg py-1 px-2"
+                  className="absolute right-0 top-full mt-1 bg-surface-raised border border-surface-border rounded-lg shadow-lg py-1 px-2"
                   style={{
-                    zIndex: 9999,
-                    transform: 'translateY(-50%)'
+                    zIndex: 9999
                   }}
                   onClick={(e) => e.stopPropagation()}
                   onMouseEnter={handleTagPopupEnter}
@@ -272,14 +274,14 @@ export function SourcesSampleListRow({
                             }
                           }
                         }}
-                        className={`inline-block px-1.5 py-0 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                        className={`inline-flex max-w-40 items-center px-1.5 py-0 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
                         style={{
                           backgroundColor: tag.color + '25',
                           color: tag.color,
                         }}
                         title={onTagClick ? `Filter by ${tag.name}` : tag.name}
                       >
-                        {tag.name}
+                        <span className="truncate">{tag.name}</span>
                       </span>
                     ))}
                   </div>
@@ -299,7 +301,7 @@ export function SourcesSampleListRow({
         {/* Key (hidden on small screens) */}
         <div className="hidden lg:flex w-16 flex-shrink-0 justify-center">
           <span className="text-xs text-slate-400">
-            {sample.keyEstimate || '-'}
+            {(sample.fundamentalFrequency ? freqToNoteName(sample.fundamentalFrequency) : null) || sample.keyEstimate || '-'}
           </span>
         </div>
 
@@ -318,7 +320,19 @@ export function SourcesSampleListRow({
         </div>
 
         {/* Actions */}
-        <div className="w-12 sm:w-16 flex-shrink-0 flex items-center justify-end gap-0.5 sm:gap-1">
+        <div className="w-16 sm:w-24 flex-shrink-0 flex items-center justify-end gap-0.5 sm:gap-1">
+          {/* Send to Drum Rack */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              setShowPadPicker(true)
+            }}
+            className="p-1 sm:p-1.5 rounded text-slate-400 hover:text-accent-primary hover:bg-accent-primary/20 transition-colors flex-shrink-0"
+            title="Send to Drum Rack"
+          >
+            <Disc3 size={14} />
+          </button>
+
           {/* Favorite button */}
           <button
             onClick={(e) => {
@@ -348,6 +362,14 @@ export function SourcesSampleListRow({
           </button>
         </div>
       </div>
+
+      {/* Drum Rack Pad Picker */}
+      {showPadPicker && (
+        <DrumRackPadPicker
+          sample={sample}
+          onClose={() => setShowPadPicker(false)}
+        />
+      )}
     </div>
   )
 }

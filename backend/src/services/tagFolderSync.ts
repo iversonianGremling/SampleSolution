@@ -1,6 +1,6 @@
 /**
- * Tag-Collection Auto-Sync Service
- * Keeps tags and collections in sync based on sync config rules.
+ * Tag-Folder Auto-Sync Service
+ * Keeps tags and folders in sync based on sync config rules.
  */
 import { db, schema } from '../db/index.js'
 import { eq, and } from 'drizzle-orm'
@@ -18,18 +18,18 @@ async function getSyncConfigsForTag(tagId: number) {
 }
 
 /**
- * Get all active sync configs for a given collection
+ * Get all active sync configs for a given folder
  */
-async function getSyncConfigsForCollection(collectionId: number) {
+async function getSyncConfigsForFolder(folderId: number) {
   return db
     .select()
     .from(schema.syncConfigs)
-    .where(and(eq(schema.syncConfigs.collectionId, collectionId), eq(schema.syncConfigs.enabled, 1)))
+    .where(and(eq(schema.syncConfigs.folderId, folderId), eq(schema.syncConfigs.enabled, 1)))
 }
 
 /**
  * Called when a tag is added to a slice.
- * If a sync config exists (tag-to-collection or bidirectional), add the slice to the linked collection.
+ * If a sync config exists (tag-to-folder or bidirectional), add the slice to the linked folder.
  */
 export async function onTagAdded(sliceId: number, tagId: number): Promise<void> {
   if (isSyncing) return
@@ -37,10 +37,10 @@ export async function onTagAdded(sliceId: number, tagId: number): Promise<void> 
   try {
     const configs = await getSyncConfigsForTag(tagId)
     for (const config of configs) {
-      if (config.syncDirection === 'tag-to-collection' || config.syncDirection === 'bidirectional') {
+      if (config.syncDirection === 'tag-to-folder' || config.syncDirection === 'bidirectional') {
         await db
-          .insert(schema.collectionSlices)
-          .values({ collectionId: config.collectionId, sliceId })
+          .insert(schema.folderSlices)
+          .values({ folderId: config.folderId, sliceId })
           .onConflictDoNothing()
       }
     }
@@ -51,7 +51,7 @@ export async function onTagAdded(sliceId: number, tagId: number): Promise<void> 
 
 /**
  * Called when a tag is removed from a slice.
- * If a sync config exists, remove the slice from the linked collection.
+ * If a sync config exists, remove the slice from the linked folder.
  */
 export async function onTagRemoved(sliceId: number, tagId: number): Promise<void> {
   if (isSyncing) return
@@ -59,13 +59,13 @@ export async function onTagRemoved(sliceId: number, tagId: number): Promise<void
   try {
     const configs = await getSyncConfigsForTag(tagId)
     for (const config of configs) {
-      if (config.syncDirection === 'tag-to-collection' || config.syncDirection === 'bidirectional') {
+      if (config.syncDirection === 'tag-to-folder' || config.syncDirection === 'bidirectional') {
         await db
-          .delete(schema.collectionSlices)
+          .delete(schema.folderSlices)
           .where(
             and(
-              eq(schema.collectionSlices.collectionId, config.collectionId),
-              eq(schema.collectionSlices.sliceId, sliceId)
+              eq(schema.folderSlices.folderId, config.folderId),
+              eq(schema.folderSlices.sliceId, sliceId)
             )
           )
       }
@@ -76,16 +76,16 @@ export async function onTagRemoved(sliceId: number, tagId: number): Promise<void
 }
 
 /**
- * Called when a slice is added to a collection.
- * If a sync config exists (collection-to-tag or bidirectional), apply the linked tag.
+ * Called when a slice is added to a folder.
+ * If a sync config exists (folder-to-tag or bidirectional), apply the linked tag.
  */
-export async function onCollectionSliceAdded(collectionId: number, sliceId: number): Promise<void> {
+export async function onFolderSliceAdded(folderId: number, sliceId: number): Promise<void> {
   if (isSyncing) return
   isSyncing = true
   try {
-    const configs = await getSyncConfigsForCollection(collectionId)
+    const configs = await getSyncConfigsForFolder(folderId)
     for (const config of configs) {
-      if (config.syncDirection === 'collection-to-tag' || config.syncDirection === 'bidirectional') {
+      if (config.syncDirection === 'folder-to-tag' || config.syncDirection === 'bidirectional') {
         await db
           .insert(schema.sliceTags)
           .values({ sliceId, tagId: config.tagId })
@@ -98,16 +98,16 @@ export async function onCollectionSliceAdded(collectionId: number, sliceId: numb
 }
 
 /**
- * Called when a slice is removed from a collection.
+ * Called when a slice is removed from a folder.
  * If a sync config exists, remove the linked tag.
  */
-export async function onCollectionSliceRemoved(collectionId: number, sliceId: number): Promise<void> {
+export async function onFolderSliceRemoved(folderId: number, sliceId: number): Promise<void> {
   if (isSyncing) return
   isSyncing = true
   try {
-    const configs = await getSyncConfigsForCollection(collectionId)
+    const configs = await getSyncConfigsForFolder(folderId)
     for (const config of configs) {
-      if (config.syncDirection === 'collection-to-tag' || config.syncDirection === 'bidirectional') {
+      if (config.syncDirection === 'folder-to-tag' || config.syncDirection === 'bidirectional') {
         await db
           .delete(schema.sliceTags)
           .where(
@@ -124,19 +124,19 @@ export async function onCollectionSliceRemoved(collectionId: number, sliceId: nu
 }
 
 /**
- * Create a new sync link between a tag and collection.
+ * Create a new sync link between a tag and folder.
  * Performs initial sync based on direction.
  */
 export async function createSyncLink(
   tagId: number,
-  collectionId: number,
-  direction: 'tag-to-collection' | 'collection-to-tag' | 'bidirectional'
+  folderId: number,
+  direction: 'tag-to-folder' | 'folder-to-tag' | 'bidirectional'
 ) {
   const [config] = await db
     .insert(schema.syncConfigs)
     .values({
       tagId,
-      collectionId,
+      folderId,
       syncDirection: direction,
       enabled: 1,
       createdAt: new Date().toISOString(),
@@ -146,8 +146,8 @@ export async function createSyncLink(
   // Initial sync
   isSyncing = true
   try {
-    if (direction === 'tag-to-collection' || direction === 'bidirectional') {
-      // Get all slices with this tag and add them to the collection
+    if (direction === 'tag-to-folder' || direction === 'bidirectional') {
+      // Get all slices with this tag and add them to the folder
       const taggedSlices = await db
         .select({ sliceId: schema.sliceTags.sliceId })
         .from(schema.sliceTags)
@@ -155,20 +155,20 @@ export async function createSyncLink(
 
       for (const { sliceId } of taggedSlices) {
         await db
-          .insert(schema.collectionSlices)
-          .values({ collectionId, sliceId })
+          .insert(schema.folderSlices)
+          .values({ folderId, sliceId })
           .onConflictDoNothing()
       }
     }
 
-    if (direction === 'collection-to-tag' || direction === 'bidirectional') {
-      // Get all slices in the collection and apply the tag
-      const collectionSlices = await db
-        .select({ sliceId: schema.collectionSlices.sliceId })
-        .from(schema.collectionSlices)
-        .where(eq(schema.collectionSlices.collectionId, collectionId))
+    if (direction === 'folder-to-tag' || direction === 'bidirectional') {
+      // Get all slices in the folder and apply the tag
+      const folderSlices = await db
+        .select({ sliceId: schema.folderSlices.sliceId })
+        .from(schema.folderSlices)
+        .where(eq(schema.folderSlices.folderId, folderId))
 
-      for (const { sliceId } of collectionSlices) {
+      for (const { sliceId } of folderSlices) {
         await db
           .insert(schema.sliceTags)
           .values({ sliceId, tagId })

@@ -3,10 +3,12 @@ import type { SliceFilterState, FilterableSlice } from '../types'
 export const DEFAULT_FILTER_STATE: SliceFilterState = {
   searchQuery: '',
   selectedTags: [],
+  excludedTags: [],
   minDuration: 0,
   maxDuration: 60,
   showFavoritesOnly: false,
-  selectedCollectionIds: [],
+  selectedFolderIds: [],
+  excludedFolderIds: [],
   selectedTrackId: null,
 }
 
@@ -17,10 +19,16 @@ export const filterPredicates = {
     return item.favorite === true
   },
 
-  collection: (item: FilterableSlice, state: SliceFilterState) => {
-    if (state.selectedCollectionIds.length === 0) return true
-    const itemCollectionIds = item.collectionIds ?? []
-    return state.selectedCollectionIds.every(collectionId => itemCollectionIds.includes(collectionId)) // AND logic
+  folder: (item: FilterableSlice, state: SliceFilterState) => {
+    if (state.selectedFolderIds.length === 0) return true
+    const itemFolderIds = item.folderIds ?? []
+    return state.selectedFolderIds.every(folderId => itemFolderIds.includes(folderId)) // AND logic
+  },
+
+  excludedFolder: (item: FilterableSlice, state: SliceFilterState) => {
+    if (!state.excludedFolderIds || state.excludedFolderIds.length === 0) return true
+    const itemFolderIds = item.folderIds ?? []
+    return !state.excludedFolderIds.some(folderId => itemFolderIds.includes(folderId))
   },
 
   track: (item: FilterableSlice, state: SliceFilterState) => {
@@ -42,6 +50,12 @@ export const filterPredicates = {
     return state.selectedTags.every(tagId => itemTagIds.includes(tagId)) // AND logic
   },
 
+  excludedTags: (item: FilterableSlice, state: SliceFilterState) => {
+    if (!state.excludedTags || state.excludedTags.length === 0) return true
+    const itemTagIds = item.tags?.map(t => t.id) ?? []
+    return !state.excludedTags.some(tagId => itemTagIds.includes(tagId))
+  },
+
   duration: (item: FilterableSlice, state: SliceFilterState) => {
     const duration = item.duration ?? (
       item.startTime !== undefined && item.endTime !== undefined
@@ -61,10 +75,12 @@ export function applySliceFilters<T extends FilterableSlice>(
   return items.filter(item => {
     return (
       filterPredicates.favorites(item, state) &&
-      filterPredicates.collection(item, state) &&
+      filterPredicates.folder(item, state) &&
+      filterPredicates.excludedFolder(item, state) &&
       filterPredicates.track(item, state) &&
       filterPredicates.search(item, state) &&
       filterPredicates.tags(item, state) &&
+      filterPredicates.excludedTags(item, state) &&
       filterPredicates.duration(item, state)
     )
   })

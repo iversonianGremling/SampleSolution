@@ -25,31 +25,58 @@ export interface Slice {
   endTime: number
   filePath: string | null
   favorite: boolean
+  sampleModified?: boolean
+  sampleModifiedAt?: string | null
   createdAt: string
   tags: Tag[]
   bpm?: number | null
   keyEstimate?: string | null
+  fundamentalFrequency?: number | null
   envelopeType?: string | null
   genrePrimary?: string | null
   instrumentPrimary?: string | null
   instrumentType?: string | null
+  brightness?: number | null
+  loudness?: number | null
+  roughness?: number | null
 }
 
 export interface SliceWithTrack extends Slice {
-  collectionIds: number[]
+  folderIds: number[]
   track: {
     title: string
     youtubeId: string
   }
 }
 
-export interface Collection {
+export interface Folder {
   id: number
   name: string
   color: string
   parentId: number | null
+  collectionId: number | null
   sliceCount: number
   createdAt: string
+}
+
+export interface Collection {
+  id: number
+  name: string
+  color: string
+  sortOrder: number
+  folderCount: number
+  createdAt: string
+}
+
+export interface FacetGroup {
+  tags: Record<string, { tagId: number; name: string; count: number }[]>
+  metadata: Record<string, { value: string; count: number }[]>
+  totalSamples: number
+}
+
+export interface SplitResult {
+  created: { id: number; name: string; sliceCount: number }[]
+  unmatched: number
 }
 
 export interface ExportResult {
@@ -106,6 +133,10 @@ export interface AudioFeatures {
   name: string
   trackId: number
   filePath: string | null
+  // Sample type
+  isOneShot: number | null // 1 = one-shot, 0 = not
+  isLoop: number | null // 1 = loop, 0 = not
+  fundamentalFrequency: number | null
   // Audio features
   duration: number | null
   bpm: number | null
@@ -268,10 +299,12 @@ export interface SamplePoint {
 export interface SliceFilterState {
   searchQuery: string
   selectedTags: number[]
+  excludedTags?: number[]
   minDuration: number
   maxDuration: number
   showFavoritesOnly: boolean
-  selectedCollectionIds: number[]
+  selectedFolderIds: number[]
+  excludedFolderIds?: number[]
   selectedTrackId: number | null
 }
 
@@ -281,7 +314,7 @@ export interface FilterableSlice {
   trackId: number
   favorite?: boolean
   tags?: { id: number }[]
-  collectionIds?: number[]
+  folderIds?: number[]
   track?: { title: string }
   startTime?: number
   endTime?: number
@@ -291,7 +324,7 @@ export interface FilterableSlice {
 export interface AudioFeaturesWithMetadata extends AudioFeatures {
   favorite: boolean
   tags: { id: number; name: string; color: string }[]
-  collectionIds: number[]
+  folderIds: number[]
   track: { title: string; youtubeId: string }
   startTime: number
   endTime: number
@@ -324,10 +357,11 @@ export type SourceScope =
   | { type: 'youtube-video'; trackId: number }
   | { type: 'local' }
   | { type: 'folder'; path: string }
-  | { type: 'my-folder'; collectionId: number }
+  | { type: 'my-folder'; folderId: number }
+  | { type: 'collection'; collectionId: number }
 
 export interface SliceWithTrackExtended extends Slice {
-  collectionIds: number[]
+  folderIds: number[]
   track: {
     title: string
     youtubeId: string
@@ -342,8 +376,8 @@ export interface SliceWithTrackExtended extends Slice {
 export interface SyncConfig {
   id: number
   tagId: number
-  collectionId: number
-  syncDirection: 'tag-to-collection' | 'collection-to-tag' | 'bidirectional'
+  folderId: number
+  syncDirection: 'tag-to-folder' | 'folder-to-tag' | 'bidirectional'
   enabled: boolean
   createdAt: string
 }

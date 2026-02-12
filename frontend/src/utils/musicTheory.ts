@@ -146,6 +146,107 @@ export function getRelatedKeys(selectedKeys: string[]): RelatedKeyGroup[] {
   return groups
 }
 
+/**
+ * Get related notes for selected notes, grouped by interval "spiciness" level.
+ * Based on consonance/dissonance of intervals between fundamental frequencies.
+ * Notes are deduplicated - each note appears only at its smoothest level.
+ * Already-selected notes are excluded from results.
+ */
+export function getRelatedNotes(selectedNotes: string[]): RelatedKeyGroup[] {
+  if (selectedNotes.length === 0) return []
+
+  const selectedSet = new Set(selectedNotes.map(n => n.toUpperCase()))
+  const assigned = new Set<string>()
+
+  // For each level, collect related notes from all selected notes
+  const levelNotes: string[][] = [[], [], [], [], []]
+
+  for (const sn of selectedNotes) {
+    const noteIdx = NOTES.indexOf(sn as any)
+    if (noteIdx === -1) continue
+
+    // Level 1 - Smooth: Perfect 5th (+7), Perfect 4th (+5)
+    levelNotes[0].push(NOTES[(noteIdx + 7) % 12], NOTES[(noteIdx + 5) % 12])
+
+    // Level 2 - Close: Major 3rd (+4), Minor 3rd (+3), Major 6th (+9)
+    levelNotes[1].push(
+      NOTES[(noteIdx + 4) % 12],
+      NOTES[(noteIdx + 3) % 12],
+      NOTES[(noteIdx + 9) % 12]
+    )
+
+    // Level 3 - Moderate: Minor 6th (+8), Major 2nd (+2), Minor 7th (+10)
+    levelNotes[2].push(
+      NOTES[(noteIdx + 8) % 12],
+      NOTES[(noteIdx + 2) % 12],
+      NOTES[(noteIdx + 10) % 12]
+    )
+
+    // Level 4 - Spicy: Minor 2nd (+1), Major 7th (+11), Tritone (+6)
+    levelNotes[3].push(
+      NOTES[(noteIdx + 1) % 12],
+      NOTES[(noteIdx + 11) % 12],
+      NOTES[(noteIdx + 6) % 12]
+    )
+  }
+
+  const labels = ['Smooth', 'Close', 'Moderate', 'Spicy', 'Exotic']
+  const emojis = ['🟢', '🟡', '🟠', '🔴', '🟣']
+  const colors = ['#22c55e', '#eab308', '#f97316', '#ef4444', '#a855f7']
+
+  const groups: RelatedKeyGroup[] = []
+
+  for (let level = 0; level < 4; level++) {
+    const uniqueNotes: string[] = []
+    for (const n of levelNotes[level]) {
+      const upper = n.toUpperCase()
+      if (!selectedSet.has(upper) && !assigned.has(upper)) {
+        assigned.add(upper)
+        uniqueNotes.push(n)
+      }
+    }
+    if (uniqueNotes.length > 0) {
+      groups.push({
+        level: level + 1,
+        label: labels[level],
+        emoji: emojis[level],
+        color: colors[level],
+        keys: uniqueNotes,
+      })
+    }
+  }
+
+  // Level 5: any remaining notes
+  const exoticNotes: string[] = []
+  for (const note of NOTES) {
+    const upper = note.toUpperCase()
+    if (!selectedSet.has(upper) && !assigned.has(upper)) {
+      assigned.add(upper)
+      exoticNotes.push(note)
+    }
+  }
+  if (exoticNotes.length > 0) {
+    groups.push({
+      level: 5,
+      label: labels[4],
+      emoji: emojis[4],
+      color: colors[4],
+      keys: exoticNotes,
+    })
+  }
+
+  return groups
+}
+
+/**
+ * Convert a frequency in Hz to the nearest note name.
+ */
+export function freqToNoteName(hz: number): string | null {
+  if (!hz || hz <= 0) return null
+  const midi = Math.round(12 * Math.log2(hz / 440) + 69)
+  return NOTES[((midi % 12) + 12) % 12]
+}
+
 const DEGREE_NAMES = [
   'Tonic (I)',
   'Neapolitan (bII)',

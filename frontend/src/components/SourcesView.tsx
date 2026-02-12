@@ -10,28 +10,36 @@ import { SourcesBatchActions } from './SourcesBatchActions'
 import { SourcesDetailModal } from './SourcesDetailModal'
 import { EditingModal } from './EditingModal'
 import { SampleSpaceView } from './SampleSpaceView'
+import { CustomOrderModal } from './CustomOrderModal'
 import { SourcesAudioFilter, AudioFilterState } from './SourcesAudioFilter'
 import { useSourceTree } from '../hooks/useSourceTree'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import {
   useTags,
-  useCollections,
-  useCreateCollection,
-  useUpdateCollection,
-  useDeleteCollection,
+  useFolders,
+  useCreateFolder,
+  useUpdateFolder,
+  useDeleteFolder,
   useToggleFavorite,
   useAddTagToSlice,
   useRemoveTagFromSlice,
-  useAddSliceToCollection,
-  useRemoveSliceFromCollection,
+  useAddSliceToFolder,
+  useRemoveSliceFromFolder,
   useUpdateSliceGlobal,
   useCreateTag,
   useDeleteSliceGlobal,
   useBatchDeleteSlices,
+  useBatchReanalyzeSlices,
+  useCreateFolderFromTag,
+  useCreateTagFromFolder,
+  useCollections,
+  useCreateCollection,
+  useUpdateCollection,
+  useDeleteCollection,
 } from '../hooks/useTracks'
 import type { SourceScope, SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
-import { getRelatedKeys, getScaleDegree } from '../utils/musicTheory'
+import { getRelatedKeys, getRelatedNotes, getScaleDegree } from '../utils/musicTheory'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
@@ -39,12 +47,16 @@ export function SourcesView() {
   // State
   const [currentScope, setCurrentScope] = useState<SourceScope>({ type: 'all' })
   const [selectedTags, setSelectedTags] = useState<number[]>([])
+  const [selectedFolderIds, setSelectedFolderIds] = useState<number[]>([])
+  const [excludedTags, setExcludedTags] = useState<number[]>([])
+  const [excludedFolderIds, setExcludedFolderIds] = useState<number[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
   const [selectedSampleId, setSelectedSampleId] = useState<number | null>(null)
   const [viewMode, setViewMode] = useState<'grid' | 'list' | 'space'>('grid')
   const [selectedSampleIds, setSelectedSampleIds] = useState<Set<number>>(new Set())
   const [editingTrackId, setEditingTrackId] = useState<number | null>(null)
+  const [showCustomOrder, setShowCustomOrder] = useState(false)
 
   // Advanced filters
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -59,6 +71,9 @@ export function SourcesView() {
     sortOrder: 'asc',
     minBpm: 0,
     maxBpm: 300,
+    pitchFilterMode: 'fundamental',
+    selectedNotes: [],
+    relatedNotesLevels: [],
     selectedKeys: [],
     selectedEnvelopeTypes: [],
     minBrightness: 0,
@@ -87,7 +102,22 @@ export function SourcesView() {
     return keys
   }, [audioFilter.selectedKeys, audioFilter.relatedKeysLevels])
 
+  // Compute effective notes (selected + related levels)
+  const effectiveNotes = useMemo(() => {
+    const notes = [...(audioFilter.selectedNotes || [])]
+    if ((audioFilter.relatedNotesLevels || []).length > 0) {
+      const relatedGroups = getRelatedNotes(audioFilter.selectedNotes || [])
+      for (const group of relatedGroups) {
+        if (audioFilter.relatedNotesLevels!.includes(group.level)) {
+          notes.push(...group.keys)
+        }
+      }
+    }
+    return notes
+  }, [audioFilter.selectedNotes, audioFilter.relatedNotesLevels])
+
   // Data queries
+  const { data: collections = [] } = useCollections()
   const { data: sourceTree, isLoading: isTreeLoading } = useSourceTree()
   const { data: samplesData, isLoading: isSamplesLoading } = useScopedSamples(
     currentScope,
@@ -99,33 +129,113 @@ export function SourcesView() {
       sortOrder: audioFilter.sortOrder,
       minBpm: audioFilter.minBpm > 0 ? audioFilter.minBpm : undefined,
       maxBpm: audioFilter.maxBpm < 300 ? audioFilter.maxBpm : undefined,
-      keys: effectiveKeys.length > 0 ? effectiveKeys : undefined
+      keys: audioFilter.pitchFilterMode === 'scale' && effectiveKeys.length > 0 ? effectiveKeys : undefined,
+      notes: audioFilter.pitchFilterMode === 'fundamental' && effectiveNotes.length > 0 ? effectiveNotes : undefined,
     }
   )
   const { data: allTags = [] } = useTags()
-  const { data: collections = [] } = useCollections()
+  const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null)
+  const { data: allFolders = [] } = useFolders()
+
+  // Auto-select first collection
+  useMemo(() => {
+    if (collections.length > 0 && activeCollectionId === null) {
+      setActiveCollectionId(collections[0].id)
+    }
+  }, [collections, activeCollectionId])
+
+  const folders = useMemo(() => {
+    if (activeCollectionId === null) return allFolders
+    return allFolders.filter(c => c.collectionId === activeCollectionId || c.collectionId === null)
+  }, [allFolders, activeCollectionId])
 
   // Mutations
+  const createFolder = useCreateFolder()
   const createCollection = useCreateCollection()
   const updateCollection = useUpdateCollection()
   const deleteCollection = useDeleteCollection()
+  const updateFolder = useUpdateFolder()
+  const deleteFolder = useDeleteFolder()
   const toggleFavorite = useToggleFavorite()
   const addTagToSlice = useAddTagToSlice()
   const removeTagFromSlice = useRemoveTagFromSlice()
-  const addSliceToCollection = useAddSliceToCollection()
-  const removeSliceFromCollection = useRemoveSliceFromCollection()
+  const addSliceToFolder = useAddSliceToFolder()
+  const removeSliceFromFolder = useRemoveSliceFromFolder()
   const updateSlice = useUpdateSliceGlobal()
   const createTag = useCreateTag()
   const deleteSlice = useDeleteSliceGlobal()
   const batchDeleteSlices = useBatchDeleteSlices()
+  const batchReanalyzeSlices = useBatchReanalyzeSlices()
+  const createFolderFromTag = useCreateFolderFromTag()
+  const createTagFromFolder = useCreateTagFromFolder()
 
   // Derived data
-  const allSamples = samplesData?.samples || []
+  const allSamples = useMemo(() => {
+    const incoming = samplesData?.samples || []
+    return Array.from(new Map(incoming.map((sample) => [sample.id, sample])).values())
+  }, [samplesData?.samples])
   const totalCount = samplesData?.total || 0
+
+  const tagCounts = useMemo(() => {
+    const counts: Record<number, number> = {}
+    const countsByName: Record<string, number> = {}
+
+    for (const sample of allSamples) {
+      for (const tag of sample.tags || []) {
+        counts[tag.id] = (counts[tag.id] || 0) + 1
+        const key = tag.name.toLowerCase()
+        countsByName[key] = (countsByName[key] || 0) + 1
+      }
+    }
+
+    return { counts, countsByName }
+  }, [allSamples])
 
   // Filter samples by duration and advanced features
   const samples = useMemo(() => {
     return allSamples.filter(sample => {
+      // Fallback scope filtering for deployments where backend scope filtering
+      // can be inconsistent for custom folders/collections.
+      if (currentScope.type === 'my-folder') {
+        const itemFolderIds = sample.folderIds ?? []
+        if (!itemFolderIds.includes(currentScope.folderId)) return false
+      }
+
+      if (currentScope.type === 'collection') {
+        const collectionFolderIds = new Set(
+          allFolders
+            .filter(folder => folder.collectionId === currentScope.collectionId)
+            .map(folder => folder.id)
+        )
+        const itemFolderIds = sample.folderIds ?? []
+        if (!itemFolderIds.some(id => collectionFolderIds.has(id))) return false
+      }
+
+      const applyFolderFilters =
+        currentScope.type === 'all' ||
+        currentScope.type === 'youtube' ||
+        currentScope.type === 'youtube-video' ||
+        currentScope.type === 'local'
+
+      // Included folder filter (AND logic)
+      if (applyFolderFilters && selectedFolderIds.length > 0) {
+        const itemFolderIds = sample.folderIds ?? []
+        const inAllSelectedFolders = selectedFolderIds.every(id => itemFolderIds.includes(id))
+        if (!inAllSelectedFolders) return false
+      }
+
+      // Excluded tag filter
+      if (excludedTags.length > 0) {
+        const hasExcludedTag = sample.tags?.some(tag => excludedTags.includes(tag.id))
+        if (hasExcludedTag) return false
+      }
+
+      // Excluded folder filter
+      if (applyFolderFilters && excludedFolderIds.length > 0) {
+        const inExcludedFolder = sample.folderIds?.some(id => excludedFolderIds.includes(id))
+        if (inExcludedFolder) return false
+      }
+
       // Duration filter
       const duration = sample.endTime - sample.startTime
       if (duration < minDuration || (maxDuration < 600 && duration > maxDuration)) {
@@ -160,7 +270,7 @@ export function SourcesView() {
 
       return true
     })
-  }, [allSamples, minDuration, maxDuration, audioFilter])
+  }, [allSamples, allFolders, currentScope, selectedFolderIds, excludedTags, excludedFolderIds, minDuration, maxDuration, audioFilter])
 
   // Scale degree grouping
   const scaleDegreeGroups = useMemo(() => {
@@ -205,12 +315,20 @@ export function SourcesView() {
   const spaceViewFilterState = useMemo(() => ({
     searchQuery,
     selectedTags,
+    excludedTags,
     minDuration,
     maxDuration: maxDuration >= 600 ? Infinity : maxDuration,
     showFavoritesOnly,
-    selectedCollectionIds: currentScope.type === 'my-folder' ? [currentScope.collectionId] : [],
+    selectedFolderIds:
+      currentScope.type === 'my-folder' || currentScope.type === 'collection' || currentScope.type === 'folder'
+        ? []
+        : selectedFolderIds,
+    excludedFolderIds:
+      currentScope.type === 'my-folder' || currentScope.type === 'collection' || currentScope.type === 'folder'
+        ? []
+        : excludedFolderIds,
     selectedTrackId: currentScope.type === 'youtube-video' ? currentScope.trackId : null,
-  }), [searchQuery, selectedTags, minDuration, maxDuration, showFavoritesOnly, currentScope])
+  }), [searchQuery, selectedTags, excludedTags, minDuration, maxDuration, showFavoritesOnly, currentScope, selectedFolderIds, excludedFolderIds])
 
   // Clear selected sample if it's no longer in the list
   if (selectedSampleId && !selectedSample && samples.length > 0) {
@@ -220,25 +338,29 @@ export function SourcesView() {
   // Handlers
   const handleScopeChange = (scope: SourceScope) => {
     setCurrentScope(scope)
+    if (scope.type === 'collection' || scope.type === 'my-folder' || scope.type === 'folder') {
+      setSelectedFolderIds([])
+      setExcludedFolderIds([])
+    }
     setSelectedSampleId(null)
   }
 
-  const handleCreateCollection = (name: string, parentId?: number) => {
-    createCollection.mutate({ name, parentId })
+  const handleCreateFolder = (name: string, parentId?: number) => {
+    createFolder.mutate({ name, parentId, collectionId: activeCollectionId ?? collections[0]?.id })
   }
 
-  const handleRenameCollection = (id: number, name: string) => {
-    updateCollection.mutate({ id, data: { name } })
+  const handleRenameFolder = (id: number, name: string) => {
+    updateFolder.mutate({ id, data: { name } })
   }
 
-  const handleUpdateCollection = (id: number, data: { parentId?: number | null; color?: string }) => {
-    updateCollection.mutate({ id, data })
+  const handleUpdateFolder = (id: number, data: { parentId?: number | null; color?: string; collectionId?: number | null }) => {
+    updateFolder.mutate({ id, data })
   }
 
-  const handleDeleteCollection = (id: number) => {
-    deleteCollection.mutate(id)
-    // If we're viewing the deleted collection, reset scope
-    if (currentScope.type === 'my-folder' && currentScope.collectionId === id) {
+  const handleDeleteFolder = (id: number) => {
+    deleteFolder.mutate(id)
+    // If we're viewing the deleted folder, reset scope
+    if (currentScope.type === 'my-folder' && currentScope.folderId === id) {
       setCurrentScope({ type: 'all' })
     }
   }
@@ -255,12 +377,12 @@ export function SourcesView() {
     removeTagFromSlice.mutate({ sliceId, tagId })
   }
 
-  const handleAddToCollection = (collectionId: number, sliceId: number) => {
-    addSliceToCollection.mutate({ collectionId, sliceId })
+  const handleAddToFolder = (folderId: number, sliceId: number) => {
+    addSliceToFolder.mutate({ folderId, sliceId })
   }
 
-  const handleRemoveFromCollection = (collectionId: number, sliceId: number) => {
-    removeSliceFromCollection.mutate({ collectionId, sliceId })
+  const handleRemoveFromFolder = (folderId: number, sliceId: number) => {
+    removeSliceFromFolder.mutate({ folderId, sliceId })
   }
 
   const handleUpdateName = (sliceId: number, name: string) => {
@@ -269,6 +391,56 @@ export function SourcesView() {
 
   const handleCreateTag = (name: string, color: string) => {
     createTag.mutate({ name, color })
+  }
+
+  const handleCreateFolderFromTag = (tagId: number, name: string, color: string) => {
+    createFolderFromTag.mutate({ tagId, name, color, collectionId: activeCollectionId ?? collections[0]?.id })
+  }
+
+  const handleCreateTagFromFolder = (folderId: number, name: string, color: string) => {
+    createTagFromFolder.mutate({ folderId, name, color })
+  }
+
+  const handleCreateCollection = (name: string) => {
+    createCollection.mutate({ name }, {
+      onSuccess: (created) => {
+        setActiveCollectionId(created.id)
+        setCurrentScope({ type: 'collection', collectionId: created.id })
+      },
+    })
+  }
+
+  const handleRenameCollection = (id: number, name: string) => {
+    updateCollection.mutate({ id, data: { name } })
+  }
+
+  const handleDeleteCollection = (id: number) => {
+    const target = collections.find(p => p.id === id)
+    if (!target) return
+
+    if (!confirm(`Delete collection "${target.name}"?`)) return
+
+    const fallback = collections.find(p => p.id !== id)
+    if (activeCollectionId === id) {
+      setActiveCollectionId(fallback?.id ?? null)
+      setCurrentScope(fallback ? { type: 'collection', collectionId: fallback.id } : { type: 'all' })
+    }
+    deleteCollection.mutate(id)
+  }
+
+  const handleMoveCollection = (id: number, direction: 'up' | 'down') => {
+    const sorted = [...collections].sort((a, b) => a.sortOrder - b.sortOrder)
+    const index = sorted.findIndex(p => p.id === id)
+    if (index === -1) return
+
+    const targetIndex = direction === 'up' ? index - 1 : index + 1
+    if (targetIndex < 0 || targetIndex >= sorted.length) return
+
+    const current = sorted[index]
+    const target = sorted[targetIndex]
+
+    updateCollection.mutate({ id: current.id, data: { sortOrder: target.sortOrder } })
+    updateCollection.mutate({ id: target.id, data: { sortOrder: current.sortOrder } })
   }
 
   const handleTagClick = (tagId: number) => {
@@ -315,6 +487,49 @@ export function SourcesView() {
     }
   }
 
+  const handleAnalyzeSelected = (ids: number[]) => {
+    if (ids.length === 0) {
+      return
+    }
+
+    const modifiedCount = samples.filter(sample => ids.includes(sample.id) && sample.sampleModified).length
+
+    const confirmed = confirm(
+      modifiedCount > 0
+        ? `Analyze ${ids.length} selected samples? (${modifiedCount} modified)`
+        : `Analyze ${ids.length} selected samples?`
+    )
+    if (!confirmed) return
+
+    batchReanalyzeSlices.mutate(
+      {
+        sliceIds: ids,
+        analysisLevel: 'standard',
+        concurrency: 2,
+        includeFilenameTags: true,
+      },
+      {
+        onSuccess: (result) => {
+          if (result.warnings && result.warnings.totalWithWarnings > 0) {
+            const preview = result.warnings.messages.slice(0, 3)
+            const extra = Math.max(0, result.warnings.messages.length - preview.length)
+            const details = preview.map((m) => `• ${m}`).join('\n')
+            window.alert(
+              [
+                `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before re-analysis.`,
+                details,
+                extra > 0 ? `...and ${extra} more warning(s).` : '',
+              ]
+                .filter(Boolean)
+                .join('\n')
+            )
+          }
+          setSelectedSampleIds(new Set())
+        },
+      }
+    )
+  }
+
   const handleBatchDownload = (ids: number[]) => {
     const selectedSamples = samples.filter(s => ids.includes(s.id))
     selectedSamples.forEach(sample => {
@@ -327,6 +542,11 @@ export function SourcesView() {
     })
   }
 
+  const modifiedSelectedCount = useMemo(() => {
+    if (selectedSampleIds.size === 0) return 0
+    return samples.filter(sample => selectedSampleIds.has(sample.id) && sample.sampleModified).length
+  }, [samples, selectedSampleIds])
+
   const handleDeleteSingle = (id: number) => {
     const sample = samples.find(s => s.id === id)
     if (sample && confirm(`Delete "${sample.name}"?`)) {
@@ -337,10 +557,10 @@ export function SourcesView() {
     }
   }
 
-  const handleBatchAddToCollection = (collectionId: number, sampleIds: number[]) => {
-    // Add each sample to the collection
+  const handleBatchAddToFolder = (folderId: number, sampleIds: number[]) => {
+    // Add each sample to the folder
     sampleIds.forEach(sliceId => {
-      addSliceToCollection.mutate({ collectionId, sliceId })
+      addSliceToFolder.mutate({ folderId, sliceId })
     })
 
     // Clear selection after adding
@@ -400,8 +620,8 @@ export function SourcesView() {
       case 'folder':
         return currentScope.path.split('/').pop() || 'Folder'
       case 'my-folder':
-        const collection = collections.find(c => c.id === currentScope.collectionId)
-        return collection?.name || 'Folder'
+        const folder = folders.find(c => c.id === currentScope.folderId)
+        return folder?.name || 'Folder'
       default:
         return 'Samples'
     }
@@ -413,15 +633,24 @@ export function SourcesView() {
       <div className="w-64 flex-shrink-0 bg-surface-raised border-r border-surface-border overflow-hidden">
         <SourcesTree
           tree={sourceTree}
-          collections={collections}
+          folders={allFolders}
           currentScope={currentScope}
           onScopeChange={handleScopeChange}
+          onCreateFolder={handleCreateFolder}
+          onRenameFolder={handleRenameFolder}
+          onDeleteFolder={handleDeleteFolder}
+          onUpdateFolder={handleUpdateFolder}
+          onBatchAddToFolder={handleBatchAddToFolder}
+          onCreateTagFromFolder={handleCreateTagFromFolder}
+          isLoading={isTreeLoading}
+          collections={collections}
+          activeCollectionId={activeCollectionId}
+          onCollectionChange={setActiveCollectionId}
           onCreateCollection={handleCreateCollection}
           onRenameCollection={handleRenameCollection}
           onDeleteCollection={handleDeleteCollection}
-          onUpdateCollection={handleUpdateCollection}
-          onBatchAddToCollection={handleBatchAddToCollection}
-          isLoading={isTreeLoading}
+          onMoveCollection={handleMoveCollection}
+          onOpenAdvancedCategoryManagement={() => setShowCustomOrder(true)}
         />
       </div>
 
@@ -498,8 +727,18 @@ export function SourcesView() {
             <SourcesTagFilter
               selectedTags={selectedTags}
               onTagsChange={setSelectedTags}
+              selectedFolderIds={selectedFolderIds}
+              onSelectedFolderIdsChange={setSelectedFolderIds}
+              excludedTags={excludedTags}
+              onExcludedTagsChange={setExcludedTags}
               allTags={allTags}
+              allFolders={allFolders}
+              excludedFolderIds={excludedFolderIds}
+              onExcludedFolderIdsChange={setExcludedFolderIds}
               onCreateTag={handleCreateTag}
+              onCreateFolderFromTag={handleCreateFolderFromTag}
+              tagCounts={tagCounts.counts}
+              tagNameCounts={tagCounts.countsByName}
               totalCount={totalCount}
               filteredCount={samples.length}
             />
@@ -686,10 +925,13 @@ export function SourcesView() {
           <SourcesBatchActions
             selectedCount={selectedSampleIds.size}
             selectedIds={selectedSampleIds}
+            modifiedSelectedCount={modifiedSelectedCount}
             onBatchDelete={handleBatchDelete}
             onBatchDownload={handleBatchDownload}
+            onAnalyzeSelected={handleAnalyzeSelected}
             onClearSelection={() => setSelectedSampleIds(new Set())}
             isDeleting={batchDeleteSlices.isPending}
+            isAnalyzing={batchReanalyzeSlices.isPending}
           />
         )}
 
@@ -707,6 +949,7 @@ export function SourcesView() {
                   onToggleSelect={handleToggleSelect}
                   onToggleSelectAll={handleToggleSelectAll}
                   onToggleFavorite={handleToggleFavorite}
+                  onEditTrack={setEditingTrackId}
                   onTagClick={handleTagClick}
                   isLoading={isSamplesLoading}
                   playMode={playMode}
@@ -787,13 +1030,13 @@ export function SourcesView() {
         <SourcesDetailModal
           sample={selectedSample}
           allTags={allTags}
-          collections={collections}
+          folders={folders}
           onClose={() => setSelectedSampleId(null)}
           onToggleFavorite={handleToggleFavorite}
           onAddTag={handleAddTag}
           onRemoveTag={handleRemoveTag}
-          onAddToCollection={handleAddToCollection}
-          onRemoveFromCollection={handleRemoveFromCollection}
+          onAddToFolder={handleAddToFolder}
+          onRemoveFromFolder={handleRemoveFromFolder}
           onUpdateName={handleUpdateName}
           onEdit={() => setEditingTrackId(selectedSample.trackId)}
           onTagClick={handleTagClick}
@@ -809,6 +1052,14 @@ export function SourcesView() {
         <EditingModal
           trackId={editingTrackId}
           onClose={() => setEditingTrackId(null)}
+        />
+      )}
+
+      {/* Custom Order Modal */}
+      {showCustomOrder && (
+        <CustomOrderModal
+          onClose={() => setShowCustomOrder(false)}
+          activeCollectionId={activeCollectionId}
         />
       )}
     </div>
