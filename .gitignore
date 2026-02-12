@@ -95,6 +95,13 @@ frontend/release/
 frontend/dist-electron/
 frontend/embedded-backend/
 frontend/embedded-python/
+frontend/release/**
+frontend/embedded-python/**
+frontend/embedded-backend/**
+frontend/release/linux-unpacked/
+frontend/release/*.AppImage
+frontend/release/*.deb
+frontend/release/*.rpm
 *.AppImage
 *.deb
 *.rpm
