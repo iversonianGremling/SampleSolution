@@ -53,7 +53,26 @@ A practical audio sample management and analysis platform for music producers an
   - **Space** (XO-like similarity/discovery view)
 
 ---
+## Screenshots
+<img width="1925" height="998" alt="image" src="https://github.com/user-attachments/assets/ee1c6530-e2a9-4476-bfc1-4009b072c40e" />
+XO-like "Space View"
+<img width="1919" height="997" alt="image" src="https://github.com/user-attachments/assets/1a0494fb-0cb9-4a32-a92c-9d7856ba16ea" />
+Slice view for a royalty free song on youtube
+<img width="1923" height="995" alt="image" src="https://github.com/user-attachments/assets/da2f1ff9-ebfb-48b1-949f-2ea8db043b19" />
+Samples are neatly organized inside containers depending on their origin on this view
+<img width="1920" height="991" alt="image" src="https://github.com/user-attachments/assets/6e8a7135-8c85-48de-b305-66db6835be8e" />
+Advanced filter options
+<img width="1924" height="996" alt="image" src="https://github.com/user-attachments/assets/5506fbec-95e3-4a43-9148-654b3528e211" />
+Granular control for moving samples between categories. In this case we are moving all of the samples that are on the folder Kicks, not present on the folder snares with the tag 808 and we are going to move them to Kicks>808s. Works through a system of commits, then they can be reviewed and confirmed
+<img width="1922" height="995" alt="image" src="https://github.com/user-attachments/assets/f3ce82ec-7168-44f4-9e1d-ae16a74f2ce9" />
+Drum rack with a simple sequencer for testing
+<img width="1922" height="995" alt="image" src="https://github.com/user-attachments/assets/c1afa68d-8397-4afc-8b6b-702b9664fec4" />
+Import page with several options
+<img width="1924" height="997" alt="image" src="https://github.com/user-attachments/assets/72eed24f-10e8-4f44-8da7-14522b8cb134" />
+Some of the options inside the settings tab
 
+
+---
 ## Run Options
 
 ### 1) Docker (Recommended)
