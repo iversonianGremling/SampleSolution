@@ -7,6 +7,7 @@ import {
   getTagMetadata,
   storeAudioFeatures,
 } from '../services/audioAnalysis.js'
+import { getAudioFileMetadata } from '../services/ffmpeg.js'
 import { onTagAdded, onTagRemoved } from '../services/tagFolderSync.js'
 
 const router = Router()
@@ -432,9 +433,18 @@ router.post('/slices/:sliceId/ai-tags', async (req, res) => {
 
     // Analyze audio with Python (Essentia + Librosa)
     const features = await analyzeAudioFeatures(slice[0].filePath)
+    const fileMetadata = await getAudioFileMetadata(slice[0].filePath).catch(() => null)
+    const enrichedFeatures = {
+      ...features,
+      sampleRate: fileMetadata?.sampleRate ?? features.sampleRate,
+      channels: fileMetadata?.channels ?? undefined,
+      fileFormat: fileMetadata?.format ?? undefined,
+      sourceMtime: fileMetadata?.modifiedAt ?? undefined,
+      sourceCtime: fileMetadata?.createdAt ?? undefined,
+    }
 
     // Store raw features in database
-    await storeAudioFeatures(sliceId, features)
+    await storeAudioFeatures(sliceId, enrichedFeatures)
 
     // Convert features to tags
     const tagNames = featuresToTags(features)

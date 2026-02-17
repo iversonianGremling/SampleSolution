@@ -516,17 +516,25 @@ export function SourcesTree({
           style={{ paddingLeft: `${(depth + 2) * 12}px` }}
         >
           {hasChildren ? (
-            <button
-              type="button"
+            <span
+              role="button"
+              tabIndex={0}
               className="p-0.5 hover:text-white"
               onClick={(e) => {
                 e.stopPropagation()
                 toggleSourceFolder(node.path)
               }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  toggleSourceFolder(node.path)
+                }
+              }}
               aria-label={isExpanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
             >
               {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </button>
+            </span>
           ) : (
             <span className="w-3.5" />
           )}
@@ -629,17 +637,25 @@ export function SourcesTree({
             style={{ paddingLeft: `${depth * 16 + 8}px` }}
           >
             {hasChildren ? (
-              <button
-                type="button"
+              <span
+                role="button"
+                tabIndex={0}
                 className="p-0.5 hover:text-white"
                 onClick={(e) => {
                   e.stopPropagation()
                   toggleFolder(node.id)
                 }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    toggleFolder(node.id)
+                  }
+                }}
                 aria-label={isExpanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
               >
                 {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </button>
+              </span>
             ) : (
               <span className="w-3.5" />
             )}

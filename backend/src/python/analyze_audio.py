@@ -219,11 +219,16 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
 
         # Extract key features (standard and advanced only, loops only)
         # Key detection is meaningless for one-shot samples (use fundamental frequency instead)
-        key_features = {'key_estimate': None, 'key_strength': None}
+        key_features = {'key_estimate': None, 'scale': None, 'key_strength': None}
         if analysis_level in ['standard', 'advanced'] and not is_one_shot:
             step_start = time.time()
             key_features = extract_key_features(y, sr)
             debug_log(f"Key features extracted: {key_features['key_estimate']} [{(time.time()-step_start)*1000:.0f}ms]")
+
+        # Estimate polyphony (approximate simultaneous note count)
+        step_start = time.time()
+        polyphony = estimate_polyphony(y, sr)
+        debug_log(f"Polyphony estimated: {polyphony if polyphony is not None else 'n/a'} [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Extract tempo only for loops (standard and advanced only)
         tempo_features = {}
@@ -254,7 +259,9 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
             'dynamic_range': float(energy_features['dynamic_range']),
             # Key Detection
             'key_estimate': key_features['key_estimate'],
+            'scale': key_features.get('scale'),
             'key_strength': key_features['key_strength'],
+            'polyphony': polyphony,
             # Tempo (optional)
             'bpm': tempo_features.get('bpm'),
             'beats_count': tempo_features.get('beats_count'),
@@ -751,13 +758,66 @@ def extract_key_features(y, sr):
 
             return {
                 'key_estimate': key_estimate,
+                'scale': scale if scale else None,
                 'key_strength': float(strength) if strength > 0 else None,
             }
     except Exception as e:
         # Silently handle errors - key detection is optional
         print(f"Warning: Key detection failed: {e}", file=sys.stderr)
 
-    return {'key_estimate': None, 'key_strength': None}
+    return {'key_estimate': None, 'scale': None, 'key_strength': None}
+
+
+def estimate_polyphony(y, sr):
+    """
+    Approximate polyphony by counting strong harmonic peaks per frame.
+    Returns an integer estimate (1..8) or None when unavailable.
+    """
+    try:
+        # Focus on harmonic content for a more stable pitch peak count.
+        y_harmonic = librosa.effects.harmonic(y)
+        stft = np.abs(librosa.stft(y_harmonic, n_fft=4096, hop_length=1024))
+        if stft.size == 0 or stft.shape[1] == 0:
+            return None
+
+        freqs = librosa.fft_frequencies(sr=sr, n_fft=4096)
+        valid_idx = np.where((freqs >= 50) & (freqs <= 5000))[0]
+        if len(valid_idx) == 0:
+            return None
+
+        stft = stft[valid_idx, :]
+        if stft.shape[0] < 3:
+            return None
+
+        peak_counts = []
+        for frame_idx in range(stft.shape[1]):
+            spectrum = stft[:, frame_idx]
+            peak = np.max(spectrum)
+            if peak <= 1e-8:
+                continue
+
+            # Keep prominent local maxima only.
+            threshold = peak * 0.2
+            local_peaks = np.where(
+                (spectrum[1:-1] > spectrum[:-2]) &
+                (spectrum[1:-1] >= spectrum[2:]) &
+                (spectrum[1:-1] >= threshold)
+            )[0] + 1
+
+            if len(local_peaks) == 0:
+                continue
+
+            mags = spectrum[local_peaks]
+            prominent_count = int(np.sum(mags >= (np.max(mags) * 0.35)))
+            peak_counts.append(max(1, min(prominent_count, 8)))
+
+        if len(peak_counts) == 0:
+            return None
+
+        # Median improves stability against transient frames.
+        return int(np.clip(np.round(np.median(peak_counts)), 1, 8))
+    except Exception:
+        return None
 
 
 def extract_timbral_features(y, sr):

@@ -30,6 +30,10 @@ export interface AudioFeatures {
   // Basic properties
   duration: number
   sampleRate: number
+  channels?: number
+  fileFormat?: string
+  sourceMtime?: string
+  sourceCtime?: string
   isOneShot: boolean
   isLoop: boolean
 
@@ -58,6 +62,7 @@ export interface AudioFeatures {
 
   // Key detection (optional)
   keyEstimate?: string
+  scale?: string
   keyStrength?: number
 
   // Instrument classification
@@ -77,6 +82,7 @@ export interface AudioFeatures {
   brightness?: number
   warmth?: number
   hardness?: number
+  noisiness?: number
   roughness?: number
   sharpness?: number
 
@@ -134,6 +140,7 @@ export interface AudioFeatures {
 
   // Fundamental frequency (one-shots only, excluding chords)
   fundamentalFrequency?: number
+  polyphony?: number
 
   // Metadata
   analysisLevel?: AnalysisLevel
@@ -305,6 +312,7 @@ export async function analyzeAudioFeatures(
           loudness: result.loudness,
           dynamicRange: result.dynamic_range,
           keyEstimate: result.key_estimate,
+          scale: result.scale,
           keyStrength: result.key_strength,
           instrumentPredictions: result.instrument_predictions || [],
           // Phase 1: Timbral features
@@ -356,6 +364,7 @@ export async function analyzeAudioFeatures(
           transientSpectralFlatness: result.transient_spectral_flatness,
           sampleTypeConfidence: result.sample_type_confidence,
           fundamentalFrequency: result.fundamental_frequency,
+          polyphony: result.polyphony,
           // Metadata
           analysisLevel: result.analysis_level,
           analysisDurationMs: result.analysis_duration_ms,
@@ -452,6 +461,19 @@ export function deriveInstrumentType(
   return null
 }
 
+function deriveScaleFromKeyEstimate(keyEstimate: string | undefined): string | null {
+  if (!keyEstimate) return null
+
+  const normalized = keyEstimate.trim().toLowerCase()
+  if (!normalized) return null
+
+  const parts = normalized.split(/\s+/)
+  if (parts.length < 2) return null
+
+  const scale = parts.slice(1).join(' ')
+  return scale || null
+}
+
 /**
  * Store audio features in database
  */
@@ -463,12 +485,18 @@ export async function storeAudioFeatures(
 
   // Derive instrument type from ML classes and/or filename
   const instrumentType = deriveInstrumentType(features.instrumentClasses)
+  const scale = features.scale ?? deriveScaleFromKeyEstimate(features.keyEstimate)
+  const noisiness = features.noisiness ?? features.roughness ?? null
 
   const values = {
     sliceId,
     instrumentType: instrumentType ?? null,
     duration: features.duration,
     sampleRate: features.sampleRate,
+    channels: features.channels ?? null,
+    fileFormat: features.fileFormat?.toLowerCase() ?? null,
+    sourceMtime: features.sourceMtime ?? null,
+    sourceCtime: features.sourceCtime ?? null,
     isOneShot: features.isOneShot ? 1 : 0,
     isLoop: features.isLoop ? 1 : 0,
     bpm: features.bpm ?? null,
@@ -487,6 +515,7 @@ export async function storeAudioFeatures(
     loudness: features.loudness,
     dynamicRange: features.dynamicRange,
     keyEstimate: features.keyEstimate ?? null,
+    scale,
     keyStrength: features.keyStrength ?? null,
     instrumentPredictions: JSON.stringify(features.instrumentPredictions),
     // Phase 1: Timbral features
@@ -499,6 +528,7 @@ export async function storeAudioFeatures(
     brightness: features.brightness ?? null,
     warmth: features.warmth ?? null,
     hardness: features.hardness ?? null,
+    noisiness,
     roughness: features.roughness ?? null,
     sharpness: features.sharpness ?? null,
     // Phase 1: Advanced spectral
@@ -538,9 +568,10 @@ export async function storeAudioFeatures(
     transientSpectralFlatness: features.transientSpectralFlatness ?? null,
     sampleTypeConfidence: features.sampleTypeConfidence ?? null,
     fundamentalFrequency: features.fundamentalFrequency ?? null,
+    polyphony: features.polyphony ?? null,
     // Metadata
     analysisLevel: features.analysisLevel ?? 'standard',
-    analysisVersion: '1.5', // Updated for fundamental frequency
+    analysisVersion: '1.6', // Updated for polyphony + creation metadata
     createdAt,
     analysisDurationMs: features.analysisDurationMs,
   }
@@ -581,6 +612,10 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
   return {
     duration: row.duration || 0,
     sampleRate: row.sampleRate || 44100,
+    channels: row.channels ?? undefined,
+    fileFormat: row.fileFormat ?? undefined,
+    sourceMtime: row.sourceMtime ?? undefined,
+    sourceCtime: row.sourceCtime ?? undefined,
     isOneShot: row.isOneShot === 1,
     isLoop: row.isLoop === 1,
     bpm: row.bpm ?? undefined,
@@ -599,6 +634,7 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     loudness: row.loudness || 0,
     dynamicRange: row.dynamicRange || 0,
     keyEstimate: row.keyEstimate ?? undefined,
+    scale: row.scale ?? undefined,
     keyStrength: row.keyStrength ?? undefined,
     instrumentPredictions: JSON.parse(row.instrumentPredictions || '[]'),
     // Phase 1: Timbral features
@@ -611,6 +647,7 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     brightness: row.brightness ?? undefined,
     warmth: row.warmth ?? undefined,
     hardness: row.hardness ?? undefined,
+    noisiness: row.noisiness ?? undefined,
     roughness: row.roughness ?? undefined,
     sharpness: row.sharpness ?? undefined,
     // Phase 1: Advanced spectral
@@ -650,6 +687,7 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     transientSpectralFlatness: row.transientSpectralFlatness ?? undefined,
     sampleTypeConfidence: row.sampleTypeConfidence ?? undefined,
     fundamentalFrequency: row.fundamentalFrequency ?? undefined,
+    polyphony: row.polyphony ?? undefined,
     // Metadata
     analysisLevel: row.analysisLevel as AnalysisLevel | undefined,
     analysisDurationMs: row.analysisDurationMs || 0,

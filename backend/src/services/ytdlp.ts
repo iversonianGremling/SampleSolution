@@ -3,6 +3,19 @@ import path from 'path'
 import type { YouTubeVideoInfo } from '../types/index.js'
 
 const DATA_DIR = process.env.DATA_DIR || './data'
+const YOUTUBE_VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/
+
+function parseUrl(input: string): URL | null {
+  try {
+    return new URL(input)
+  } catch {
+    try {
+      return new URL(`https://${input}`)
+    } catch {
+      return null
+    }
+  }
+}
 
 export async function getVideoInfo(videoId: string): Promise<YouTubeVideoInfo> {
   return new Promise((resolve, reject) => {
@@ -81,15 +94,58 @@ export async function downloadAudio(
 }
 
 export function extractVideoId(input: string): string | null {
-  // Handle various YouTube URL formats
+  const cleaned = input.trim().replace(/^<|>$/g, '').replace(/^['"]|['"]$/g, '')
+
+  if (!cleaned) {
+    return null
+  }
+
+  // Plain video ID
+  if (YOUTUBE_VIDEO_ID_PATTERN.test(cleaned)) {
+    return cleaned
+  }
+
+  // Parse as URL when possible (supports URLs where `v` is not the first query param)
+  const parsedUrl = parseUrl(cleaned)
+  if (parsedUrl) {
+    const hostname = parsedUrl.hostname.toLowerCase()
+    const pathParts = parsedUrl.pathname.split('/').filter(Boolean)
+    const firstSegment = pathParts[0]
+    const secondSegment = pathParts[1]
+
+    if (hostname === 'youtu.be' && firstSegment && YOUTUBE_VIDEO_ID_PATTERN.test(firstSegment)) {
+      return firstSegment
+    }
+
+    const isYoutubeHost =
+      hostname.endsWith('youtube.com') || hostname.endsWith('youtube-nocookie.com')
+
+    if (isYoutubeHost) {
+      const queryVideoId = parsedUrl.searchParams.get('v')
+      if (queryVideoId && YOUTUBE_VIDEO_ID_PATTERN.test(queryVideoId)) {
+        return queryVideoId
+      }
+
+      if (
+        firstSegment &&
+        ['embed', 'v', 'shorts', 'live'].includes(firstSegment) &&
+        secondSegment &&
+        YOUTUBE_VIDEO_ID_PATTERN.test(secondSegment)
+      ) {
+        return secondSegment
+      }
+    }
+  }
+
+  // Fallback regexes for slightly malformed pasted text
   const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([a-zA-Z0-9_-]{11})/,
-    /^([a-zA-Z0-9_-]{11})$/, // Plain video ID
+    /[?&]v=([a-zA-Z0-9_-]{11})/,
+    /(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|shorts\/|live\/))([a-zA-Z0-9_-]{11})/,
   ]
 
   for (const pattern of patterns) {
-    const match = input.match(pattern)
-    if (match) {
+    const match = cleaned.match(pattern)
+    if (match?.[1]) {
       return match[1]
     }
   }
@@ -98,6 +154,19 @@ export function extractVideoId(input: string): string | null {
 }
 
 export function extractPlaylistId(input: string): string | null {
-  const match = input.match(/[?&]list=([a-zA-Z0-9_-]+)/)
+  const cleaned = input.trim()
+  if (!cleaned) {
+    return null
+  }
+
+  const parsedUrl = parseUrl(cleaned)
+  if (parsedUrl) {
+    const list = parsedUrl.searchParams.get('list')
+    if (list) {
+      return list
+    }
+  }
+
+  const match = cleaned.match(/[?&]list=([a-zA-Z0-9_-]+)/)
   return match ? match[1] : null
 }

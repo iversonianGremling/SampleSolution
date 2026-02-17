@@ -18,6 +18,21 @@ describe('URL Parsing', () => {
         .toBe('dQw4w9WgXcQ')
     })
 
+    it('extracts ID when v is not the first query parameter', () => {
+      expect(extractVideoId('https://www.youtube.com/watch?si=abc123&v=dQw4w9WgXcQ'))
+        .toBe('dQw4w9WgXcQ')
+    })
+
+    it('extracts ID from YouTube shorts URL', () => {
+      expect(extractVideoId('https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share'))
+        .toBe('dQw4w9WgXcQ')
+    })
+
+    it('extracts ID from YouTube live URL', () => {
+      expect(extractVideoId('https://www.youtube.com/live/dQw4w9WgXcQ?feature=share'))
+        .toBe('dQw4w9WgXcQ')
+    })
+
     it('extracts ID from embed URL', () => {
       expect(extractVideoId('https://www.youtube.com/embed/dQw4w9WgXcQ'))
         .toBe('dQw4w9WgXcQ')
@@ -53,6 +68,11 @@ describe('URL Parsing', () => {
 
     it('extracts playlist ID from watch URL with list param', () => {
       expect(extractPlaylistId('https://www.youtube.com/watch?v=abc123&list=PLtest123'))
+        .toBe('PLtest123')
+    })
+
+    it('extracts playlist ID when list is not the first query parameter', () => {
+      expect(extractPlaylistId('https://www.youtube.com/watch?si=abc123&list=PLtest123&v=dQw4w9WgXcQ'))
         .toBe('PLtest123')
     })
 

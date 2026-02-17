@@ -6,6 +6,7 @@ import { InstrumentIcon, resolveInstrumentType } from './InstrumentIcon'
 import { DrumRackPadPicker } from './DrumRackPadPicker'
 import type { SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
+import { createManagedAudio, releaseManagedAudio } from '../services/globalAudioVolume'
 
 type SortField = 'name' | 'duration'
 type SortOrder = 'asc' | 'desc'
@@ -57,6 +58,7 @@ export function SourcesSampleGrid({
     return () => {
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
     }
@@ -163,6 +165,7 @@ export function SourcesSampleGrid({
         // Stop playing
         if (audioRef.current) {
           audioRef.current.pause()
+          releaseManagedAudio(audioRef.current)
           audioRef.current = null
         }
         setPlayingId(null)
@@ -170,12 +173,13 @@ export function SourcesSampleGrid({
         // Stop previous
         if (audioRef.current) {
           audioRef.current.pause()
+          releaseManagedAudio(audioRef.current)
         }
         // Play new
-        const audio = new Audio(getSliceDownloadUrl(id))
-        audio.loop = loopEnabled
+        const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: loopEnabled })
         audio.onended = () => {
           setPlayingId(null)
+          releaseManagedAudio(audio)
           audioRef.current = null
         }
         audio.play()
@@ -187,13 +191,14 @@ export function SourcesSampleGrid({
       // Stop previous
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
       // Play new
-      const audio = new Audio(getSliceDownloadUrl(id))
-      audio.loop = false
+      const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: false })
       audio.onended = () => {
         setPlayingId(null)
+        releaseManagedAudio(audio)
         audioRef.current = null
       }
       audio.play()
@@ -209,13 +214,14 @@ export function SourcesSampleGrid({
       // Stop current if playing
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
       // Play from the beginning
-      const audio = new Audio(getSliceDownloadUrl(id))
-      audio.loop = loopEnabled
+      const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: loopEnabled })
       audio.onended = () => {
         setPlayingId(null)
+        releaseManagedAudio(audio)
         audioRef.current = null
       }
       audio.play()
@@ -231,6 +237,7 @@ export function SourcesSampleGrid({
       // Stop playing when mouse is released
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
       setPlayingId(null)
@@ -254,6 +261,7 @@ export function SourcesSampleGrid({
     e.dataTransfer.setData('application/json', JSON.stringify({
       type: 'samples',
       sampleIds: samplesToDrag,
+      slice: samplesToDrag.length === 1 ? sample : undefined,
     }))
     e.dataTransfer.effectAllowed = 'copy'
 

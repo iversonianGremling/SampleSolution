@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -146,5 +146,195 @@
 
   .no-spinner {
     -moz-appearance: textfield;
+  }
+
+  .font-vst {
+    font-family: 'Outfit', system-ui, sans-serif;
+  }
+
+  .font-vst-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .crt-scanlines {
+    background-image: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.15) 2px,
+      rgba(0, 0, 0, 0.15) 4px
+    );
+    pointer-events: none;
+  }
+}
+
+/* ─── Resize Dividers ──────────────────────────────────── */
+
+.resize-divider {
+  position: relative;
+  flex-shrink: 0;
+  background: var(--color-surface-border);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 150ms ease;
+}
+
+.resize-divider-horizontal {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.resize-divider-vertical {
+  height: 4px;
+  cursor: row-resize;
+}
+
+.resize-divider:hover,
+.resize-divider.active {
+  background: var(--color-accent-primary);
+}
+
+.resize-divider-grip {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.resize-divider:hover .resize-divider-grip,
+.resize-divider.active .resize-divider-grip {
+  opacity: 1;
+}
+
+.resize-divider-dot {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.resize-divider-expand {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-accent-primary);
+  color: white;
+  border: none;
+  cursor: pointer;
+  z-index: 11;
+}
+
+.resize-divider-horizontal .resize-divider-expand {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.resize-divider-vertical .resize-divider-expand {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* ─── Panel Transitions ────────────────────────────────── */
+
+.panel-animate {
+  transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              height 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.panel-animate.dragging {
+  transition: none;
+}
+
+/* ─── Chevron Notification ─────────────────────────────── */
+
+@keyframes chevronNotify {
+  0%, 100% {
+    background-color: rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.3);
+  }
+  50% {
+    background-color: rgba(59, 130, 246, 0.3);
+    border-color: rgba(59, 130, 246, 0.6);
+  }
+}
+
+.chevron-notify {
+  animation: chevronNotify 600ms ease-in-out 2;
+}
+
+/* ─── Mini Drum Rack Enter ─────────────────────────────── */
+
+.mini-rack-enter {
+  animation: fadeScaleIn 200ms ease-out;
+}
+
+@keyframes fadeScaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ─── FX Accordion ─────────────────────────────────────── */
+
+.fx-accordion {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 200ms ease, opacity 150ms ease;
+}
+
+.fx-accordion-open {
+  max-height: 400px;
+  opacity: 1;
+}
+
+/* ─── DrumRack Compact Tab Transitions ───────────────── */
+
+.drumrack-tab-panel {
+  animation-duration: 260ms;
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.drumrack-tab-enter-right {
+  animation-name: drumrackSlideInRight;
+}
+
+.drumrack-tab-enter-left {
+  animation-name: drumrackSlideInLeft;
+}
+
+@keyframes drumrackSlideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(22px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes drumrackSlideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-22px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
   }
 }

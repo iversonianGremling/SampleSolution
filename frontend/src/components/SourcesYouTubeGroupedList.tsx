@@ -180,6 +180,7 @@ export function SourcesYouTubeGroupedList({
     e.dataTransfer.setData('application/json', JSON.stringify({
       type: 'samples',
       sampleIds: samplesToDrag,
+      slice: samplesToDrag.length === 1 ? sample : undefined,
     }))
     e.dataTransfer.effectAllowed = 'copy'
 

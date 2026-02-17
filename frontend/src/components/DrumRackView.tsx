@@ -7,10 +7,13 @@ import {
 import { getSliceDownloadUrl } from '../api/client'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import { useDrumRack } from '../contexts/DrumRackContext'
+import { PadFxChain } from './PadFxChain'
+import { DEFAULT_LAB_SETTINGS, renderLabAudioBuffer, type LabSettings } from '../services/LabAudioEngine'
 import type { Slice } from '../types'
 
 type PadPlayMode = 'one-shot' | 'hold'
 type EditMode = 'grid' | 'velocity'
+type DrumRackTab = 'drumrack' | 'sequencer'
 
 const KEY_MAP: Record<string, number> = {
   '1': 12, '2': 13, '3': 14, '4': 15,
@@ -170,10 +173,31 @@ interface SequencerState {
   countInBars: number // 0, 1, 2, or 4
 }
 
+interface DrumRackDropPayload {
+  sampleIds?: number[]
+  slice?: unknown
+}
+
+interface PadProcessedBufferCacheEntry {
+  sliceId: number
+  settingsSignature: string
+  buffer: AudioBuffer | null
+  renderPromise?: Promise<AudioBuffer>
+}
+
+const isSliceLike = (value: unknown): value is Slice => {
+  if (!value || typeof value !== 'object') return false
+  const maybeSlice = value as Partial<Slice>
+  return typeof maybeSlice.id === 'number' && typeof maybeSlice.name === 'string'
+}
+
+const getSettingsSignature = (settings: LabSettings): string => JSON.stringify(settings)
+const DEFAULT_SETTINGS_SIGNATURE = getSettingsSignature(DEFAULT_LAB_SETTINGS)
+
 export function DrumRackView() {
   const {
     pads, assignSample, clearPad, toggleMute, setVolume, getAudioBuffer, getAudioContext,
-    previewSample, stopPreview, previewingSliceId
+    getPadInputNode, previewSample, stopPreview, previewingSliceId, padFxSettings
   } = useDrumRack()
 
   const [sequencer, setSequencer] = useState<SequencerState>({
@@ -189,8 +213,10 @@ export function DrumRackView() {
   const [activePads, setActivePads] = useState<Set<number>>(new Set())
   const [showBrowser, setShowBrowser] = useState<number | null>(null)
   const [browserSearch, setBrowserSearch] = useState('')
+  const [selectedPadIndex, setSelectedPadIndex] = useState<number | null>(null)
   const [padPlayMode, setPadPlayMode] = useState<PadPlayMode>('one-shot')
   const [editMode, setEditMode] = useState<EditMode>('grid')
+  const [activeTab, setActiveTab] = useState<DrumRackTab>('drumrack')
   const [showPatterns, setShowPatterns] = useState(false)
   const [countInRemaining, setCountInRemaining] = useState(-1) // -1 = not counting in
 
@@ -202,8 +228,9 @@ export function DrumRackView() {
   const padsRef = useRef(pads)
   const padPlayModeRef = useRef(padPlayMode)
 
-  // Active manual source — only one at a time, stops previous on new trigger
-  const activeSourceRef = useRef<{ source: AudioBufferSourceNode; gain: GainNode; padIndex: number } | null>(null)
+  // Manual pad sources are tracked per pad to support overlapping/polyphonic playback.
+  const manualSourcesByPadRef = useRef<Map<number, Set<AudioBufferSourceNode>>>(new Map())
+  const holdSourcesByPadRef = useRef<Map<number, Set<AudioBufferSourceNode>>>(new Map())
 
   // Drag painting refs
   const paintRef = useRef<{ active: boolean; padIndex: number; paintValue: number } | null>(null)
@@ -218,6 +245,9 @@ export function DrumRackView() {
   const countInTimerRef = useRef<number | null>(null)
   const countInStepRef = useRef(0)
 
+  // Per-pad rendered FX buffer cache (Lab-style offline processing)
+  const padProcessedBufferCacheRef = useRef<Map<number, PadProcessedBufferCacheEntry>>(new Map())
+
   // Keep refs in sync
   useEffect(() => { sequencerRef.current = sequencer }, [sequencer])
   useEffect(() => { padsRef.current = pads }, [pads])
@@ -231,6 +261,155 @@ export function DrumRackView() {
     const q = browserSearch.toLowerCase()
     return allSamples.filter(s => s.name.toLowerCase().includes(q)).slice(0, 50)
   }, [allSamples, browserSearch])
+
+  const startPadFxRender = useCallback((
+    padIndex: number,
+    sliceId: number,
+    sourceBuffer: AudioBuffer,
+    settings: LabSettings,
+    signature: string,
+  ) => {
+    const cache = padProcessedBufferCacheRef.current
+    const existing = cache.get(padIndex)
+    if (existing && existing.sliceId === sliceId && existing.settingsSignature === signature) {
+      if (existing.buffer || existing.renderPromise) return
+    }
+
+    const renderPromise = renderLabAudioBuffer(sourceBuffer, settings)
+      .then((renderedBuffer) => {
+        const latest = cache.get(padIndex)
+        if (latest && latest.sliceId === sliceId && latest.settingsSignature === signature) {
+          cache.set(padIndex, {
+            sliceId,
+            settingsSignature: signature,
+            buffer: renderedBuffer,
+          })
+        }
+        return renderedBuffer
+      })
+      .catch((error) => {
+        const latest = cache.get(padIndex)
+        if (latest && latest.sliceId === sliceId && latest.settingsSignature === signature) {
+          cache.delete(padIndex)
+        }
+        console.error(`Failed to render Drum Rack FX for pad ${padIndex + 1}:`, error)
+        throw error
+      })
+
+    cache.set(padIndex, {
+      sliceId,
+      settingsSignature: signature,
+      buffer: null,
+      renderPromise,
+    })
+
+    void renderPromise.catch(() => {
+      // handled above, avoid unhandled rejection warnings
+    })
+  }, [])
+
+  /** Synchronous — returns the best available buffer (processed if ready, else source). Used by the sequencer for precise timing. */
+  const getPadPlaybackBufferSync = useCallback((padIndex: number): AudioBuffer | undefined => {
+    const pad = padsRef.current[padIndex]
+    if (!pad.slice || typeof pad.slice.id !== 'number') return undefined
+
+    const sourceBuffer = getAudioBuffer(pad.slice.id)
+    if (!sourceBuffer) return undefined
+
+    const settings = padFxSettings.get(padIndex) ?? DEFAULT_LAB_SETTINGS
+    const settingsSignature = getSettingsSignature(settings)
+
+    if (settingsSignature === DEFAULT_SETTINGS_SIGNATURE) {
+      const cached = padProcessedBufferCacheRef.current.get(padIndex)
+      if (cached && cached.sliceId !== pad.slice.id) {
+        padProcessedBufferCacheRef.current.delete(padIndex)
+      }
+      return sourceBuffer
+    }
+
+    const cached = padProcessedBufferCacheRef.current.get(padIndex)
+    if (cached && cached.sliceId === pad.slice.id && cached.settingsSignature === settingsSignature) {
+      return cached.buffer ?? sourceBuffer
+    }
+
+    startPadFxRender(padIndex, pad.slice.id, sourceBuffer, settings, settingsSignature)
+    return sourceBuffer
+  }, [getAudioBuffer, padFxSettings, startPadFxRender])
+
+  /** Async — waits for the FX render to complete before returning. Used by manual pad triggers. */
+  const getPadPlaybackBuffer = useCallback(async (padIndex: number): Promise<AudioBuffer | undefined> => {
+    const pad = padsRef.current[padIndex]
+    if (!pad.slice || typeof pad.slice.id !== 'number') return undefined
+
+    const sourceBuffer = getAudioBuffer(pad.slice.id)
+    if (!sourceBuffer) return undefined
+
+    const settings = padFxSettings.get(padIndex) ?? DEFAULT_LAB_SETTINGS
+    const settingsSignature = getSettingsSignature(settings)
+
+    if (settingsSignature === DEFAULT_SETTINGS_SIGNATURE) {
+      const cached = padProcessedBufferCacheRef.current.get(padIndex)
+      if (cached && cached.sliceId !== pad.slice.id) {
+        padProcessedBufferCacheRef.current.delete(padIndex)
+      }
+      return sourceBuffer
+    }
+
+    const cached = padProcessedBufferCacheRef.current.get(padIndex)
+    if (cached && cached.sliceId === pad.slice.id && cached.settingsSignature === settingsSignature) {
+      if (cached.buffer) return cached.buffer
+      if (cached.renderPromise) {
+        try {
+          return await cached.renderPromise
+        } catch {
+          return sourceBuffer
+        }
+      }
+      return sourceBuffer
+    }
+
+    startPadFxRender(padIndex, pad.slice.id, sourceBuffer, settings, settingsSignature)
+    const justCached = padProcessedBufferCacheRef.current.get(padIndex)
+    if (justCached?.renderPromise) {
+      try {
+        return await justCached.renderPromise
+      } catch {
+        return sourceBuffer
+      }
+    }
+    return sourceBuffer
+  }, [getAudioBuffer, padFxSettings, startPadFxRender])
+
+  // Keep processed buffers aligned with loaded pads and current pad-FX settings
+  useEffect(() => {
+    for (let padIndex = 0; padIndex < PAD_COUNT; padIndex++) {
+      const pad = pads[padIndex]
+      if (!pad.slice || typeof pad.slice.id !== 'number') {
+        padProcessedBufferCacheRef.current.delete(padIndex)
+        continue
+      }
+
+      const sourceBuffer = getAudioBuffer(pad.slice.id)
+      if (!sourceBuffer) continue
+
+      const settings = padFxSettings.get(padIndex) ?? DEFAULT_LAB_SETTINGS
+      const signature = getSettingsSignature(settings)
+
+      if (signature === DEFAULT_SETTINGS_SIGNATURE) {
+        padProcessedBufferCacheRef.current.delete(padIndex)
+        continue
+      }
+
+      const cached = padProcessedBufferCacheRef.current.get(padIndex)
+      if (!cached || cached.sliceId !== pad.slice.id || cached.settingsSignature !== signature) {
+        // Immediately invalidate old cache to prevent stale buffer playback
+        if (cached && cached.settingsSignature !== signature) {
+          padProcessedBufferCacheRef.current.delete(padIndex)
+        }
+        startPadFxRender(padIndex, pad.slice.id, sourceBuffer, settings, signature)
+      }
+    }
+  }, [pads, padFxSettings, getAudioBuffer, startPadFxRender])
 
   // ─── Metronome click generator ───────────────────────────────
   const playMetronomeClick = useCallback((time: number, isDownbeat: boolean) => {
@@ -247,42 +426,110 @@ export function DrumRackView() {
     osc.stop(time + 0.05)
   }, [getAudioContext])
 
-  // Stop any currently playing manual source
-  const stopManualSource = useCallback(() => {
-    if (activeSourceRef.current) {
-      try { activeSourceRef.current.source.stop() } catch { /* already stopped */ }
-      activeSourceRef.current = null
+  const registerManualSource = useCallback((
+    padIndex: number,
+    source: AudioBufferSourceNode,
+    holdControlled: boolean,
+  ) => {
+    const activeForPad = manualSourcesByPadRef.current.get(padIndex)
+    if (activeForPad) {
+      activeForPad.add(source)
+    } else {
+      manualSourcesByPadRef.current.set(padIndex, new Set([source]))
     }
-  }, [])
 
-  // Play a pad manually (exclusive — stops any previous manual playback)
-  const triggerPadManual = useCallback((padIndex: number) => {
-    const pad = padsRef.current[padIndex]
-    if (!pad.slice || pad.muted) return
-    const buffer = getAudioBuffer(pad.slice.id)
-    if (!buffer) return
-
-    stopManualSource()
-
-    const ctx = getAudioContext()
-    const source = ctx.createBufferSource()
-    source.buffer = buffer
-    const gain = ctx.createGain()
-    gain.gain.value = pad.volume
-    source.connect(gain)
-    gain.connect(ctx.destination)
-
-    activeSourceRef.current = { source, gain, padIndex }
-
-    source.onended = () => {
-      if (activeSourceRef.current?.source === source) {
-        activeSourceRef.current = null
-        setActivePads(prev => { const n = new Set(prev); n.delete(padIndex); return n })
+    if (holdControlled) {
+      const holdForPad = holdSourcesByPadRef.current.get(padIndex)
+      if (holdForPad) {
+        holdForPad.add(source)
+      } else {
+        holdSourcesByPadRef.current.set(padIndex, new Set([source]))
       }
     }
 
+    setActivePads(prev => {
+      if (prev.has(padIndex)) return prev
+      const next = new Set(prev)
+      next.add(padIndex)
+      return next
+    })
+  }, [])
+
+  const unregisterManualSource = useCallback((padIndex: number, source: AudioBufferSourceNode) => {
+    const activeForPad = manualSourcesByPadRef.current.get(padIndex)
+    if (activeForPad) {
+      activeForPad.delete(source)
+      if (activeForPad.size === 0) {
+        manualSourcesByPadRef.current.delete(padIndex)
+        setActivePads(prev => {
+          if (!prev.has(padIndex)) return prev
+          const next = new Set(prev)
+          next.delete(padIndex)
+          return next
+        })
+      }
+    }
+
+    const holdForPad = holdSourcesByPadRef.current.get(padIndex)
+    if (holdForPad) {
+      holdForPad.delete(source)
+      if (holdForPad.size === 0) {
+        holdSourcesByPadRef.current.delete(padIndex)
+      }
+    }
+  }, [])
+
+  const stopHoldSourcesForPad = useCallback((padIndex: number) => {
+    const holdSources = holdSourcesByPadRef.current.get(padIndex)
+    if (!holdSources || holdSources.size === 0) return
+
+    for (const source of Array.from(holdSources)) {
+      source.onended = null
+      unregisterManualSource(padIndex, source)
+      try { source.stop() } catch { /* already stopped */ }
+    }
+  }, [unregisterManualSource])
+
+  const stopAllManualSources = useCallback(() => {
+    for (const [padIndex, sources] of Array.from(manualSourcesByPadRef.current.entries())) {
+      for (const source of Array.from(sources)) {
+        source.onended = null
+        unregisterManualSource(padIndex, source)
+        try { source.stop() } catch { /* already stopped */ }
+      }
+    }
+
+    manualSourcesByPadRef.current.clear()
+    holdSourcesByPadRef.current.clear()
+    setActivePads(() => new Set())
+  }, [unregisterManualSource])
+
+  // Play a pad manually (polyphonic / overlapping)
+  const triggerPadManual = useCallback(async (padIndex: number) => {
+    const pad = padsRef.current[padIndex]
+    if (!pad.slice || pad.muted || typeof pad.slice.id !== 'number') return
+    const buffer = await getPadPlaybackBuffer(padIndex)
+    if (!buffer) return
+
+    const ctx = getAudioContext()
+    if (ctx.state === 'suspended') {
+      await ctx.resume()
+    }
+    const source = ctx.createBufferSource()
+    source.buffer = buffer
+    const gain = ctx.createGain()
+    gain.gain.value = 1
+    source.connect(gain)
+    gain.connect(getPadInputNode(padIndex))
+
+    const holdControlled = padPlayModeRef.current === 'hold'
+    registerManualSource(padIndex, source, holdControlled)
+
+    source.onended = () => {
+      unregisterManualSource(padIndex, source)
+    }
+
     source.start()
-    setActivePads(prev => new Set(prev).add(padIndex))
 
     // If recording, write this hit to the current step
     if (sequencerRef.current.recording && sequencerRef.current.playing && currentStepRef.current >= 0) {
@@ -295,33 +542,34 @@ export function DrumRackView() {
         return { ...prev, steps }
       })
     }
-  }, [getAudioBuffer, getAudioContext, stopManualSource])
+  }, [
+    getAudioContext,
+    getPadInputNode,
+    getPadPlaybackBuffer,
+    registerManualSource,
+    unregisterManualSource,
+  ])
 
   // Stop manual playback (for hold mode release)
-  const releasePad = useCallback(() => {
-    const active = activeSourceRef.current
-    if (active) {
-      const padIndex = active.padIndex
-      stopManualSource()
-      setActivePads(prev => { const n = new Set(prev); n.delete(padIndex); return n })
-    }
-  }, [stopManualSource])
+  const releasePad = useCallback((padIndex: number) => {
+    stopHoldSourcesForPad(padIndex)
+  }, [stopHoldSourcesForPad])
 
   // Play a pad from the sequencer (non-exclusive, fire-and-forget)
   const triggerPadSequencer = useCallback((padIndex: number, time: number, velocity: number) => {
     const pad = padsRef.current[padIndex]
-    if (!pad.slice || pad.muted) return
-    const buffer = getAudioBuffer(pad.slice.id)
+    if (!pad.slice || pad.muted || typeof pad.slice.id !== 'number') return
+    const buffer = getPadPlaybackBufferSync(padIndex)
     if (!buffer) return
     const ctx = getAudioContext()
     const source = ctx.createBufferSource()
     source.buffer = buffer
     const gain = ctx.createGain()
-    gain.gain.value = pad.volume * velocity
+    gain.gain.value = velocity
     source.connect(gain)
-    gain.connect(ctx.destination)
+    gain.connect(getPadInputNode(padIndex))
     source.start(time)
-  }, [getAudioBuffer, getAudioContext])
+  }, [getAudioContext, getPadInputNode, getPadPlaybackBufferSync])
 
   // ─── Sequencer scheduler ─────────────────────────────────────
   const scheduleStep = useCallback(() => {
@@ -492,7 +740,7 @@ export function DrumRackView() {
       const padIndex = KEY_MAP[key]
       if (padIndex !== undefined) {
         e.preventDefault()
-        triggerPadManual(padIndex)
+        void triggerPadManual(padIndex)
       }
     }
 
@@ -500,9 +748,7 @@ export function DrumRackView() {
       const key = e.key.toLowerCase()
       const padIndex = KEY_MAP[key]
       if (padIndex !== undefined && padPlayModeRef.current === 'hold') {
-        if (activeSourceRef.current?.padIndex === padIndex) {
-          releasePad()
-        }
+        releasePad(padIndex)
       }
     }
 
@@ -548,12 +794,20 @@ export function DrumRackView() {
   useEffect(() => {
     return () => {
       stopSequencer()
+      stopAllManualSources()
     }
-  }, [stopSequencer])
+  }, [stopSequencer, stopAllManualSources])
+
+  useEffect(() => {
+    if (activeTab !== 'sequencer' && showPatterns) {
+      setShowPatterns(false)
+    }
+  }, [activeTab, showPatterns])
 
   // ─── Step actions ────────────────────────────────────────────
   const handleAssignSample = useCallback((padIndex: number, slice: Slice) => {
     assignSample(padIndex, slice)
+    setSelectedPadIndex(padIndex)
     setShowBrowser(null)
     setBrowserSearch('')
     stopPreview()
@@ -561,6 +815,8 @@ export function DrumRackView() {
 
   const handleClearPad = useCallback((padIndex: number) => {
     clearPad(padIndex)
+    padProcessedBufferCacheRef.current.delete(padIndex)
+    setSelectedPadIndex(prev => (prev === padIndex ? null : prev))
     setSequencer(prev => {
       const steps = [...prev.steps]
       steps[padIndex] = Array(STEPS).fill(0)
@@ -619,12 +875,34 @@ export function DrumRackView() {
     e.preventDefault()
     try {
       const data = e.dataTransfer.getData('application/json')
-      if (data) {
-        const slice = JSON.parse(data) as Slice
-        assignSample(padIndex, slice)
+      if (!data) return
+
+      const parsed = JSON.parse(data) as unknown
+      let sliceToAssign: Slice | null = null
+
+      if (isSliceLike(parsed)) {
+        sliceToAssign = parsed
+      } else if (parsed && typeof parsed === 'object') {
+        const payload = parsed as DrumRackDropPayload
+        if (isSliceLike(payload.slice)) {
+          sliceToAssign = payload.slice
+        } else if (Array.isArray(payload.sampleIds)) {
+          const firstSampleId = payload.sampleIds.find((id): id is number => typeof id === 'number')
+          if (firstSampleId !== undefined) {
+            const fallbackSlice = allSamples.find(sample => sample.id === firstSampleId)
+            if (fallbackSlice) {
+              sliceToAssign = fallbackSlice
+            }
+          }
+        }
+      }
+
+      if (sliceToAssign) {
+        assignSample(padIndex, sliceToAssign)
+        setSelectedPadIndex(padIndex)
       }
     } catch { /* ignore */ }
-  }, [assignSample])
+  }, [assignSample, allSamples])
 
   // Clear all steps
   const clearAll = useCallback(() => {
@@ -662,25 +940,89 @@ export function DrumRackView() {
 
   // Download all samples
   const handleDownloadAll = useCallback(() => {
-    const loadedPads = pads.filter(p => p.slice)
-    if (loadedPads.length === 0) return
-    loadedPads.forEach((pad, i) => {
+    const loadedSlices = pads
+      .map(pad => pad.slice)
+      .filter(isSliceLike)
+
+    if (loadedSlices.length === 0) return
+
+    loadedSlices.forEach((slice, i) => {
       setTimeout(() => {
         const link = document.createElement('a')
-        link.href = getSliceDownloadUrl(pad.slice!.id)
-        link.download = `${pad.slice!.name}.mp3`
+        link.href = getSliceDownloadUrl(slice.id)
+        const downloadName = (slice.name || `sample-${slice.id}`).trim() || `sample-${slice.id}`
+        link.download = `${downloadName}.mp3`
         link.click()
       }, i * 200)
     })
   }, [pads])
 
   const getPadIndex = (row: number, col: number) => (3 - row) * 4 + col
-  const loadedPadCount = pads.filter(p => p.slice).length
+  const loadedPadCount = pads.filter(pad => isSliceLike(pad.slice)).length
+  const selectedPad = selectedPadIndex !== null ? pads[selectedPadIndex] : null
 
   return (
     <div className="h-full flex flex-col bg-surface-base">
-      {/* Transport Bar */}
-      <div className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2.5 bg-surface-raised border-b border-surface-border flex-wrap">
+      {/* Top Tabs */}
+      <div className="flex items-center gap-1 px-3 sm:px-4 py-2 bg-surface-raised border-b border-surface-border">
+        <button
+          onClick={() => setActiveTab('drumrack')}
+          className={`inline-flex items-center rounded-md border px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
+            activeTab === 'drumrack'
+              ? 'border-accent-primary/50 bg-accent-primary/15 text-accent-primary'
+              : 'border-surface-border bg-surface-base text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          Drum Rack
+        </button>
+        <button
+          onClick={() => setActiveTab('sequencer')}
+          className={`inline-flex items-center rounded-md border px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
+            activeTab === 'sequencer'
+              ? 'border-cyan-400/50 bg-cyan-400/10 text-cyan-300'
+              : 'border-surface-border bg-surface-base text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          Sequencer
+        </button>
+      </div>
+
+      {/* Drum Rack Controls */}
+      {activeTab === 'drumrack' && (
+        <div className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2.5 bg-surface-raised border-b border-surface-border flex-wrap">
+          <div className="flex items-center bg-surface-base border border-surface-border rounded-lg overflow-hidden">
+            <button
+              onClick={() => setPadPlayMode('one-shot')}
+              className={`flex items-center gap-1 px-2 py-1.5 text-xs transition-colors ${
+                padPlayMode === 'one-shot'
+                  ? 'bg-accent-primary/20 text-accent-primary'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+              title="One-shot: click to play full sample"
+            >
+              <MousePointerClick size={12} />
+              <span className="hidden lg:inline">One-shot</span>
+            </button>
+            <div className="w-px h-5 bg-surface-border" />
+            <button
+              onClick={() => setPadPlayMode('hold')}
+              className={`flex items-center gap-1 px-2 py-1.5 text-xs transition-colors ${
+                padPlayMode === 'hold'
+                  ? 'bg-accent-primary/20 text-accent-primary'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+              title="Hold: plays while you hold, stops on release"
+            >
+              <Hand size={12} />
+              <span className="hidden lg:inline">Hold</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Sequencer Controls */}
+      {activeTab === 'sequencer' && (
+        <div className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2.5 bg-surface-raised border-b border-surface-border flex-wrap">
         {/* Play/Stop */}
         <button
           onClick={togglePlay}
@@ -914,96 +1256,124 @@ export function DrumRackView() {
           <span className="hidden sm:inline">Clear</span>
         </button>
       </div>
+      )}
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        {/* Pad Grid */}
-        <div className="flex-shrink-0 p-3 sm:p-4 lg:p-6 flex justify-center lg:justify-start">
-          <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
-            {PAD_KEYS.map((row, rowIdx) =>
-              row.map((key, colIdx) => {
-                const padIndex = getPadIndex(rowIdx, colIdx)
-                const pad = pads[padIndex]
-                const isActive = activePads.has(padIndex)
-                const hasSteps = sequencer.steps[padIndex].some(v => v > 0)
+      {activeTab === 'drumrack' ? (
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6">
+          <div className="flex flex-col gap-4 max-w-[1200px] mx-auto lg:mx-0">
+            <div className="flex justify-center lg:justify-start">
+              <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
+                {PAD_KEYS.map((row, rowIdx) =>
+                  row.map((key, colIdx) => {
+                    const padIndex = getPadIndex(rowIdx, colIdx)
+                    const pad = pads[padIndex]
+                    const isActive = activePads.has(padIndex)
+                    const hasSteps = sequencer.steps[padIndex].some(v => v > 0)
+                    const isSelected = selectedPadIndex === padIndex
+                    const padSliceName = typeof pad.slice?.name === 'string' ? pad.slice.name : ''
 
-                return (
-                  <button
-                    key={padIndex}
-                    onClick={() => {
-                      if (pad.slice) {
-                        triggerPadManual(padIndex)
-                      } else {
-                        setShowBrowser(padIndex)
-                      }
-                    }}
-                    onMouseUp={() => {
-                      if (pad.slice && padPlayMode === 'hold' && activeSourceRef.current?.padIndex === padIndex) {
-                        releasePad()
-                      }
-                    }}
-                    onMouseLeave={() => {
-                      if (pad.slice && padPlayMode === 'hold' && activeSourceRef.current?.padIndex === padIndex) {
-                        releasePad()
-                      }
-                    }}
-                    onContextMenu={(e) => {
-                      e.preventDefault()
-                      if (pad.slice) handleClearPad(padIndex)
-                      else setShowBrowser(padIndex)
-                    }}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => handleDrop(padIndex, e)}
-                    className={`relative w-16 h-16 sm:w-20 sm:h-20 lg:w-24 lg:h-24 rounded-lg sm:rounded-xl border transition-all duration-75 flex flex-col items-center justify-center gap-0.5 group ${
-                      isActive
-                        ? `bg-gradient-to-br ${PAD_COLORS[padIndex]} border-white/30 scale-95 shadow-lg`
-                        : pad.slice
-                          ? `bg-gradient-to-br ${PAD_COLORS[padIndex]} border-surface-border hover:border-white/20`
-                          : 'bg-surface-overlay border-surface-border border-dashed hover:border-slate-500'
-                    } ${pad.muted ? 'opacity-40' : ''}`}
-                  >
-                    <span className={`absolute top-1 left-1.5 sm:top-1.5 sm:left-2 text-[9px] sm:text-[10px] font-mono font-bold ${
-                      pad.slice ? 'text-white/50' : 'text-slate-600'
-                    }`}>
-                      {key}
-                    </span>
+                    return (
+                      <button
+                        key={padIndex}
+                        onMouseDown={(e) => {
+                          if (pad.slice && padPlayMode === 'hold') {
+                            e.preventDefault()
+                            setSelectedPadIndex(padIndex)
+                            void triggerPadManual(padIndex)
+                          }
+                        }}
+                        onClick={() => {
+                          if (pad.slice) {
+                            setSelectedPadIndex(padIndex)
+                            if (padPlayMode === 'one-shot') {
+                              void triggerPadManual(padIndex)
+                            }
+                          } else {
+                            setShowBrowser(padIndex)
+                          }
+                        }}
+                        onMouseUp={() => {
+                          if (pad.slice && padPlayMode === 'hold') {
+                            releasePad(padIndex)
+                          }
+                        }}
+                        onMouseLeave={() => {
+                          if (pad.slice && padPlayMode === 'hold') {
+                            releasePad(padIndex)
+                          }
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault()
+                          if (pad.slice) handleClearPad(padIndex)
+                          else setShowBrowser(padIndex)
+                        }}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => handleDrop(padIndex, e)}
+                        className={`relative w-16 h-16 sm:w-20 sm:h-20 lg:w-24 lg:h-24 rounded-lg sm:rounded-xl border transition-all duration-75 flex flex-col items-center justify-center gap-0.5 group ${
+                          isActive
+                            ? `bg-gradient-to-br ${PAD_COLORS[padIndex]} border-white/30 scale-95 shadow-lg`
+                            : pad.slice
+                              ? `bg-gradient-to-br ${PAD_COLORS[padIndex]} border-surface-border hover:border-white/20`
+                              : 'bg-surface-overlay border-surface-border border-dashed hover:border-slate-500'
+                        } ${pad.muted ? 'opacity-40' : ''} ${isSelected ? 'ring-2 ring-cyan-300/70 ring-offset-1 ring-offset-surface-base' : ''}`}
+                      >
+                        <span className={`absolute top-1 left-1.5 sm:top-1.5 sm:left-2 text-[9px] sm:text-[10px] font-mono font-bold ${
+                          pad.slice ? 'text-white/50' : 'text-slate-600'
+                        }`}>
+                          {key}
+                        </span>
 
-                    {hasSteps && (
-                      <div className={`absolute top-1 right-1.5 sm:top-1.5 sm:right-2 w-1.5 h-1.5 rounded-full ${STEP_COLORS[padIndex]}`} />
-                    )}
+                        {hasSteps && (
+                          <div className={`absolute top-1 right-1.5 sm:top-1.5 sm:right-2 w-1.5 h-1.5 rounded-full ${STEP_COLORS[padIndex]}`} />
+                        )}
 
-                    {pad.slice ? (
-                      <span className="text-[9px] sm:text-[11px] text-white/80 text-center px-1 truncate w-full mt-2">
-                        {pad.slice.name.length > 10 ? pad.slice.name.slice(0, 10) + '…' : pad.slice.name}
-                      </span>
-                    ) : (
-                      <span className="text-[9px] sm:text-[10px] text-slate-600">empty</span>
-                    )}
+                        {pad.slice ? (
+                          <span className="text-[9px] sm:text-[11px] text-white/80 text-center px-1 truncate w-full mt-2">
+                            {padSliceName
+                              ? (padSliceName.length > 10 ? padSliceName.slice(0, 10) + '…' : padSliceName)
+                              : 'unnamed'}
+                          </span>
+                        ) : (
+                          <span className="text-[9px] sm:text-[10px] text-slate-600">empty</span>
+                        )}
 
-                    {pad.slice && (
-                      <div className="absolute bottom-1 right-1 sm:bottom-1.5 sm:right-1.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); toggleMute(padIndex) }}
-                          className="p-0.5 rounded text-white/40 hover:text-white/80"
-                        >
-                          {pad.muted ? <VolumeX size={10} /> : <Volume2 size={10} />}
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleClearPad(padIndex) }}
-                          className="p-0.5 rounded text-white/40 hover:text-red-400"
-                        >
-                          <Trash2 size={10} />
-                        </button>
-                      </div>
-                    )}
-                  </button>
-                )
-              })
-            )}
+                        {pad.slice && (
+                          <div className="absolute bottom-1 right-1 sm:bottom-1.5 sm:right-1.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); toggleMute(padIndex) }}
+                              className="p-0.5 rounded text-white/40 hover:text-white/80"
+                            >
+                              {pad.muted ? <VolumeX size={10} /> : <Volume2 size={10} />}
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleClearPad(padIndex) }}
+                              className="p-0.5 rounded text-white/40 hover:text-red-400"
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                        )}
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+
+            {selectedPadIndex !== null && selectedPad?.slice ? (
+              <PadFxChain
+                padIndex={selectedPadIndex}
+                onClose={() => setSelectedPadIndex(null)}
+              />
+            ) : loadedPadCount > 0 ? (
+              <div className="rounded-lg border border-surface-border bg-surface-raised px-3 py-2 text-xs text-slate-500">
+                Select a loaded pad to show its mini FX (Core, Env, LP, HP, Offset).
+              </div>
+            ) : null}
           </div>
         </div>
-
-        {/* Sequencer Grid / Velocity Editor */}
+      ) : (
         <div className="flex-1 overflow-x-auto overflow-y-auto p-3 sm:p-4 lg:p-6 lg:pl-2">
           <div className="min-w-fit">
             {/* Step numbers */}
@@ -1027,6 +1397,7 @@ export function DrumRackView() {
                 {Array.from({ length: PAD_COUNT }, (_, padIndex) => {
                   const pad = pads[padIndex]
                   if (!pad.slice) return null
+                  const padSliceName = typeof pad.slice.name === 'string' ? pad.slice.name : 'unnamed'
 
                   return (
                     <div key={padIndex} className="flex items-center gap-1 mb-1 group/row">
@@ -1040,7 +1411,7 @@ export function DrumRackView() {
                           {pad.muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
                         </button>
                         <span className={`text-[10px] sm:text-[11px] truncate ${pad.muted ? 'text-slate-600 line-through' : 'text-slate-300'}`}>
-                          {pad.slice.name.length > 8 ? pad.slice.name.slice(0, 8) + '…' : pad.slice.name}
+                          {padSliceName.length > 8 ? padSliceName.slice(0, 8) + '…' : padSliceName}
                         </span>
                       </div>
 
@@ -1091,6 +1462,7 @@ export function DrumRackView() {
                 {Array.from({ length: PAD_COUNT }, (_, padIndex) => {
                   const pad = pads[padIndex]
                   if (!pad.slice) return null
+                  const padSliceName = typeof pad.slice.name === 'string' ? pad.slice.name : 'unnamed'
 
                   return (
                     <div key={padIndex} className="flex items-end gap-1 mb-1 group/row">
@@ -1104,7 +1476,7 @@ export function DrumRackView() {
                           {pad.muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
                         </button>
                         <span className={`text-[10px] sm:text-[11px] truncate ${pad.muted ? 'text-slate-600 line-through' : 'text-slate-300'}`}>
-                          {pad.slice.name.length > 8 ? pad.slice.name.slice(0, 8) + '…' : pad.slice.name}
+                          {padSliceName.length > 8 ? padSliceName.slice(0, 8) + '…' : padSliceName}
                         </span>
                       </div>
 
@@ -1162,7 +1534,7 @@ export function DrumRackView() {
             )}
           </div>
         </div>
-      </div>
+      )}
 
       {/* Close patterns dropdown when clicking outside */}
       {showPatterns && (

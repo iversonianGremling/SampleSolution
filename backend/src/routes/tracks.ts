@@ -249,7 +249,7 @@ router.post('/', async (req, res) => {
 // Update track
 router.put('/:id', async (req, res) => {
   const id = parseInt(req.params.id)
-  const { title, artist, album } = req.body as { title?: string; artist?: string; album?: string }
+  const { title, artist, album, year } = req.body as { title?: string; artist?: string; album?: string; year?: number | null }
 
   try {
     const track = await db
@@ -266,6 +266,7 @@ router.put('/:id', async (req, res) => {
     if (title !== undefined) updates.title = title
     if (artist !== undefined) updates.artist = artist
     if (album !== undefined) updates.album = album
+    if (year !== undefined) updates.year = year
 
     const [updated] = await db
       .update(schema.tracks)

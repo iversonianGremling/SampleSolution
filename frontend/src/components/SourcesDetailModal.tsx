@@ -74,12 +74,20 @@ function SimilarSamplesSection({ sampleId }: { sampleId: number }) {
     },
   })
 
-  const handleMouseEnter = (sample: SimilarSample) => {
-    setHoveredSample(sample.id)
+  // Defensive UI guard: never render the currently-open sample in its own similar list,
+  // even if a stale cached response or backend edge case includes it.
+  const currentSampleId = Number(sampleId)
+  const visibleSimilarSamples = (similarSamples ?? []).filter((sample) => {
+    const candidateId = Number(sample.id)
+    return Number.isFinite(candidateId) && candidateId !== currentSampleId
+  })
+
+  const handleMouseEnter = (similarSampleId: number) => {
+    setHoveredSample(similarSampleId)
     if (audioRef.current) {
       audioRef.current.pause()
     }
-    audioRef.current = new Audio(getSliceDownloadUrl(sample.id))
+    audioRef.current = new Audio(getSliceDownloadUrl(similarSampleId))
     audioRef.current.volume = 0.5
     audioRef.current.play().catch(() => {
       // Ignore play errors (e.g., user hasn't interacted with page yet)
@@ -116,7 +124,7 @@ function SimilarSamplesSection({ sampleId }: { sampleId: number }) {
     )
   }
 
-  if (!similarSamples || similarSamples.length === 0) {
+  if (visibleSimilarSamples.length === 0) {
     return null
   }
 
@@ -127,48 +135,53 @@ function SimilarSamplesSection({ sampleId }: { sampleId: number }) {
         Similar Samples
       </label>
       <div className="grid grid-cols-3 gap-2">
-        {similarSamples.map((sample) => (
-          <button
-            key={sample.id}
-            onMouseEnter={() => handleMouseEnter(sample)}
-            onMouseLeave={handleMouseLeave}
-            onClick={() => {
-              // Navigate to this sample - will be handled by parent
-              window.location.hash = `sample-${sample.id}`
-            }}
-            className={`group relative p-3 rounded-lg border transition-all ${
-              hoveredSample === sample.id
-                ? 'border-accent-primary bg-accent-primary/10 scale-105'
-                : 'border-surface-border bg-surface-base hover:border-slate-600'
-            }`}
-          >
-            {/* Similarity badge */}
-            <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-900/90 text-slate-300">
-              {Math.round(sample.similarity * 100)}%
-            </div>
+        {visibleSimilarSamples.map((sample) => {
+          const sampleIdNum = Number(sample.id)
+          if (!Number.isFinite(sampleIdNum)) return null
 
-            {/* Content */}
-            <div className="flex items-center gap-2 mb-1">
-              <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
-                hoveredSample === sample.id ? 'bg-accent-primary' : 'bg-slate-700'
-              }`}>
-                {hoveredSample === sample.id ? (
-                  <Pause size={12} className="text-white" />
-                ) : (
-                  <Play size={12} className="text-white ml-0.5" />
-                )}
+          return (
+            <button
+              key={sampleIdNum}
+              onMouseEnter={() => handleMouseEnter(sampleIdNum)}
+              onMouseLeave={handleMouseLeave}
+              onClick={() => {
+                // Navigate to this sample - will be handled by parent
+                window.location.hash = `sample-${sampleIdNum}`
+              }}
+              className={`group relative p-3 rounded-lg border transition-all ${
+                hoveredSample === sampleIdNum
+                  ? 'border-accent-primary bg-accent-primary/10 scale-105'
+                  : 'border-surface-border bg-surface-base hover:border-slate-600'
+              }`}
+            >
+              {/* Similarity badge */}
+              <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-900/90 text-slate-300">
+                {Math.round(sample.similarity * 100)}%
               </div>
-              <div className="flex-1 min-w-0 text-left">
-                <div className="text-xs font-medium text-white truncate">
-                  {sample.name}
+
+              {/* Content */}
+              <div className="flex items-center gap-2 mb-1">
+                <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
+                  hoveredSample === sampleIdNum ? 'bg-accent-primary' : 'bg-slate-700'
+                }`}>
+                  {hoveredSample === sampleIdNum ? (
+                    <Pause size={12} className="text-white" />
+                  ) : (
+                    <Play size={12} className="text-white ml-0.5" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="text-xs font-medium text-white truncate">
+                    {sample.name}
+                  </div>
                 </div>
               </div>
-            </div>
-            <div className="text-[10px] text-slate-500 truncate text-left">
-              {sample.track.title}
-            </div>
-          </button>
-        ))}
+              <div className="text-[10px] text-slate-500 truncate text-left">
+                {sample.track.title}
+              </div>
+            </button>
+          )
+        })}
       </div>
     </div>
   )

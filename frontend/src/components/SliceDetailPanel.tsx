@@ -1,419 +1,231 @@
-import { useRef, useState, useEffect } from 'react'
-import { Play, Pause, X, Star, Pencil, Loader2, Download, ChevronDown } from 'lucide-react'
-import type { SamplePoint, SliceWithTrack } from '../types'
-import { useCompactWaveform } from '../hooks/useCompactWaveform'
-import { useAudioFileDragDrop } from '../hooks/useAudioFileDragDrop'
+import { Play, Square, Heart, Download } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import type { SliceWithTrackExtended, Tag, Folder } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
-import {
-  useUpdateSliceGlobal,
-  useToggleFavorite,
-  useAddTagToSlice,
-  useRemoveTagFromSlice,
-  useTags,
-  useFolders,
-  useAddSliceToFolder,
-  useRemoveSliceFromFolder,
-} from '../hooks/useTracks'
-import { TagSearchInput } from './TagSearchInput'
+import { InstrumentIcon } from './InstrumentIcon'
+import { freqToNoteName } from '../utils/musicTheory'
 
 interface SliceDetailPanelProps {
-  selectedPoint: SamplePoint
-  sliceData: SliceWithTrack & { id: number } // Enforce id is always a number
-  onClose?: () => void
-}
-
-function formatTime(seconds: number): string {
-  const minutes = Math.floor(seconds / 60)
-  const secs = Math.floor(seconds % 60)
-  return `${minutes}:${secs.toString().padStart(2, '0')}`
+  sample: SliceWithTrackExtended | null
+  allTags: Tag[]
+  folders: Folder[]
+  onToggleFavorite: (sliceId: number) => void
+  onAddTag: (sliceId: number, tagId: number) => void
+  onRemoveTag: (sliceId: number, tagId: number) => void
+  onAddToFolder: (folderId: number, sliceId: number) => void
+  onRemoveFromFolder: (folderId: number, sliceId: number) => void
+  onUpdateName: (sliceId: number, name: string) => void
+  onTagClick?: (tagId: number) => void
 }
 
 export function SliceDetailPanel({
-  selectedPoint,
-  sliceData,
-  onClose,
+  sample,
+  allTags,
+  folders,
+  onToggleFavorite,
+  onAddTag,
+  onRemoveTag,
+  onAddToFolder,
+  onRemoveFromFolder,
+  onUpdateName,
+  onTagClick,
 }: SliceDetailPanelProps) {
-  const [showFeatures, setShowFeatures] = useState(false)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
 
-  const audioUrl = getSliceDownloadUrl(sliceData.id)
-
-  // Compact waveform - simple audio playback with visual feedback
-  const {
-    containerRef,
-    isReady,
-    isPlaying,
-    currentTime,
-    duration,
-    error,
-    play: waveformPlay,
-    pause: waveformPause,
-  } = useCompactWaveform({
-    audioUrl,
-  })
-
-  // State for metadata editing
-  const [isEditingName, setIsEditingName] = useState(false)
-  const [editingName, setEditingName] = useState(sliceData.name)
-  const nameInputRef = useRef<HTMLInputElement>(null)
-
-  // Drag source for exporting audio
-  const { isDragging, handlers: dragHandlers } = useAudioFileDragDrop({
-    fileUrl: audioUrl,
-    fileName: `${sliceData.name}.mp3`,
-  })
-
-  // Mutations
-  const updateSliceMutation = useUpdateSliceGlobal()
-  const toggleFavoriteMutation = useToggleFavorite()
-  const addTagMutation = useAddTagToSlice()
-  const removeTagMutation = useRemoveTagFromSlice()
-  const addFolderMutation = useAddSliceToFolder()
-  const removeFolderMutation = useRemoveSliceFromFolder()
-
-  // Queries
-  const { data: allTags } = useTags()
-  const { data: allFolders } = useFolders()
-
-  // Focus input when editing starts
   useEffect(() => {
-    if (isEditingName && nameInputRef.current) {
-      nameInputRef.current.focus()
-      nameInputRef.current.select()
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
     }
-  }, [isEditingName])
+  }, [])
 
-  // Reset editing name when slice changes
   useEffect(() => {
-    setEditingName(sliceData.name)
-  }, [sliceData.name])
-
-  const saveSliceName = () => {
-    if (editingName.trim() && editingName !== sliceData.name) {
-      updateSliceMutation.mutate({
-        id: sliceData.id,
-        data: { name: editingName.trim() },
-      })
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+      setIsPlaying(false)
     }
-    setIsEditingName(false)
-  }
+  }, [sample?.id])
 
-  const handleToggleFavorite = () => {
-    toggleFavoriteMutation.mutate(sliceData.id)
-  }
+  const togglePlayback = () => {
+    if (!sample) return
 
-  const handleAddTag = (tagId: number) => {
-    addTagMutation.mutate({
-      sliceId: sliceData.id,
-      tagId,
-    })
-  }
-
-  const handleRemoveTag = (tagId: number) => {
-    removeTagMutation.mutate({
-      sliceId: sliceData.id,
-      tagId,
-    })
-  }
-
-  const handleAddFolder = (folderId: number) => {
-    addFolderMutation.mutate({
-      sliceId: sliceData.id,
-      folderId,
-    })
-  }
-
-  const handleRemoveFolder = (folderId: number) => {
-    removeFolderMutation.mutate({
-      sliceId: sliceData.id,
-      folderId,
-    })
+    if (isPlaying && audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+      setIsPlaying(false)
+    } else {
+      audioRef.current = new Audio(getSliceDownloadUrl(sample.id))
+      audioRef.current.volume = 0.8
+      audioRef.current.onended = () => {
+        setIsPlaying(false)
+        audioRef.current = null
+      }
+      audioRef.current.play().catch(() => setIsPlaying(false))
+      setIsPlaying(true)
+    }
   }
 
   const handleDownload = () => {
-    window.open(getSliceDownloadUrl(sliceData.id), '_blank')
+    if (!sample) return
+    const link = document.createElement('a')
+    link.href = getSliceDownloadUrl(sample.id)
+    link.download = `${sample.name || `sample-${sample.id}`}.mp3`
+    link.click()
   }
 
-  const sliceTagIds = new Set(sliceData.tags.map((t) => t.id))
-  const sliceFolderIds = new Set(sliceData.folderIds)
-  const availableTags = allTags?.filter((t) => !sliceTagIds.has(t.id)) || []
-  const availableFolders = allFolders?.filter((c) => !sliceFolderIds.has(c.id)) || []
-  const sliceFolders = allFolders?.filter((c) => sliceFolderIds.has(c.id)) || []
+  if (!sample) {
+    return (
+      <div className="h-full flex items-center justify-center bg-surface-base">
+        <div className="text-center text-slate-500">
+          <p className="text-sm">Select a sample to view details</p>
+        </div>
+      </div>
+    )
+  }
+
+  const duration = sample.endTime - sample.startTime
+  const fundamentalNote = sample.fundamentalFreq ? freqToNoteName(sample.fundamentalFreq) : null
 
   return (
-    <div className="bg-surface-overlay border-t border-surface-border">
-      {/* Compact Header Row */}
-      <div className="flex items-center gap-3 px-3 py-2">
-        {/* Play Button */}
-        <button
-          onClick={() => {
-            if (isPlaying) {
-              waveformPause()
-            } else {
-              waveformPlay()
-            }
-          }}
-          className={`p-2 rounded-full transition-colors flex-shrink-0 ${
-            isPlaying
-              ? 'bg-emerald-500 text-white'
-              : 'bg-surface-raised text-slate-300 hover:bg-surface-base hover:text-white'
-          }`}
-        >
-          {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-        </button>
-
-        {/* Name and Track */}
-        <div className="flex-1 min-w-0">
-          {isEditingName ? (
-            <div className="flex items-center gap-2">
-              <input
-                ref={nameInputRef}
-                type="text"
-                value={editingName}
-                onChange={(e) => setEditingName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') saveSliceName()
-                  if (e.key === 'Escape') setIsEditingName(false)
-                }}
-                onBlur={saveSliceName}
-                className="flex-1 px-2 py-0.5 bg-surface-base border border-accent-primary rounded text-white text-sm focus:outline-none"
-              />
-              {updateSliceMutation.isPending && (
-                <Loader2 size={14} className="animate-spin text-accent-primary" />
-              )}
-            </div>
-          ) : (
-            <div
-              className="group flex items-center gap-1.5 cursor-pointer"
-              onClick={() => {
-                setEditingName(sliceData.name)
-                setIsEditingName(true)
-              }}
+    <div className="h-full flex flex-col bg-surface-base overflow-y-auto">
+      {/* Header */}
+      <div className="p-4 border-b border-surface-border bg-surface-raised">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-lg font-medium text-white truncate">{sample.name}</h2>
+            <p className="text-sm text-slate-400 truncate">{sample.track?.title || 'Unknown track'}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              onClick={togglePlayback}
+              className="p-2 rounded-lg bg-accent-primary/20 text-accent-primary hover:bg-accent-primary/30 transition-colors"
+              title={isPlaying ? 'Stop' : 'Play'}
             >
-              <span className="font-medium text-white text-sm truncate">
-                {sliceData.name}
-              </span>
-              <Pencil
-                size={12}
-                className="text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-              />
+              {isPlaying ? <Square size={16} /> : <Play size={16} />}
+            </button>
+            <button
+              onClick={() => onToggleFavorite(sample.id)}
+              className={`p-2 rounded-lg transition-colors ${
+                sample.isFavorite
+                  ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
+                  : 'bg-surface-overlay text-slate-400 hover:text-amber-400'
+              }`}
+              title={sample.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+            >
+              <Heart size={16} className={sample.isFavorite ? 'fill-current' : ''} />
+            </button>
+            <button
+              onClick={handleDownload}
+              className="p-2 rounded-lg bg-surface-overlay text-slate-400 hover:text-white transition-colors"
+              title="Download"
+            >
+              <Download size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 p-4 space-y-4">
+        {/* Basic Info */}
+        <div>
+          <h3 className="text-sm font-medium text-slate-400 mb-2">Basic Info</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs text-slate-500">Duration</div>
+              <div className="text-sm text-white font-mono">{duration.toFixed(2)}s</div>
             </div>
-          )}
-          <div className="text-[11px] text-slate-500 truncate">
-            {sliceData.track.title}
+            {sample.bpm && (
+              <div>
+                <div className="text-xs text-slate-500">BPM</div>
+                <div className="text-sm text-white font-mono">{Math.round(sample.bpm)}</div>
+              </div>
+            )}
+            {sample.keyEstimate && (
+              <div>
+                <div className="text-xs text-slate-500">Key</div>
+                <div className="text-sm text-white font-mono">{sample.keyEstimate}</div>
+              </div>
+            )}
+            {fundamentalNote && (
+              <div>
+                <div className="text-xs text-slate-500">Note</div>
+                <div className="text-sm text-white font-mono">{fundamentalNote}</div>
+              </div>
+            )}
+            {sample.instrumentPrimary && (
+              <div>
+                <div className="text-xs text-slate-500">Instrument</div>
+                <div className="flex items-center gap-1.5">
+                  <InstrumentIcon instrument={sample.instrumentPrimary} size={14} />
+                  <div className="text-sm text-white">{sample.instrumentPrimary}</div>
+                </div>
+              </div>
+            )}
+            {sample.envelopeType && (
+              <div>
+                <div className="text-xs text-slate-500">Envelope</div>
+                <div className="text-sm text-white">{sample.envelopeType}</div>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Time Display */}
-        <div className="text-xs text-slate-500 font-mono flex-shrink-0">
-          {formatTime(currentTime)}/{formatTime(duration)}
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex items-center gap-0.5 flex-shrink-0">
-          <button
-            onClick={handleToggleFavorite}
-            disabled={toggleFavoriteMutation.isPending}
-            className={`p-1.5 rounded transition-colors ${
-              sliceData.favorite
-                ? 'text-amber-400'
-                : 'text-slate-500 hover:text-amber-400'
-            }`}
-            title="Favorite"
-          >
-            {toggleFavoriteMutation.isPending ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Star size={16} className={sliceData.favorite ? 'fill-current' : ''} />
-            )}
-          </button>
-          <button
-            onClick={handleDownload}
-            className="p-1.5 rounded text-slate-500 hover:text-white transition-colors"
-            title="Download"
-          >
-            <Download size={16} />
-          </button>
-          {onClose && (
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded text-slate-500 hover:text-white transition-colors"
-              title="Close"
-            >
-              <X size={16} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Compact Waveform - Draggable */}
-      <div className="px-3 pb-2">
-        <div
-          {...dragHandlers}
-          className={`relative rounded overflow-hidden h-12 w-full bg-surface-raised transition-opacity ${
-            isDragging ? 'opacity-50 cursor-grabbing' : 'cursor-grab hover:opacity-90'
-          }`}
-          title="Drag to save audio file"
-        >
-          {/* WaveSurfer renders into this container */}
-          <div
-            ref={containerRef}
-            className="w-full h-full pointer-events-none"
-          />
-
-          {/* Overlay loading/error states */}
-          {error && (
-            <div className="absolute inset-0 h-12 bg-red-950 rounded flex items-center justify-center text-xs text-red-300">
-              {error}
+        {/* Tags */}
+        {sample.tags && sample.tags.length > 0 && (
+          <div>
+            <h3 className="text-sm font-medium text-slate-400 mb-2">Tags</h3>
+            <div className="flex flex-wrap gap-1.5">
+              {sample.tags.map((tag) => (
+                <button
+                  key={tag.id}
+                  onClick={() => onTagClick?.(tag.id)}
+                  className="px-2 py-1 rounded-md text-xs transition-colors"
+                  style={{
+                    backgroundColor: `${tag.color || '#64748b'}20`,
+                    color: tag.color || '#94a3b8',
+                    borderWidth: '1px',
+                    borderColor: `${tag.color || '#64748b'}40`,
+                  }}
+                >
+                  {tag.name}
+                </button>
+              ))}
             </div>
-          )}
-          {!error && !isReady && (
-            <div className="absolute inset-0 h-12 bg-surface-raised rounded flex items-center justify-center">
-              <Loader2 size={16} className="animate-spin text-slate-500" />
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Tags and Folders Row - Compact */}
-      <div className="px-3 pb-2 flex items-center gap-2 flex-wrap">
-        {sliceData.tags.map((tag) => (
-          <span
-            key={tag.id}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium"
-            style={{
-              backgroundColor: (tag.color || '#6366f1') + '25',
-              color: tag.color || '#6366f1',
-            }}
-          >
-            {tag.name}
-            <button
-              onClick={() => handleRemoveTag(tag.id)}
-              disabled={removeTagMutation.isPending}
-              className="hover:opacity-70 transition-opacity"
-            >
-              <X size={10} />
-            </button>
-          </span>
-        ))}
-        {sliceFolders.map((folder) => (
-          <span
-            key={folder.id}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium border border-dashed"
-            style={{
-              borderColor: (folder.color || '#6366f1') + '50',
-              color: folder.color || '#6366f1',
-            }}
-          >
-            {folder.name}
-            <button
-              onClick={() => handleRemoveFolder(folder.id)}
-              disabled={removeFolderMutation.isPending}
-              className="hover:opacity-70 transition-opacity"
-            >
-              <X size={10} />
-            </button>
-          </span>
-        ))}
-        {availableTags.length > 0 && (
-          <TagSearchInput
-            availableTags={availableTags}
-            onAddTag={handleAddTag}
-            onCreateTag={async () => {}}
-            placeholder="+ Tag"
-            className="text-[11px]"
-          />
+          </div>
         )}
-        {availableFolders.length > 0 && (
-          <select
-            onChange={(e) => {
-              const folderId = parseInt(e.target.value)
-              if (folderId) {
-                handleAddFolder(folderId)
-                e.target.value = ''
-              }
-            }}
-            className="px-1.5 py-0.5 bg-surface-raised border border-surface-border rounded text-[11px] text-slate-400 focus:outline-none focus:border-accent-primary"
-          >
-            <option value="">+ Folder</option>
-            {availableFolders.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
+
+        {/* Perceptual Features */}
+        {(sample.brightnessEstimate !== null || sample.warmthEstimate !== null || sample.hardnessEstimate !== null) && (
+          <div>
+            <h3 className="text-sm font-medium text-slate-400 mb-2">Perceptual Features</h3>
+            <div className="grid grid-cols-3 gap-3">
+              {sample.brightnessEstimate !== null && (
+                <div>
+                  <div className="text-xs text-slate-500">Brightness</div>
+                  <div className="text-sm text-white font-mono">{sample.brightnessEstimate.toFixed(2)}</div>
+                </div>
+              )}
+              {sample.warmthEstimate !== null && (
+                <div>
+                  <div className="text-xs text-slate-500">Warmth</div>
+                  <div className="text-sm text-white font-mono">{sample.warmthEstimate.toFixed(2)}</div>
+                </div>
+              )}
+              {sample.hardnessEstimate !== null && (
+                <div>
+                  <div className="text-xs text-slate-500">Hardness</div>
+                  <div className="text-sm text-white font-mono">{sample.hardnessEstimate.toFixed(2)}</div>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
-
-      {/* Audio Features - Collapsed by Default */}
-      {selectedPoint.features && (
-        <>
-          <button
-            onClick={() => setShowFeatures(!showFeatures)}
-            className="w-full flex items-center justify-between px-3 py-1.5 border-t border-surface-border text-[11px] text-slate-500 hover:text-slate-400 transition-colors"
-          >
-            <span>Audio Features</span>
-            <ChevronDown
-              size={12}
-              className={`transition-transform duration-200 ${
-                showFeatures ? 'rotate-180' : ''
-              }`}
-            />
-          </button>
-
-          {showFeatures && (
-            <div className="px-3 pb-2 grid grid-cols-3 gap-x-4 gap-y-1 text-[11px] animate-slide-down">
-              {selectedPoint.features.duration != null && (
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Duration</span>
-                  <span className="text-slate-300 font-mono">
-                    {selectedPoint.features.duration.toFixed(2)}s
-                  </span>
-                </div>
-              )}
-              {selectedPoint.features.bpm != null && (
-                <div className="flex justify-between">
-                  <span className="text-slate-500">BPM</span>
-                  <span className="text-slate-300 font-mono">
-                    {Math.round(selectedPoint.features.bpm)}
-                  </span>
-                </div>
-              )}
-              {selectedPoint.features.spectralCentroid != null && (
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Brightness</span>
-                  <span className="text-slate-300 font-mono">
-                    {Math.round(selectedPoint.features.spectralCentroid)}Hz
-                  </span>
-                </div>
-              )}
-              {selectedPoint.features.rmsEnergy != null && (
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Energy</span>
-                  <span className="text-slate-300 font-mono">
-                    {selectedPoint.features.rmsEnergy.toFixed(3)}
-                  </span>
-                </div>
-              )}
-              {selectedPoint.features.spectralRolloff != null && (
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Rolloff</span>
-                  <span className="text-slate-300 font-mono">
-                    {Math.round(selectedPoint.features.spectralRolloff)}Hz
-                  </span>
-                </div>
-              )}
-              {selectedPoint.features.zeroCrossingRate != null && (
-                <div className="flex justify-between">
-                  <span className="text-slate-500">ZCR</span>
-                  <span className="text-slate-300 font-mono">
-                    {selectedPoint.features.zeroCrossingRate.toFixed(3)}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-        </>
-      )}
     </div>
   )
 }

@@ -9,6 +9,7 @@ import type { SourceScope, SliceWithTrackExtended, Tag } from '../types'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import { getSliceDownloadUrl } from '../api/client'
 import { getRelatedKeys, getRelatedNotes } from '../utils/musicTheory'
+import { createManagedAudio, releaseManagedAudio } from '../services/globalAudioVolume'
 
 export type SampleSelectContext =
   | { type: 'all' }
@@ -31,6 +32,10 @@ const initialAudioFilter: AudioFilterState = {
   sortOrder: 'asc',
   minBpm: 0,
   maxBpm: 300,
+  dateAddedFrom: '',
+  dateAddedTo: '',
+  dateCreatedFrom: '',
+  dateCreatedTo: '',
   pitchFilterMode: 'fundamental',
   selectedNotes: [],
   relatedNotesLevels: [],
@@ -87,6 +92,7 @@ export function CustomOrderSampleSelectPanel({
     return () => {
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
     }
@@ -155,6 +161,10 @@ export function CustomOrderSampleSelectPanel({
       maxBpm: audioFilter.maxBpm < 300 ? audioFilter.maxBpm : undefined,
       keys: audioFilter.pitchFilterMode === 'scale' && effectiveKeys.length > 0 ? effectiveKeys : undefined,
       notes: audioFilter.pitchFilterMode === 'fundamental' && effectiveNotes.length > 0 ? effectiveNotes : undefined,
+      dateAddedFrom: audioFilter.dateAddedFrom || undefined,
+      dateAddedTo: audioFilter.dateAddedTo || undefined,
+      dateCreatedFrom: audioFilter.dateCreatedFrom || undefined,
+      dateCreatedTo: audioFilter.dateCreatedTo || undefined,
     }
   )
 
@@ -204,6 +214,7 @@ export function CustomOrderSampleSelectPanel({
     if (playingId === id) {
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
       setPlayingId(null)
@@ -211,12 +222,13 @@ export function CustomOrderSampleSelectPanel({
     }
     if (audioRef.current) {
       audioRef.current.pause()
+      releaseManagedAudio(audioRef.current)
       audioRef.current = null
     }
-    const audio = new Audio(getSliceDownloadUrl(id))
-    audio.loop = false
+    const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: false })
     audio.onended = () => {
       setPlayingId(null)
+      releaseManagedAudio(audio)
       audioRef.current = null
     }
     audio.play()

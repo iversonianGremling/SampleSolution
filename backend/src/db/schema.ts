@@ -14,11 +14,14 @@ export const tracks = sqliteTable('tracks', {
     .default('pending'),
   artist: text('artist'),
   album: text('album'),
+  year: integer('year'),
   source: text('source', { enum: ['youtube', 'local'] })
     .notNull()
     .default('youtube'),
   originalPath: text('original_path'),  // Full path of imported file (for local sources)
   folderPath: text('folder_path'),      // Folder used for import (null for individual files/YouTube)
+  relativePath: text('relative_path'),  // Relative path from imported folder root
+  fullPathHint: text('full_path_hint'), // Reserved for desktop import full-path capture
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -79,6 +82,10 @@ export const audioFeatures = sqliteTable('audio_features', {
   // Basic properties
   duration: real('duration').notNull(),
   sampleRate: integer('sample_rate').notNull().default(44100),
+  channels: integer('channels'),
+  fileFormat: text('file_format'),
+  sourceMtime: text('source_mtime'),
+  sourceCtime: text('source_ctime'),
   isOneShot: integer('is_one_shot').notNull().default(0),
   isLoop: integer('is_loop').notNull().default(0),
   // Tempo/Rhythm
@@ -99,6 +106,7 @@ export const audioFeatures = sqliteTable('audio_features', {
   dynamicRange: real('dynamic_range'),
   // Key detection
   keyEstimate: text('key_estimate'),
+  scale: text('scale'),
   keyStrength: real('key_strength'),
   // Instrument classification
   instrumentPredictions: text('instrument_predictions'),
@@ -117,6 +125,7 @@ export const audioFeatures = sqliteTable('audio_features', {
   brightness: real('brightness'),
   warmth: real('warmth'),
   hardness: real('hardness'),
+  noisiness: real('noisiness'),
   roughness: real('roughness'),
   sharpness: real('sharpness'),
   // Phase 1: Advanced Spectral Features
@@ -166,6 +175,7 @@ export const audioFeatures = sqliteTable('audio_features', {
   transientSpectralFlatness: real('transient_spectral_flatness'),
   sampleTypeConfidence: real('sample_type_confidence'),
   fundamentalFrequency: real('fundamental_frequency'),
+  polyphony: integer('polyphony'),
   // Metadata
   analysisLevel: text('analysis_level', {
     enum: ['quick', 'standard', 'advanced'],

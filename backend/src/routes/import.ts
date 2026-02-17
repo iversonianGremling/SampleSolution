@@ -3,7 +3,7 @@ import multer from 'multer'
 import path from 'path'
 import fs from 'fs/promises'
 import { db, schema } from '../db/index.js'
-import { getAudioDuration } from '../services/ffmpeg.js'
+import { getAudioDuration, getAudioFileMetadata } from '../services/ffmpeg.js'
 import {
   analyzeAudioFeatures,
   featuresToTags,
@@ -65,6 +65,36 @@ const SLICES_DIR = path.join(DATA_DIR, 'slices')
 // Supported audio formats
 const SUPPORTED_FORMATS = ['.wav', '.mp3', '.flac', '.aiff', '.ogg', '.m4a']
 
+function normalizeRelativePath(value: string): string {
+  return value.replace(/\\/g, '/')
+}
+
+async function collectAudioFilesRecursively(rootDir: string): Promise<string[]> {
+  const files: string[] = []
+
+  async function walk(currentDir: string) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(fullPath)
+        continue
+      }
+
+      if (!entry.isFile()) continue
+
+      const ext = path.extname(entry.name).toLowerCase()
+      if (SUPPORTED_FORMATS.includes(ext)) {
+        files.push(fullPath)
+      }
+    }
+  }
+
+  await walk(rootDir)
+  files.sort((a, b) => a.localeCompare(b))
+  return files
+}
+
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: async (_req, _file, cb) => {
@@ -116,6 +146,16 @@ async function autoTagSlice(sliceId: number, audioPath: string, analysisLevel?: 
 
     // Analyze audio with Python (Essentia + Librosa)
     const features = await analyzeAudioFeatures(audioPath, level)
+    const fileMetadata = await getAudioFileMetadata(audioPath).catch(() => null)
+
+    const enrichedFeatures = {
+      ...features,
+      sampleRate: fileMetadata?.sampleRate ?? features.sampleRate,
+      channels: fileMetadata?.channels ?? undefined,
+      fileFormat: fileMetadata?.format ?? undefined,
+      sourceMtime: fileMetadata?.modifiedAt ?? undefined,
+      sourceCtime: fileMetadata?.createdAt ?? undefined,
+    }
 
     console.log(`Analysis complete for slice ${sliceId}:`, {
       isOneShot: features.isOneShot,
@@ -126,7 +166,7 @@ async function autoTagSlice(sliceId: number, audioPath: string, analysisLevel?: 
     })
 
     // Store raw features in database
-    await storeAudioFeatures(sliceId, features)
+    await storeAudioFeatures(sliceId, enrichedFeatures)
 
     // Convert features to tags
     const tagNames = featuresToTags(features)
@@ -204,6 +244,7 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
     } catch (err) {
       console.error('Failed to get audio duration:', err)
     }
+    const sourceMetadata = await getAudioFileMetadata(uploadedPath).catch(() => null)
 
     // Create a virtual track for this local import
     const localId = `local:${uuidv4()}`
@@ -217,9 +258,15 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
         duration,
         audioPath: uploadedPath,
         status: 'ready',
+        artist: sourceMetadata?.artist ?? null,
+        album: sourceMetadata?.album ?? null,
+        year: sourceMetadata?.year ?? null,
         source: 'local',
+        // TODO: if we are importing stuff from the desktop electron app use the full path.
         originalPath: originalName, // Store original filename for individual imports
         folderPath: null, // No folder for individual file imports
+        relativePath: null,
+        fullPathHint: null,
       })
       .returning()
 
@@ -344,6 +391,7 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
       } catch (err) {
         console.error('Failed to get audio duration:', err)
       }
+      const sourceMetadata = await getAudioFileMetadata(uploadedPath).catch(() => null)
 
       // Create a virtual track
       const localId = `local:${uuidv4()}`
@@ -357,9 +405,15 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
           duration,
           audioPath: uploadedPath,
           status: 'ready',
+          artist: sourceMetadata?.artist ?? null,
+          album: sourceMetadata?.album ?? null,
+          year: sourceMetadata?.year ?? null,
           source: 'local',
+          // TODO: if we are importing stuff from the desktop electron app use the full path.
           originalPath: originalName, // Store original filename for individual imports
           folderPath: null, // No folder for batch file imports
+          relativePath: null,
+          fullPathHint: null,
         })
         .returning()
 
@@ -468,15 +522,10 @@ router.post('/import/folder', async (req, res) => {
       return res.status(400).json({ error: 'Path is not a directory' })
     }
 
-    // Scan folder for audio files
-    const entries = await fs.readdir(folderPath, { withFileTypes: true })
-    const audioFiles = entries
-      .filter((entry) => {
-        if (!entry.isFile()) return false
-        const ext = path.extname(entry.name).toLowerCase()
-        return SUPPORTED_FORMATS.includes(ext)
-      })
-      .map((entry) => path.join(folderPath, entry.name))
+    const folderRootPath = path.resolve(folderPath)
+
+    // Scan folder recursively for audio files and preserve subdirectories.
+    const audioFiles = await collectAudioFilesRecursively(folderRootPath)
 
     if (audioFiles.length === 0) {
       return res.status(400).json({ error: 'No supported audio files found in folder' })
@@ -487,6 +536,7 @@ router.post('/import/folder', async (req, res) => {
     for (const filePath of audioFiles) {
       try {
         const originalName = path.basename(filePath)
+        const relativePath = normalizeRelativePath(path.relative(folderRootPath, filePath))
         const baseName = path.basename(originalName, path.extname(originalName))
 
         // Get audio duration
@@ -497,6 +547,8 @@ router.post('/import/folder', async (req, res) => {
           console.error('Failed to get audio duration:', err)
         }
 
+        const sourceMetadata = await getAudioFileMetadata(filePath).catch(() => null)
+
         // Create virtual track
         const localId = `local:${uuidv4()}`
         const [track] = await db
@@ -504,14 +556,19 @@ router.post('/import/folder', async (req, res) => {
           .values({
             youtubeId: localId,
             title: baseName,
-            description: `Imported from folder: ${folderPath}`,
+            description: `Imported from folder: ${folderRootPath}`,
             thumbnailUrl: '',
             duration,
             audioPath: filePath, // Keep original path
             status: 'ready',
+            artist: sourceMetadata?.artist ?? null,
+            album: sourceMetadata?.album ?? null,
+            year: sourceMetadata?.year ?? null,
             source: 'local',
             originalPath: filePath, // Store full original file path
-            folderPath: folderPath, // Store the folder used for import
+            folderPath: folderRootPath, // Store the folder used for import
+            relativePath, // Preserve structure relative to imported folder root
+            fullPathHint: filePath,
           })
           .returning()
 
@@ -551,7 +608,7 @@ router.post('/import/folder', async (req, res) => {
 
         // Apply filename-based tags immediately
         try {
-          const filenameTags = parseFilenameTags(originalName, folderPath)
+          const filenameTags = parseFilenameTags(originalName, folderRootPath)
           for (const ft of filenameTags) {
             const lowerTag = ft.tag.toLowerCase()
             let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
@@ -580,11 +637,11 @@ router.post('/import/folder', async (req, res) => {
           })
         }
 
-        results.push({ filename: originalName, success: true, sliceId: slice.id })
+        results.push({ filename: relativePath || originalName, success: true, sliceId: slice.id })
       } catch (error) {
         console.error(`Error importing ${filePath}:`, error)
         results.push({
-          filename: path.basename(filePath),
+          filename: normalizeRelativePath(path.relative(folderRootPath, filePath)) || path.basename(filePath),
           success: false,
           error: error instanceof Error ? error.message : 'Unknown error',
         })
@@ -592,7 +649,7 @@ router.post('/import/folder', async (req, res) => {
     }
 
     res.json({
-      folderPath,
+      folderPath: folderRootPath,
       total: audioFiles.length,
       successful: results.filter((r) => r.success).length,
       failed: results.filter((r) => !r.success).length,

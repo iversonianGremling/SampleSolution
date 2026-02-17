@@ -8,6 +8,10 @@ export interface AudioFilterState {
   sortOrder: 'asc' | 'desc'
   minBpm: number
   maxBpm: number
+  dateAddedFrom: string
+  dateAddedTo: string
+  dateCreatedFrom: string
+  dateCreatedTo: string
   // Pitch filter mode
   pitchFilterMode: 'fundamental' | 'scale'
   // Fundamental frequency filter (note names)
@@ -206,11 +210,11 @@ export function SourcesAudioFilter({
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 min-w-0">
       {/* Sort controls */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-slate-400 whitespace-nowrap">Sort by:</span>
-        <div className="flex items-center gap-1 flex-wrap">
+        <div className="flex items-center gap-1 flex-wrap min-w-0">
           <button
             onClick={() => handleSortChange('name')}
             className={getSortButtonClass('name')}
@@ -239,15 +243,68 @@ export function SourcesAudioFilter({
             onClick={() => handleSortChange('createdAt')}
             className={getSortButtonClass('createdAt')}
           >
-            Date {getSortIcon('createdAt')}
+            Added {getSortIcon('createdAt')}
           </button>
         </div>
       </div>
 
+      {/* Date filters */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-400 whitespace-nowrap min-w-20">Date added:</span>
+          <input
+            type="date"
+            value={filterState.dateAddedFrom}
+            onChange={(e) => onChange({ ...filterState, dateAddedFrom: e.target.value })}
+            className="px-2 py-1 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary"
+          />
+          <span className="text-xs text-slate-500">to</span>
+          <input
+            type="date"
+            value={filterState.dateAddedTo}
+            onChange={(e) => onChange({ ...filterState, dateAddedTo: e.target.value })}
+            className="px-2 py-1 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary"
+          />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-400 whitespace-nowrap min-w-20">File created:</span>
+          <input
+            type="date"
+            value={filterState.dateCreatedFrom}
+            onChange={(e) => onChange({ ...filterState, dateCreatedFrom: e.target.value })}
+            className="px-2 py-1 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary"
+          />
+          <span className="text-xs text-slate-500">to</span>
+          <input
+            type="date"
+            value={filterState.dateCreatedTo}
+            onChange={(e) => onChange({ ...filterState, dateCreatedTo: e.target.value })}
+            className="px-2 py-1 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary"
+          />
+          {(filterState.dateAddedFrom || filterState.dateAddedTo || filterState.dateCreatedFrom || filterState.dateCreatedTo) && (
+            <button
+              onClick={() =>
+                onChange({
+                  ...filterState,
+                  dateAddedFrom: '',
+                  dateAddedTo: '',
+                  dateCreatedFrom: '',
+                  dateCreatedTo: '',
+                })
+              }
+              className="text-xs text-slate-400 hover:text-white transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* BPM range filter */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-1.5">
         <span className="text-xs text-slate-400 whitespace-nowrap">BPM:</span>
-        <div className="flex items-center gap-2 flex-1 max-w-md">
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
           {/* Number inputs */}
           <input
             type="number"
@@ -262,7 +319,7 @@ export function SourcesAudioFilter({
           />
 
           {/* Dual slider */}
-          <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+          <div className="flex-1 relative h-6 flex items-center min-w-[80px]">
             {/* Track background */}
             <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
 
@@ -343,7 +400,7 @@ export function SourcesAudioFilter({
           </select>
           <span className="text-[9px] text-slate-500">:</span>
         </div>
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           {/* Fundamental frequency mode */}
           {(filterState.pitchFilterMode || 'fundamental') === 'fundamental' && (
             <>
@@ -586,7 +643,7 @@ export function SourcesAudioFilter({
       {availableEnvelopeTypes.length > 0 && (
         <div className="flex items-start gap-3">
           <span className="text-xs text-slate-400 whitespace-nowrap pt-1">Envelope:</span>
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <div className="flex flex-wrap gap-1">
               {availableEnvelopeTypes.map((type) => (
                 <button
@@ -625,15 +682,15 @@ export function SourcesAudioFilter({
         </button>
 
         {showPerceptual && (
-          <div className="mt-3 space-y-3 pl-5">
+          <div className="mt-3 space-y-3 pl-3">
             {/* Brightness */}
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400 w-20">Brightness:</span>
-              <div className="flex-1 flex items-center gap-2">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-slate-400">Brightness:</span>
+              <div className="flex items-center gap-2 min-w-0">
                 <span className="text-xs text-slate-500 w-8 text-right">{filterState.minBrightness.toFixed(2)}</span>
 
                 {/* Dual slider */}
-                <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+                <div className="flex-1 relative h-6 flex items-center min-w-[80px]">
                   {/* Track background */}
                   <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
 
@@ -682,13 +739,13 @@ export function SourcesAudioFilter({
             </div>
 
             {/* Warmth */}
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400 w-20">Warmth:</span>
-              <div className="flex-1 flex items-center gap-2">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-slate-400">Warmth:</span>
+              <div className="flex items-center gap-2 min-w-0">
                 <span className="text-xs text-slate-500 w-8 text-right">{filterState.minWarmth.toFixed(2)}</span>
 
                 {/* Dual slider */}
-                <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+                <div className="flex-1 relative h-6 flex items-center min-w-[80px]">
                   {/* Track background */}
                   <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
 
@@ -737,13 +794,13 @@ export function SourcesAudioFilter({
             </div>
 
             {/* Hardness */}
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400 w-20">Hardness:</span>
-              <div className="flex-1 flex items-center gap-2">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-slate-400">Hardness:</span>
+              <div className="flex items-center gap-2 min-w-0">
                 <span className="text-xs text-slate-500 w-8 text-right">{filterState.minHardness.toFixed(2)}</span>
 
                 {/* Dual slider */}
-                <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+                <div className="flex-1 relative h-6 flex items-center min-w-[80px]">
                   {/* Track background */}
                   <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
 
@@ -826,7 +883,7 @@ export function SourcesAudioFilter({
           </button>
 
           {showClassification && (
-            <div className="mt-3 space-y-3 pl-5">
+            <div className="mt-3 space-y-3 pl-3">
               {/* Instruments */}
               {availableInstruments.length > 0 && (
                 <div className="flex items-start gap-3">

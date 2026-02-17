@@ -19,6 +19,7 @@ interface SourcesTagFilterProps {
   tagNameCounts?: Record<string, number>
   totalCount: number
   filteredCount: number
+  showCategories?: boolean
 }
 
 type PickerItem = {
@@ -75,6 +76,7 @@ export function SourcesTagFilter({
   tagNameCounts,
   totalCount,
   filteredCount,
+  showCategories = false,
 }: SourcesTagFilterProps) {
   const [isAddDropdownOpen, setIsAddDropdownOpen] = useState(false)
   const [isExcludeDropdownOpen, setIsExcludeDropdownOpen] = useState(false)
@@ -212,6 +214,24 @@ export function SourcesTagFilter({
     excludedTags.length > 0 ||
     excludedFolderIds.length > 0
 
+  const categorySummaries = useMemo(() => {
+    const categoryMap = new Map<string, { count: number; selectedCount: number }>()
+
+    for (const tag of allTags) {
+      const category = (tag.category || 'general').toLowerCase()
+      const current = categoryMap.get(category) || { count: 0, selectedCount: 0 }
+      current.count += 1
+      if (selectedTags.includes(tag.id)) {
+        current.selectedCount += 1
+      }
+      categoryMap.set(category, current)
+    }
+
+    return Array.from(categoryMap.entries())
+      .map(([category, values]) => ({ category, ...values }))
+      .sort((a, b) => a.category.localeCompare(b.category))
+  }, [allTags, selectedTags])
+
   return (
     <div ref={containerRef} className="flex items-center gap-2 flex-wrap">
       <span className="text-sm text-slate-400">
@@ -222,6 +242,29 @@ export function SourcesTagFilter({
       </span>
 
       <div className="h-4 w-px bg-surface-border mx-2" />
+
+      {showCategories && categorySummaries.length > 0 && (
+        <>
+          <span className="text-xs text-slate-500 uppercase tracking-wide">Categories</span>
+          {categorySummaries.map((item) => (
+            <span
+              key={`category-${item.category}`}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] border ${
+                item.selectedCount > 0
+                  ? 'bg-accent-primary/20 border-accent-primary/40 text-accent-primary'
+                  : 'bg-surface-raised border-surface-border text-slate-400'
+              }`}
+              title={`${item.count} tag${item.count !== 1 ? 's' : ''}`}
+            >
+              <span className="capitalize">{item.category}</span>
+              <span className="text-[10px] text-slate-500">
+                {item.selectedCount > 0 ? `${item.selectedCount}/${item.count}` : item.count}
+              </span>
+            </span>
+          ))}
+          <div className="h-4 w-px bg-surface-border mx-1" />
+        </>
+      )}
 
       {selectedTagObjects.map(tag => (
         <span

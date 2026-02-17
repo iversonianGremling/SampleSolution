@@ -320,12 +320,68 @@ function initDatabase() {
     `)
   }
 
+  // Migration: Add year and path identity columns to tracks
+  const tracksMetadataColumns = sqlite.prepare("PRAGMA table_info(tracks)").all() as { name: string }[]
+  const hasYear = tracksMetadataColumns.some(col => col.name === 'year')
+  if (!hasYear) {
+    console.log('[DB] Migrating: Adding year column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN year INTEGER;`)
+  }
+  const hasRelativePath = tracksMetadataColumns.some(col => col.name === 'relative_path')
+  if (!hasRelativePath) {
+    console.log('[DB] Migrating: Adding relative_path column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN relative_path TEXT;`)
+  }
+  const hasFullPathHint = tracksMetadataColumns.some(col => col.name === 'full_path_hint')
+  if (!hasFullPathHint) {
+    console.log('[DB] Migrating: Adding full_path_hint column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN full_path_hint TEXT;`)
+  }
+
   // Migration: Add fundamental_frequency to audio_features
   const audioFeaturesFundamental = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
   const hasFundamentalFrequency = audioFeaturesFundamental.some(col => col.name === 'fundamental_frequency')
   if (!hasFundamentalFrequency) {
     console.log('[DB] Migrating: Adding fundamental_frequency column to audio_features')
     sqlite.exec(`ALTER TABLE audio_features ADD COLUMN fundamental_frequency REAL;`)
+  }
+
+  // Migration: Add file metadata and musical columns to audio_features
+  const audioFeatureMetadataColumns = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasChannels = audioFeatureMetadataColumns.some(col => col.name === 'channels')
+  if (!hasChannels) {
+    console.log('[DB] Migrating: Adding channels column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN channels INTEGER;`)
+  }
+  const hasFileFormat = audioFeatureMetadataColumns.some(col => col.name === 'file_format')
+  if (!hasFileFormat) {
+    console.log('[DB] Migrating: Adding file_format column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN file_format TEXT;`)
+  }
+  const hasSourceMtime = audioFeatureMetadataColumns.some(col => col.name === 'source_mtime')
+  if (!hasSourceMtime) {
+    console.log('[DB] Migrating: Adding source_mtime column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN source_mtime TEXT;`)
+  }
+  const hasSourceCtime = audioFeatureMetadataColumns.some(col => col.name === 'source_ctime')
+  if (!hasSourceCtime) {
+    console.log('[DB] Migrating: Adding source_ctime column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN source_ctime TEXT;`)
+  }
+  const hasScale = audioFeatureMetadataColumns.some(col => col.name === 'scale')
+  if (!hasScale) {
+    console.log('[DB] Migrating: Adding scale column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN scale TEXT;`)
+  }
+  const hasNoisiness = audioFeatureMetadataColumns.some(col => col.name === 'noisiness')
+  if (!hasNoisiness) {
+    console.log('[DB] Migrating: Adding noisiness column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN noisiness REAL;`)
+  }
+  const hasPolyphony = audioFeatureMetadataColumns.some(col => col.name === 'polyphony')
+  if (!hasPolyphony) {
+    console.log('[DB] Migrating: Adding polyphony column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN polyphony INTEGER;`)
   }
 
   // Migration: Create collections table

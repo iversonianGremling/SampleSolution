@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
+import 'pixi.js/unsafe-eval'
 import * as PIXI from 'pixi.js'
 import { RefreshCw } from 'lucide-react'
 import type { SamplePoint } from '../types'
@@ -756,17 +757,6 @@ export function WebGLScatter({
     let currentHoveredId: number | null = null
 
     const handlePointerMove = (event: PIXI.FederatedPointerEvent) => {
-      // Skip hover detection if menu/modal is open
-      if (selectedIds.size > 0) {
-        // Clear hover if we had one
-        if (currentHoveredId !== null) {
-          currentHoveredId = null
-          setHoveredId(null)
-          onPointHover(null)
-        }
-        return
-      }
-
       // Get mouse position in canvas space (already accounts for DPR)
       const mouseX = event.global.x
       const mouseY = event.global.y
@@ -795,10 +785,7 @@ export function WebGLScatter({
         if (data) {
           setHoveredId(closestPointId)
           onPointHover(data.point)
-          // Only play audio on hover if no point is selected (modal closed)
-          if (selectedIds.size === 0) {
-            playAudio(data.point)
-          }
+          playAudio(data.point)
         }
       } else if (closestPointId === null && currentHoveredId !== null) {
         currentHoveredId = null

@@ -11,8 +11,11 @@ export interface Track {
   source?: 'youtube' | 'local'
   originalPath?: string | null
   folderPath?: string | null
+  relativePath?: string | null
+  fullPathHint?: string | null
   artist?: string | null
   album?: string | null
+  year?: number | null
   createdAt: string
   tags: Tag[]
 }
@@ -37,8 +40,28 @@ export interface Slice {
   instrumentPrimary?: string | null
   instrumentType?: string | null
   brightness?: number | null
+  warmth?: number | null
+  hardness?: number | null
+  sharpness?: number | null
+  noisiness?: number | null
   loudness?: number | null
   roughness?: number | null
+  scale?: string | null
+  sampleRate?: number | null
+  channels?: number | null
+  format?: string | null
+  polyphony?: number | null
+  dateAdded?: string | null
+  dateCreated?: string | null
+  dateModified?: string | null
+  pathDisplay?: string | null
+  subjectiveNormalized?: {
+    brightness?: number | null
+    noisiness?: number | null
+    warmth?: number | null
+    hardness?: number | null
+    sharpness?: number | null
+  } | null
 }
 
 export interface SliceWithTrack extends Slice {
@@ -90,6 +113,7 @@ export interface Tag {
   id: number
   name: string
   color: string
+  category?: string
 }
 
 export interface YouTubeSearchResult {
@@ -220,6 +244,7 @@ export interface AudioFeatures {
   transientSpectralCentroid?: number | null
   transientSpectralFlatness?: number | null
   sampleTypeConfidence?: number | null
+  polyphony?: number | null
   // Phase 6: Audio Fingerprinting & Similarity Detection
   chromaprintFingerprint?: string | null
   // Metadata
@@ -368,8 +393,11 @@ export interface SliceWithTrackExtended extends Slice {
     source?: 'youtube' | 'local'
     folderPath?: string | null
     originalPath?: string | null
+    relativePath?: string | null
+    fullPathHint?: string | null
     artist?: string | null
     album?: string | null
+    year?: number | null
   }
 }
 

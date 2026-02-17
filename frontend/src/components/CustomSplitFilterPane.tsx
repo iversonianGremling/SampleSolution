@@ -32,6 +32,10 @@ const initialAudioFilter: AudioFilterState = {
   sortOrder: 'asc',
   minBpm: 0,
   maxBpm: 300,
+  dateAddedFrom: '',
+  dateAddedTo: '',
+  dateCreatedFrom: '',
+  dateCreatedTo: '',
   pitchFilterMode: 'fundamental',
   selectedNotes: [],
   relatedNotesLevels: [],
@@ -157,6 +161,10 @@ export function CustomSplitSampleSelectPanel({
       maxBpm: audioFilter.maxBpm < 300 ? audioFilter.maxBpm : undefined,
       keys: audioFilter.pitchFilterMode === 'scale' && effectiveKeys.length > 0 ? effectiveKeys : undefined,
       notes: audioFilter.pitchFilterMode === 'fundamental' && effectiveNotes.length > 0 ? effectiveNotes : undefined,
+      dateAddedFrom: audioFilter.dateAddedFrom || undefined,
+      dateAddedTo: audioFilter.dateAddedTo || undefined,
+      dateCreatedFrom: audioFilter.dateCreatedFrom || undefined,
+      dateCreatedTo: audioFilter.dateCreatedTo || undefined,
     }
   )
 

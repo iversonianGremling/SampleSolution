@@ -30,6 +30,10 @@ export interface AudioFilterParams {
   maxBpm?: number
   keys?: string[]
   notes?: string[]
+  dateAddedFrom?: string
+  dateAddedTo?: string
+  dateCreatedFrom?: string
+  dateCreatedTo?: string
 }
 
 export function useScopedSamples(
@@ -60,6 +64,10 @@ export function useScopedSamples(
         maxBpm: audioFilters?.maxBpm,
         keys: audioFilters?.keys,
         notes: audioFilters?.notes,
+        dateAddedFrom: audioFilters?.dateAddedFrom,
+        dateAddedTo: audioFilters?.dateAddedTo,
+        dateCreatedFrom: audioFilters?.dateCreatedFrom,
+        dateCreatedTo: audioFilters?.dateCreatedTo,
       }),
   })
 }

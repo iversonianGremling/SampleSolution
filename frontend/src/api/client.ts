@@ -84,7 +84,7 @@ export const addTracks = (urls: string[]) =>
 
 export const deleteTrack = (id: number) => api.delete(`/tracks/${id}`)
 
-export const updateTrack = (id: number, data: { title?: string; artist?: string; album?: string }) =>
+export const updateTrack = (id: number, data: { title?: string; artist?: string; album?: string; year?: number | null }) =>
   api.put<Track>(`/tracks/${id}`, data).then((r) => r.data)
 
 export const getTrackAudioUrl = (id: number) => `${getApiBaseUrl()}/tracks/${id}/audio`
@@ -112,6 +112,56 @@ export const updateSlice = (
 export const deleteSlice = (id: number) => api.delete(`/slices/${id}`)
 
 export const getSliceDownloadUrl = (id: number) => `${getApiBaseUrl()}/slices/${id}/download`
+
+export interface PersistLabRenderPayload {
+  mode: 'copy' | 'overwrite'
+  fileName: string
+  duration: number
+  hqPitchRequested?: boolean
+  audioBlob: Blob
+}
+
+export interface PersistLabRenderResponse {
+  mode: 'copy' | 'overwrite'
+  sourceSliceId: number
+  slice: Slice
+  createdTrack?: Track
+  hqPitchRequested?: boolean
+}
+
+export const persistLabRender = (sliceId: number, payload: PersistLabRenderPayload) => {
+  const formData = new FormData()
+  formData.append('mode', payload.mode)
+  formData.append('fileName', payload.fileName)
+
+  if (Number.isFinite(payload.duration)) {
+    formData.append('duration', payload.duration.toString())
+  }
+
+  if (payload.hqPitchRequested !== undefined) {
+    formData.append('hqPitchRequested', payload.hqPitchRequested ? 'true' : 'false')
+  }
+
+  formData.append('audio', payload.audioBlob, payload.fileName || 'lab-render.wav')
+
+  return api
+    .post<PersistLabRenderResponse>(`/slices/${sliceId}/render`, formData)
+    .then((r) => r.data)
+}
+
+export const downloadBatchSlicesZip = (sliceIds: number[]) =>
+  api
+    .post<Blob>(
+      '/slices/batch-download',
+      { sliceIds },
+      {
+        responseType: 'blob',
+      }
+    )
+    .then((r) => ({
+      blob: r.data,
+      contentDisposition: r.headers['content-disposition'] as string | undefined,
+    }))
 
 // YouTube
 export const searchYouTube = (query: string) =>
@@ -528,6 +578,10 @@ export interface SourcesSamplesParams {
   maxBpm?: number
   keys?: string[]
   notes?: string[]
+  dateAddedFrom?: string
+  dateAddedTo?: string
+  dateCreatedFrom?: string
+  dateCreatedTo?: string
 }
 
 export const getSourcesSamples = (params: SourcesSamplesParams) => {
@@ -542,6 +596,10 @@ export const getSourcesSamples = (params: SourcesSamplesParams) => {
   if (params.maxBpm !== undefined) queryParams.maxBpm = params.maxBpm.toString()
   if (params.keys && params.keys.length > 0) queryParams.keys = params.keys.join(',')
   if (params.notes && params.notes.length > 0) queryParams.notes = params.notes.join(',')
+  if (params.dateAddedFrom) queryParams.dateAddedFrom = params.dateAddedFrom
+  if (params.dateAddedTo) queryParams.dateAddedTo = params.dateAddedTo
+  if (params.dateCreatedFrom) queryParams.dateCreatedFrom = params.dateCreatedFrom
+  if (params.dateCreatedTo) queryParams.dateCreatedTo = params.dateCreatedTo
 
   return api.get<SourcesSamplesResponse>('/sources/samples', { params: queryParams }).then((r) => r.data)
 }
