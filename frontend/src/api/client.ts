@@ -109,7 +109,8 @@ export const updateSlice = (
   data: { name?: string; startTime?: number; endTime?: number }
 ) => api.put<Slice>(`/slices/${id}`, data).then((r) => r.data)
 
-export const deleteSlice = (id: number) => api.delete(`/slices/${id}`)
+export const deleteSlice = (id: number, deleteSource = false) =>
+  api.delete(`/slices/${id}`, { params: { deleteSource } }).then((r) => r.data)
 
 export const getSliceDownloadUrl = (id: number) => `${getApiBaseUrl()}/slices/${id}/download`
 
@@ -572,7 +573,7 @@ export interface SourcesSamplesParams {
   tags?: number[]
   search?: string
   favorites?: boolean
-  sortBy?: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt'
+  sortBy?: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt' | 'similarity'
   sortOrder?: 'asc' | 'desc'
   minBpm?: number
   maxBpm?: number
@@ -582,6 +583,8 @@ export interface SourcesSamplesParams {
   dateAddedTo?: string
   dateCreatedFrom?: string
   dateCreatedTo?: string
+  similarTo?: number
+  minSimilarity?: number
 }
 
 export const getSourcesSamples = (params: SourcesSamplesParams) => {
@@ -600,6 +603,8 @@ export const getSourcesSamples = (params: SourcesSamplesParams) => {
   if (params.dateAddedTo) queryParams.dateAddedTo = params.dateAddedTo
   if (params.dateCreatedFrom) queryParams.dateCreatedFrom = params.dateCreatedFrom
   if (params.dateCreatedTo) queryParams.dateCreatedTo = params.dateCreatedTo
+  if (params.similarTo !== undefined) queryParams.similarTo = params.similarTo.toString()
+  if (params.minSimilarity !== undefined) queryParams.minSimilarity = params.minSimilarity.toString()
 
   return api.get<SourcesSamplesResponse>('/sources/samples', { params: queryParams }).then((r) => r.data)
 }

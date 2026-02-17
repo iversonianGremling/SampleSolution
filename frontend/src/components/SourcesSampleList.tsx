@@ -41,6 +41,7 @@ type SortField =
   | 'dateModified'
   | 'path'
   | 'duration'
+  | 'similarity'
 type SortOrder = 'asc' | 'desc'
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
@@ -80,6 +81,7 @@ const MIN_COLUMN_WIDTHS: SourcesListColumnWidths = {
   dateModified: 92,
   path: 140,
   duration: 68,
+  similarity: 72,
   actions: 84,
 }
 
@@ -174,6 +176,8 @@ function getSortValue(sample: SliceWithTrackExtended, field: SortField): string 
       return getPathDisplay(sample)?.toLowerCase() ?? null
     case 'duration':
       return sample.endTime - sample.startTime
+    case 'similarity':
+      return sample.similarity ?? null
     default:
       return null
   }
@@ -193,6 +197,11 @@ interface SourcesSampleListProps {
   isLoading?: boolean
   playMode?: PlayMode
   loopEnabled?: boolean
+  similarityMode?: {
+    enabled: boolean
+    referenceSampleId: number
+    referenceSampleName: string
+  } | null
 }
 
 function loadColumnVisibility(): SourcesListColumnVisibility {
@@ -243,7 +252,8 @@ function loadColumnWidths(): SourcesListColumnWidths {
 
 function getRowMinWidth(
   columnVisibility: SourcesListColumnVisibility,
-  columnWidths: SourcesListColumnWidths
+  columnWidths: SourcesListColumnWidths,
+  showSimilarity = false
 ): number {
   let width = 0
 
@@ -279,6 +289,7 @@ function getRowMinWidth(
   if (columnVisibility.dateCreated) width += columnWidths.dateCreated
   if (columnVisibility.dateModified) width += columnWidths.dateModified
   if (columnVisibility.path) width += columnWidths.path
+  if (showSimilarity) width += columnWidths.similarity
 
   // row gaps + left/right padding
   width += 260
@@ -300,6 +311,7 @@ export function SourcesSampleList({
   isLoading = false,
   playMode = 'normal',
   loopEnabled = false,
+  similarityMode = null,
 }: SourcesSampleListProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -536,8 +548,8 @@ export function SourcesSampleList({
   const selectAllChecked = selectedIds.size === sortedSamples.length && sortedSamples.length > 0
 
   const rowMinWidth = useMemo(
-    () => getRowMinWidth(columnVisibility, columnWidths),
-    [columnVisibility, columnWidths]
+    () => getRowMinWidth(columnVisibility, columnWidths, similarityMode?.enabled),
+    [columnVisibility, columnWidths, similarityMode?.enabled]
   )
 
   if (isLoading) {
@@ -650,6 +662,21 @@ export function SourcesSampleList({
 
             <span className="w-8 sm:w-10 flex-shrink-0 text-xs font-semibold text-slate-400 uppercase text-left">Play</span>
             <span className="w-4 flex-shrink-0" aria-hidden />
+
+            {similarityMode?.enabled && (
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.similarity }}>
+                <button
+                  onClick={() => handleSortClick('similarity')}
+                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
+                    sortField === 'similarity' ? 'text-accent-primary' : 'text-slate-400'
+                  }`}
+                >
+                  Similar
+                  {getSortIcon('similarity')}
+                </button>
+                {renderResizeHandle('similarity')}
+              </div>
+            )}
 
             <div className="relative flex-shrink-0 min-w-0 pl-1" style={{ width: columnWidths.name }}>
               <button
@@ -1034,6 +1061,7 @@ export function SourcesSampleList({
               columnVisibility={columnVisibility}
               columnWidths={columnWidths}
               minWidth={rowMinWidth}
+              showSimilarity={similarityMode?.enabled}
             />
           ))}
         </div>

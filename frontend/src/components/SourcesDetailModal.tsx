@@ -58,7 +58,17 @@ interface SimilarSample {
   }
 }
 
-function SimilarSamplesSection({ sampleId }: { sampleId: number }) {
+function SimilarSamplesSection({
+  sampleId,
+  sampleName,
+  onSelectSample,
+  onFilterBySimilarity,
+}: {
+  sampleId: number
+  sampleName: string
+  onSelectSample?: (id: number) => void
+  onFilterBySimilarity?: (sampleId: number, sampleName: string) => void
+}) {
   const [hoveredSample, setHoveredSample] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -144,10 +154,7 @@ function SimilarSamplesSection({ sampleId }: { sampleId: number }) {
               key={sampleIdNum}
               onMouseEnter={() => handleMouseEnter(sampleIdNum)}
               onMouseLeave={handleMouseLeave}
-              onClick={() => {
-                // Navigate to this sample - will be handled by parent
-                window.location.hash = `sample-${sampleIdNum}`
-              }}
+              onClick={() => onSelectSample?.(sampleIdNum)}
               className={`group relative p-3 rounded-lg border transition-all ${
                 hoveredSample === sampleIdNum
                   ? 'border-accent-primary bg-accent-primary/10 scale-105'
@@ -183,6 +190,15 @@ function SimilarSamplesSection({ sampleId }: { sampleId: number }) {
           )
         })}
       </div>
+      {onFilterBySimilarity && (
+        <button
+          onClick={() => onFilterBySimilarity(sampleId, sampleName)}
+          className="mt-2 w-full px-3 py-2 bg-accent-primary/10 hover:bg-accent-primary/20 text-accent-primary rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+        >
+          <Sparkles size={14} />
+          Show All Similar Samples
+        </button>
+      )}
     </div>
   )
 }
@@ -204,6 +220,8 @@ interface SourcesDetailModalProps {
   onPrevious?: () => void
   hasNext?: boolean
   hasPrevious?: boolean
+  onSelectSample?: (sampleId: number) => void
+  onFilterBySimilarity?: (sampleId: number, sampleName: string) => void
 }
 
 export function SourcesDetailModal({
@@ -217,6 +235,8 @@ export function SourcesDetailModal({
   onAddToFolder,
   onRemoveFromFolder,
   onUpdateName,
+  onSelectSample,
+  onFilterBySimilarity,
   onEdit,
   onTagClick,
   onNext,
@@ -779,7 +799,12 @@ export function SourcesDetailModal({
             </div>
 
             {/* Similar Samples */}
-            <SimilarSamplesSection sampleId={sample.id} />
+            <SimilarSamplesSection
+              sampleId={sample.id}
+              sampleName={sample.name}
+              onSelectSample={onSelectSample}
+              onFilterBySimilarity={onFilterBySimilarity}
+            />
               </>
             )}
 

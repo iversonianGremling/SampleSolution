@@ -24,7 +24,7 @@ function scopeToString(scope: SourceScope): string {
 }
 
 export interface AudioFilterParams {
-  sortBy?: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt'
+  sortBy?: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt' | 'similarity'
   sortOrder?: 'asc' | 'desc'
   minBpm?: number
   maxBpm?: number
@@ -34,6 +34,8 @@ export interface AudioFilterParams {
   dateAddedTo?: string
   dateCreatedFrom?: string
   dateCreatedTo?: string
+  similarTo?: number
+  minSimilarity?: number
 }
 
 export function useScopedSamples(
@@ -68,6 +70,8 @@ export function useScopedSamples(
         dateAddedTo: audioFilters?.dateAddedTo,
         dateCreatedFrom: audioFilters?.dateCreatedFrom,
         dateCreatedTo: audioFilters?.dateCreatedTo,
+        similarTo: audioFilters?.similarTo,
+        minSimilarity: audioFilters?.minSimilarity,
       }),
   })
 }

@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Play, Pause, Heart, Download, ChevronDown, Sparkles, Activity, Disc3 } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Play, Pause, Heart, Download, ChevronDown, Sparkles, Activity, Disc3, Trash2 } from 'lucide-react'
 import type { SliceWithTrackExtended, Tag, Folder, AudioFeatures } from '../types'
-import { getSliceDownloadUrl } from '../api/client'
+import { getSliceDownloadUrl, deleteSlice } from '../api/client'
 import { InstrumentIcon } from './InstrumentIcon'
 import { freqToNoteName } from '../utils/musicTheory'
 import { SliceWaveform, type SliceWaveformRef } from './SliceWaveform'
 import { DrumRackPadPicker } from './DrumRackPadPicker'
+import { ConfirmModal } from './ConfirmModal'
 
 interface SampleDetailsViewProps {
   sample: SliceWithTrackExtended | null
@@ -19,6 +20,9 @@ interface SampleDetailsViewProps {
   onRemoveFromFolder: (folderId: number, sliceId: number) => void
   onUpdateName: (sliceId: number, name: string) => void
   onTagClick?: (tagId: number) => void
+  onSampleDeleted?: (sliceId: number) => void
+  onSelectSample?: (sampleId: number) => void
+  onFilterBySimilarity?: (sampleId: number, sampleName: string) => void
 }
 
 // Helper component to display a feature value
@@ -71,7 +75,17 @@ interface SimilarSample {
   }
 }
 
-function SimilarSamplesSection({ sampleId, onSelectSample }: { sampleId: number; onSelectSample?: (id: number) => void }) {
+function SimilarSamplesSection({
+  sampleId,
+  sampleName,
+  onSelectSample,
+  onFilterBySimilarity,
+}: {
+  sampleId: number
+  sampleName: string
+  onSelectSample?: (id: number) => void
+  onFilterBySimilarity?: (sampleId: number, sampleName: string) => void
+}) {
   const [hoveredSample, setHoveredSample] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -172,6 +186,15 @@ function SimilarSamplesSection({ sampleId, onSelectSample }: { sampleId: number;
           )
         })}
       </div>
+      {onFilterBySimilarity && (
+        <button
+          onClick={() => onFilterBySimilarity(sampleId, sampleName)}
+          className="mt-2 w-full px-3 py-2 bg-accent-primary/10 hover:bg-accent-primary/20 text-accent-primary rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+        >
+          <Sparkles size={14} />
+          Show All Similar Samples
+        </button>
+      )}
     </div>
   )
 }
@@ -180,6 +203,8 @@ export function SampleDetailsView({
   sample,
   allTags,
   folders,
+  onSelectSample,
+  onFilterBySimilarity,
   onToggleFavorite,
   onAddTag,
   onRemoveTag,
@@ -187,12 +212,16 @@ export function SampleDetailsView({
   onRemoveFromFolder,
   onUpdateName,
   onTagClick,
+  onSampleDeleted,
 }: SampleDetailsViewProps) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [isWaveformReady, setIsWaveformReady] = useState(false)
   const [activeTab, setActiveTab] = useState<'details' | 'advanced'>('details')
   const [showPadPicker, setShowPadPicker] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [deleteSourceFile, setDeleteSourceFile] = useState(false)
   const waveformRef = useRef<SliceWaveformRef>(null)
+  const queryClient = useQueryClient()
 
   // Fetch audio features for the advanced tab
   const { data: audioFeatures } = useQuery<AudioFeatures>({
@@ -241,6 +270,24 @@ export function SampleDetailsView({
     link.click()
   }
 
+  const handleDeleteConfirm = async () => {
+    if (!sample) return
+
+    try {
+      await deleteSlice(sample.id, deleteSourceFile)
+      // Invalidate queries to refresh the lists
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['tracks'] })
+      // Close modal
+      setShowDeleteModal(false)
+      // Notify parent
+      onSampleDeleted?.(sample.id)
+    } catch (error) {
+      console.error('Failed to delete sample:', error)
+      alert('Failed to delete sample. Please try again.')
+    }
+  }
+
   const duration = sample.endTime - sample.startTime
   const fundamentalNote = sample.fundamentalFrequency != null ? freqToNoteName(sample.fundamentalFrequency) : null
 
@@ -278,6 +325,13 @@ export function SampleDetailsView({
               title="Send to Drum Rack"
             >
               <Disc3 size={16} />
+            </button>
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              className="p-2 rounded-lg bg-surface-overlay text-slate-400 hover:text-red-400 transition-colors"
+              title="Delete sample"
+            >
+              <Trash2 size={16} />
             </button>
           </div>
         </div>
@@ -384,7 +438,12 @@ export function SampleDetailsView({
             )}
 
             {/* Similar Samples */}
-            <SimilarSamplesSection sampleId={sample.id} />
+            <SimilarSamplesSection
+              sampleId={sample.id}
+              sampleName={sample.name}
+              onSelectSample={onSelectSample}
+              onFilterBySimilarity={onFilterBySimilarity}
+            />
           </>
         )}
 
@@ -426,6 +485,24 @@ export function SampleDetailsView({
         <DrumRackPadPicker
           sample={sample}
           onClose={() => setShowPadPicker(false)}
+        />
+      )}
+
+      {showDeleteModal && (
+        <ConfirmModal
+          title="Delete Sample"
+          message="Are you sure you want to delete this sample? This action cannot be undone."
+          confirmText="Delete"
+          cancelText="Cancel"
+          isDestructive
+          checkboxLabel="Also delete the source file from disk (if accessible)"
+          checkboxDefaultChecked={false}
+          onCheckboxChange={setDeleteSourceFile}
+          onConfirm={handleDeleteConfirm}
+          onCancel={() => {
+            setShowDeleteModal(false)
+            setDeleteSourceFile(false)
+          }}
         />
       )}
     </div>

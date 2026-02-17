@@ -55,6 +55,7 @@ export interface Slice {
   dateCreated?: string | null
   dateModified?: string | null
   pathDisplay?: string | null
+  similarity?: number  // 0-1 range, only present in similarity mode
   subjectiveNormalized?: {
     brightness?: number | null
     noisiness?: number | null

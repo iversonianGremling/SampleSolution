@@ -21,6 +21,9 @@ interface WorkspaceState {
   onRemoveFromFolder: (folderId: number, sliceId: number) => void
   onUpdateName: (sliceId: number, name: string) => void
   onTagClick: (tagId: number) => void
+  onSelectSample: (sampleId: number) => void
+  onFilterBySimilarity: (sampleId: number, sampleName: string) => void
+  onSampleDeleted: (sampleId: number) => void
 }
 
 export function WorkspaceLayout() {
@@ -121,6 +124,9 @@ export function WorkspaceLayout() {
                   onRemoveFromFolder={workspaceState.onRemoveFromFolder}
                   onUpdateName={workspaceState.onUpdateName}
                   onTagClick={workspaceState.onTagClick}
+                  onSelectSample={workspaceState.onSelectSample}
+                  onFilterBySimilarity={workspaceState.onFilterBySimilarity}
+                  onSampleDeleted={workspaceState.onSampleDeleted}
                 />
               ) : null}
           </div>

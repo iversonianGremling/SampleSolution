@@ -33,6 +33,7 @@ export type SourcesListColumnWidthKey =
   | 'dateModified'
   | 'path'
   | 'duration'
+  | 'similarity'
   | 'actions'
 
 export type SourcesListColumnWidths = Record<SourcesListColumnWidthKey, number>
@@ -62,6 +63,7 @@ export const DEFAULT_SOURCES_LIST_COLUMN_WIDTHS: SourcesListColumnWidths = {
   dateModified: 120,
   path: 280,
   duration: 88,
+  similarity: 96,
   actions: 96,
 }
 
@@ -88,6 +90,7 @@ export interface SourcesListColumnVisibility {
   dateCreated: boolean
   dateModified: boolean
   path: boolean
+  similarity: boolean
 }
 
 export const DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY: SourcesListColumnVisibility = {
@@ -113,6 +116,7 @@ export const DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY: SourcesListColumnVisibility
   dateCreated: false,
   dateModified: false,
   path: false,
+  similarity: false,  // Only shown in similarity mode
 }
 
 interface SourcesSampleListRowProps {
@@ -135,6 +139,7 @@ interface SourcesSampleListRowProps {
   columnVisibility?: SourcesListColumnVisibility
   columnWidths?: SourcesListColumnWidths
   minWidth?: number
+  showSimilarity?: boolean
 }
 
 function formatDuration(startTime: number, endTime: number): string {
@@ -195,6 +200,7 @@ export function SourcesSampleListRow({
   columnVisibility = DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY,
   columnWidths = DEFAULT_SOURCES_LIST_COLUMN_WIDTHS,
   minWidth,
+  showSimilarity = false,
 }: SourcesSampleListRowProps) {
   const [isEditingName, setIsEditingName] = useState(false)
   const [editingName, setEditingName] = useState(sample.name)
@@ -318,6 +324,26 @@ export function SourcesSampleListRow({
             <InstrumentIcon type={sample.instrumentType || sample.instrumentPrimary || 'other'} size={14} />
           )}
         </div>
+
+        {showSimilarity && (
+          <div className="flex flex-shrink-0 items-center justify-center" style={{ width: columnWidths.similarity }}>
+            {sample.similarity !== undefined && sample.similarity !== null ? (
+              <div className="flex items-center gap-1.5 w-full px-1">
+                <div className="flex-1 h-1.5 rounded-full bg-surface-base border border-surface-border overflow-hidden">
+                  <div
+                    className="h-full bg-accent-primary transition-all"
+                    style={{ width: `${Math.round(sample.similarity * 100)}%` }}
+                  />
+                </div>
+                <span className="text-[10px] text-slate-300 font-mono w-7 text-right tabular-nums flex-shrink-0">
+                  {Math.round(sample.similarity * 100)}%
+                </span>
+              </div>
+            ) : (
+              <span className="text-xs text-slate-500">-</span>
+            )}
+          </div>
+        )}
 
         <div className="flex-shrink-0 min-w-0 pl-1" style={{ width: columnWidths.name }}>
           {isEditingName ? (

@@ -71,6 +71,9 @@ interface WorkspaceState {
   onRemoveFromFolder: (folderId: number, sliceId: number) => void
   onUpdateName: (sliceId: number, name: string) => void
   onTagClick: (tagId: number) => void
+  onSelectSample: (sampleId: number) => void
+  onFilterBySimilarity: (sampleId: number, sampleName: string) => void
+  onSampleDeleted: (sampleId: number) => void
 }
 
 interface SourcesViewProps {
@@ -101,6 +104,14 @@ export function SourcesView({
   const [isTreeSidebarOpen, setIsTreeSidebarOpen] = useState(true)
   const [isTreeSidebarLocked, setIsTreeSidebarLocked] = useState(true)
   const [isTreeSidebarCollapsed, setIsTreeSidebarCollapsed] = useState(false)
+
+  // Similarity mode state
+  const [similarityMode, setSimilarityMode] = useState<{
+    enabled: boolean
+    referenceSampleId: number
+    referenceSampleName: string
+    minSimilarity: number  // 0-1 range
+  } | null>(null)
 
   // Advanced filters
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -173,8 +184,8 @@ export function SourcesView({
     searchQuery,
     showFavoritesOnly,
     {
-      sortBy: audioFilter.sortBy || undefined,
-      sortOrder: audioFilter.sortOrder,
+      sortBy: audioFilter.sortBy || (similarityMode?.enabled ? 'similarity' : undefined),
+      sortOrder: similarityMode?.enabled ? 'desc' : audioFilter.sortOrder,
       minBpm: audioFilter.minBpm > 0 ? audioFilter.minBpm : undefined,
       maxBpm: audioFilter.maxBpm < 300 ? audioFilter.maxBpm : undefined,
       keys: audioFilter.pitchFilterMode === 'scale' && effectiveKeys.length > 0 ? effectiveKeys : undefined,
@@ -183,6 +194,8 @@ export function SourcesView({
       dateAddedTo: audioFilter.dateAddedTo || undefined,
       dateCreatedFrom: audioFilter.dateCreatedFrom || undefined,
       dateCreatedTo: audioFilter.dateCreatedTo || undefined,
+      similarTo: similarityMode?.enabled ? similarityMode.referenceSampleId : undefined,
+      minSimilarity: similarityMode?.enabled ? similarityMode.minSimilarity : undefined,
     }
   )
   const { data: allTags = [] } = useTags()
@@ -441,6 +454,16 @@ export function SourcesView({
     updateSlice.mutate({ id: sliceId, data: { name } })
   }
 
+  const handleFilterBySimilarity = (sampleId: number, sampleName: string) => {
+    setSimilarityMode({
+      enabled: true,
+      referenceSampleId: sampleId,
+      referenceSampleName: sampleName,
+      minSimilarity: 0.5,  // Default 50% threshold
+    })
+    setViewMode('list')  // Switch to list view for better browsing
+  }
+
   const handleCreateTag = (name: string, color: string) => {
     createTag.mutate({ name, color })
   }
@@ -522,6 +545,14 @@ export function SourcesView({
         onRemoveFromFolder: handleRemoveFromFolder,
         onUpdateName: handleUpdateName,
         onTagClick: handleTagClick,
+        onSelectSample: handleSampleSelect,
+        onFilterBySimilarity: handleFilterBySimilarity,
+        onSampleDeleted: (_sampleId: number) => {
+          // Clear selection when sample is deleted
+          if (onWorkspaceStateChange) {
+            onWorkspaceStateChange(null)
+          }
+        },
       })
     } else {
       // Fallback to old modal behavior
@@ -1197,6 +1228,7 @@ export function SourcesView({
                   isLoading={isSamplesLoading}
                   playMode={playMode}
                   loopEnabled={loopEnabled}
+                  sourceTree={sourceTree}
                 />
               </div>
             ) : viewMode === 'list' ? (
@@ -1210,10 +1242,12 @@ export function SourcesView({
                 onToggleFavorite={handleToggleFavorite}
                 onUpdateName={handleUpdateName}
                 onDelete={handleDeleteSingle}
+                onEditTrack={setEditingTrackId}
                 onTagClick={handleTagClick}
                 isLoading={isSamplesLoading}
                 playMode={playMode}
                 loopEnabled={loopEnabled}
+                sourceTree={sourceTree}
               />
             ) : (
               <SampleSpaceView
@@ -1246,21 +1280,79 @@ export function SourcesView({
                 />
               </div>
             ) : viewMode === 'list' ? (
-              <SourcesSampleList
-                samples={samples}
-                selectedId={selectedSampleId}
-                selectedIds={selectedSampleIds}
-                onSelect={handleSampleSelect}
-                onToggleSelect={handleToggleSelect}
-                onToggleSelectAll={handleToggleSelectAll}
-                onToggleFavorite={handleToggleFavorite}
-                onUpdateName={handleUpdateName}
-                onDelete={handleDeleteSingle}
-                onTagClick={handleTagClick}
-                isLoading={isSamplesLoading}
-                playMode={playMode}
-                loopEnabled={loopEnabled}
-              />
+              <div className="flex flex-col h-full">
+                {similarityMode?.enabled && (
+                  <div className="bg-accent-primary/10 border-l-4 border-accent-primary px-4 py-3 flex items-center justify-between flex-shrink-0">
+                    <div className="flex items-center gap-3">
+                      <Sparkles size={16} className="text-accent-primary" />
+                      <div>
+                        <div className="text-sm font-medium text-white">
+                          Similar to: {similarityMode.referenceSampleName}
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          {samples.length} samples above {Math.round(similarityMode.minSimilarity * 100)}% similarity
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                      {/* Similarity threshold slider */}
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-slate-400">Min Similarity:</label>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={5}
+                          value={Math.round(similarityMode.minSimilarity * 100)}
+                          onChange={(e) => setSimilarityMode({
+                            ...similarityMode,
+                            minSimilarity: parseInt(e.target.value) / 100
+                          })}
+                          className="w-32 h-1 appearance-none bg-surface-border rounded-full cursor-pointer"
+                          style={{
+                            background: `linear-gradient(to right, var(--accent-primary) 0%, var(--accent-primary) ${Math.round(similarityMode.minSimilarity * 100)}%, var(--surface-border) ${Math.round(similarityMode.minSimilarity * 100)}%, var(--surface-border) 100%)`
+                          }}
+                        />
+                        <span className="text-xs text-slate-300 font-mono w-8">
+                          {Math.round(similarityMode.minSimilarity * 100)}%
+                        </span>
+                      </div>
+
+                      {/* Exit button */}
+                      <button
+                        onClick={() => setSimilarityMode(null)}
+                        className="px-3 py-1 text-sm bg-surface-overlay hover:bg-surface-base rounded-lg text-slate-300 hover:text-white transition-colors flex items-center gap-1"
+                      >
+                        <X size={14} />
+                        Exit
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="flex-1 overflow-hidden">
+                  <SourcesSampleList
+                    samples={samples}
+                    selectedId={selectedSampleId}
+                    selectedIds={selectedSampleIds}
+                    onSelect={handleSampleSelect}
+                    onToggleSelect={handleToggleSelect}
+                    onToggleSelectAll={handleToggleSelectAll}
+                    onToggleFavorite={handleToggleFavorite}
+                    onUpdateName={handleUpdateName}
+                    onDelete={handleDeleteSingle}
+                    onTagClick={handleTagClick}
+                    isLoading={isSamplesLoading}
+                    playMode={playMode}
+                    loopEnabled={loopEnabled}
+                    similarityMode={similarityMode?.enabled ? {
+                      enabled: true,
+                      referenceSampleId: similarityMode.referenceSampleId,
+                      referenceSampleName: similarityMode.referenceSampleName,
+                    } : null}
+                  />
+                </div>
+              </div>
             ) : (
               <SampleSpaceView
                 externalFilterState={spaceViewFilterState}
@@ -1295,6 +1387,8 @@ export function SourcesView({
           onPrevious={handlePreviousSample}
           hasNext={hasNextSample}
           hasPrevious={hasPreviousSample}
+          onSelectSample={setSelectedSampleId}
+          onFilterBySimilarity={handleFilterBySimilarity}
         />
       )}
 

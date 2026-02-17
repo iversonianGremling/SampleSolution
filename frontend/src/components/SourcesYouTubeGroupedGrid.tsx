@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Play, Pause, Heart, ChevronDown, ChevronRight, GripVertical, Scissors } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
-import type { SliceWithTrackExtended } from '../types'
+import type { SliceWithTrackExtended, SourceTree } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
@@ -13,6 +13,7 @@ interface VideoGroup {
   youtubeId: string
   thumbnailUrl?: string
   slices: SliceWithTrackExtended[]
+  sliceCount: number
 }
 
 interface SourcesYouTubeGroupedGridProps {
@@ -28,6 +29,7 @@ interface SourcesYouTubeGroupedGridProps {
   isLoading?: boolean
   playMode?: PlayMode
   loopEnabled?: boolean
+  sourceTree?: SourceTree | undefined
 }
 
 export function SourcesYouTubeGroupedGrid({
@@ -43,6 +45,7 @@ export function SourcesYouTubeGroupedGrid({
   isLoading = false,
   playMode = 'normal',
   loopEnabled: _loopEnabled = false,
+  sourceTree,
 }: SourcesYouTubeGroupedGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -64,23 +67,53 @@ export function SourcesYouTubeGroupedGrid({
     }
   }, [])
 
-  // Group samples by video
-  const videoGroups: VideoGroup[] = Object.values(
-    samples.reduce((acc, sample) => {
-      const trackId = sample.trackId
-      if (!acc[trackId]) {
-        acc[trackId] = {
-          trackId,
-          trackTitle: sample.track.title,
-          youtubeId: sample.track.youtubeId,
-          thumbnailUrl: `https://i.ytimg.com/vi/${sample.track.youtubeId}/mqdefault.jpg`,
-          slices: [],
+  // Group samples by video - use sourceTree if available to show all videos
+  const videoGroups: VideoGroup[] = (() => {
+    if (sourceTree?.youtube) {
+      // Create groups from source tree to include videos with 0 samples
+      const samplesByTrack = samples.reduce((acc, sample) => {
+        if (!acc[sample.trackId]) {
+          acc[sample.trackId] = []
         }
-      }
-      acc[trackId].slices.push(sample)
-      return acc
-    }, {} as Record<number, VideoGroup>)
-  )
+        acc[sample.trackId].push(sample)
+        return acc
+      }, {} as Record<number, SliceWithTrackExtended[]>)
+
+      return sourceTree.youtube.map(video => {
+        const videoSamples = samplesByTrack[video.id] || []
+        // Try to get track info from first sample if available
+        const firstSample = videoSamples[0]
+        return {
+          trackId: video.id,
+          trackTitle: video.title,
+          youtubeId: firstSample?.track.youtubeId || '',
+          thumbnailUrl: video.thumbnailUrl,
+          slices: videoSamples,
+          sliceCount: video.sliceCount,
+        }
+      })
+    }
+
+    // Fallback to old behavior if sourceTree is not available
+    return Object.values(
+      samples.reduce((acc, sample) => {
+        const trackId = sample.trackId
+        if (!acc[trackId]) {
+          acc[trackId] = {
+            trackId,
+            trackTitle: sample.track.title,
+            youtubeId: sample.track.youtubeId,
+            thumbnailUrl: `https://i.ytimg.com/vi/${sample.track.youtubeId}/mqdefault.jpg`,
+            slices: [],
+            sliceCount: 0,
+          }
+        }
+        acc[trackId].slices.push(sample)
+        acc[trackId].sliceCount = acc[trackId].slices.length
+        return acc
+      }, {} as Record<number, VideoGroup>)
+    )
+  })()
 
   // Auto-expand all videos on mount
   useEffect(() => {
@@ -280,7 +313,7 @@ export function SourcesYouTubeGroupedGrid({
     )
   }
 
-  if (samples.length === 0) {
+  if (samples.length === 0 && videoGroups.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-slate-400">
         <p className="text-lg">No samples found</p>
@@ -310,7 +343,7 @@ export function SourcesYouTubeGroupedGrid({
           </>
         )}
         <span className="min-w-0 flex-1 truncate text-sm text-slate-400">
-          {videoGroups.length} video{videoGroups.length !== 1 ? 's' : ''}, {samples.length} slice{samples.length !== 1 ? 's' : ''}
+          {videoGroups.length} video{videoGroups.length !== 1 ? 's' : ''}{samples.length > 0 && `, ${samples.length} slice${samples.length !== 1 ? 's' : ''}`}
         </span>
       </div>
 
@@ -354,10 +387,20 @@ export function SourcesYouTubeGroupedGrid({
               {/* Video header */}
               <div className="flex items-center gap-2 sm:gap-3 p-2 sm:p-3 hover:bg-surface-base transition-colors">
                 <button
-                  onClick={() => toggleVideoExpanded(group.trackId)}
+                  onClick={() => {
+                    if (group.sliceCount > 0) {
+                      toggleVideoExpanded(group.trackId)
+                    } else if (onEditTrack) {
+                      onEditTrack(group.trackId)
+                    }
+                  }}
                   className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0"
                 >
-                  {isExpanded ? <ChevronDown size={18} className="text-slate-400" /> : <ChevronRight size={18} className="text-slate-400" />}
+                  {group.sliceCount > 0 ? (
+                    isExpanded ? <ChevronDown size={18} className="text-slate-400" /> : <ChevronRight size={18} className="text-slate-400" />
+                  ) : (
+                    <div className="w-[18px]" />
+                  )}
 
                   {/* YouTube thumbnail */}
                   {group.thumbnailUrl && (
@@ -370,7 +413,10 @@ export function SourcesYouTubeGroupedGrid({
 
                   <div className="flex-1 min-w-0 text-left">
                     <p className="text-xs sm:text-sm font-medium text-white truncate">{group.trackTitle}</p>
-                    <p className="text-[10px] sm:text-xs text-slate-400 mt-0.5 truncate">{group.slices.length} slice{group.slices.length !== 1 ? 's' : ''}</p>
+                    <p className={`text-[10px] sm:text-xs mt-0.5 truncate ${group.sliceCount === 0 ? 'text-slate-500' : 'text-slate-400'}`}>
+                      {group.sliceCount} slice{group.sliceCount !== 1 ? 's' : ''}
+                      {group.sliceCount === 0 && onEditTrack && <span className="ml-1 text-slate-500">(click to cut)</span>}
+                    </p>
                   </div>
                 </button>
 

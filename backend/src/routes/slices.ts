@@ -360,14 +360,16 @@ router.post('/slices/:id/render', renderUpload.single('audio'), async (req, res)
 //   tags: comma-separated tag IDs (optional)
 //   search: search term (optional)
 //   favorites: 'true' to show only favorites (optional)
-//   sortBy: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt' (optional)
-//   sortOrder: 'asc' | 'desc' (optional, default: 'asc')
+//   sortBy: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt' | 'similarity' (optional)
+//   sortOrder: 'asc' | 'desc' (optional, default: 'asc', or 'desc' if similarTo is provided)
 //   minBpm: minimum BPM (optional)
 //   maxBpm: maximum BPM (optional)
 //   keys: comma-separated key names (optional, e.g., 'C major,D minor')
 //   notes: comma-separated note names for fundamental frequency filter (optional, e.g., 'C,D,E')
 //   dateAddedFrom/dateAddedTo: added-date range filter in YYYY-MM-DD (optional)
 //   dateCreatedFrom/dateCreatedTo: source-file creation-date range filter in YYYY-MM-DD (optional)
+//   similarTo: slice ID to find similar samples (optional)
+//   minSimilarity: minimum similarity threshold 0-1 (optional, default: 0.5)
 router.get('/sources/samples', async (req, res) => {
   try {
     const {
@@ -385,6 +387,8 @@ router.get('/sources/samples', async (req, res) => {
       dateAddedTo,
       dateCreatedFrom,
       dateCreatedTo,
+      similarTo,
+      minSimilarity,
     } = req.query as {
       scope?: string
       tags?: string
@@ -400,6 +404,8 @@ router.get('/sources/samples', async (req, res) => {
       dateAddedTo?: string
       dateCreatedFrom?: string
       dateCreatedTo?: string
+      similarTo?: string
+      minSimilarity?: string
     }
 
     const dateAddedFromTs = parseDateFilterValue(dateAddedFrom, 'start')
@@ -744,13 +750,83 @@ router.get('/sources/samples', async (req, res) => {
     // Keep payload unique by slice id after all post-filters.
     filteredSlices = Array.from(new Map(filteredSlices.map((slice) => [slice.id, slice])).values())
 
-    // Sorting
-    if (sortBy) {
+    // Similarity filter and calculation
+    let similarityScores = new Map<number, number>()
+    if (similarTo) {
+      const similarToId = parseInt(similarTo, 10)
+      const minSimilarityValue = minSimilarity ? parseFloat(minSimilarity) : 0.5
+
+      if (!isNaN(similarToId)) {
+        const targetFeatures = await db
+          .select()
+          .from(schema.audioFeatures)
+          .where(eq(schema.audioFeatures.sliceId, similarToId))
+          .limit(1)
+
+        if (targetFeatures.length > 0) {
+          const target = targetFeatures[0]
+          const sliceIds = filteredSlices.map(s => s.id).filter(id => id !== similarToId)
+
+          if (sliceIds.length > 0) {
+            if (target.yamnetEmbeddings) {
+              // Best quality: use 1024-dim YAMNet embeddings
+              const targetEmbeddings = JSON.parse(target.yamnetEmbeddings) as number[]
+              const embeddingsResults = await db
+                .select({
+                  sliceId: schema.audioFeatures.sliceId,
+                  yamnetEmbeddings: schema.audioFeatures.yamnetEmbeddings,
+                })
+                .from(schema.audioFeatures)
+                .where(
+                  and(
+                    inArray(schema.audioFeatures.sliceId, sliceIds),
+                    isNotNull(schema.audioFeatures.yamnetEmbeddings)
+                  )
+                )
+              for (const result of embeddingsResults) {
+                if (result.yamnetEmbeddings) {
+                  const embeddings = JSON.parse(result.yamnetEmbeddings) as number[]
+                  similarityScores.set(result.sliceId, cosineSimilarity(targetEmbeddings, embeddings))
+                }
+              }
+            } else {
+              // Fallback: cosine similarity over normalised scalar audio features
+              const targetVec = buildScalarFeatureVector(target)
+              if (targetVec) {
+                const candidateFeatures = await db
+                  .select()
+                  .from(schema.audioFeatures)
+                  .where(inArray(schema.audioFeatures.sliceId, sliceIds))
+                for (const f of candidateFeatures) {
+                  const candidateVec = buildScalarFeatureVector(f)
+                  if (candidateVec) {
+                    similarityScores.set(f.sliceId, cosineSimilarity(targetVec, candidateVec))
+                  }
+                }
+              }
+            }
+
+            // Filter by minimum similarity threshold
+            filteredSlices = filteredSlices.filter(slice => {
+              if (slice.id === similarToId) return false
+              const similarity = similarityScores.get(slice.id)
+              return similarity !== undefined && similarity >= minSimilarityValue
+            })
+          }
+        }
+      }
+    }
+
+    // Sorting - default to similarity DESC when in similarity mode
+    const effectiveSortBy = sortBy || (similarTo ? 'similarity' : undefined)
+    const effectiveSortOrder = sortOrder || (similarTo ? 'desc' : 'asc')
+
+    if (effectiveSortBy) {
       filteredSlices.sort((a, b) => {
         let aVal: any
         let bVal: any
 
-        switch (sortBy) {
+        switch (effectiveSortBy) {
           case 'artist':
             aVal = (a.trackArtist ?? '').toLowerCase()
             bVal = (b.trackArtist ?? '').toLowerCase()
@@ -857,6 +933,10 @@ router.get('/sources/samples', async (req, res) => {
             aVal = a.endTime - a.startTime
             bVal = b.endTime - b.startTime
             break
+          case 'similarity':
+            aVal = similarityScores.get(a.id) ?? -1
+            bVal = similarityScores.get(b.id) ?? -1
+            break
           case 'createdAt':
           default:
             aVal = a.createdAt
@@ -869,8 +949,8 @@ router.get('/sources/samples', async (req, res) => {
         if (bVal === null || bVal === undefined || bVal === -1) return -1
 
         // Compare values
-        if (aVal < bVal) return sortOrder === 'asc' ? -1 : 1
-        if (aVal > bVal) return sortOrder === 'asc' ? 1 : -1
+        if (aVal < bVal) return effectiveSortOrder === 'asc' ? -1 : 1
+        if (aVal > bVal) return effectiveSortOrder === 'asc' ? 1 : -1
         return 0
       })
     }
@@ -990,6 +1070,7 @@ router.get('/sources/samples', async (req, res) => {
       brightness: slice.brightness,
       loudness: slice.loudness,
       roughness: slice.roughness,
+      similarity: similarityScores.get(slice.id),
       track: {
         title: slice.trackTitle,
         youtubeId: slice.trackYoutubeId,
@@ -1388,6 +1469,7 @@ router.put('/slices/:id', async (req, res) => {
 // Delete slice
 router.delete('/slices/:id', async (req, res) => {
   const id = parseInt(req.params.id)
+  const deleteSource = req.query.deleteSource === 'true'
 
   try {
     const slice = await db
@@ -1400,14 +1482,19 @@ router.delete('/slices/:id', async (req, res) => {
       return res.status(404).json({ error: 'Slice not found' })
     }
 
-    // Delete file
-    if (slice[0].filePath) {
-      await fs.unlink(slice[0].filePath).catch(() => {})
+    // Delete file if requested and it exists
+    if (deleteSource && slice[0].filePath) {
+      try {
+        await fs.unlink(slice[0].filePath)
+      } catch (err: any) {
+        // File might not exist or we don't have permission
+        console.warn('Could not delete source file:', err.message)
+      }
     }
 
     await db.delete(schema.slices).where(eq(schema.slices.id, id))
 
-    res.json({ success: true })
+    res.json({ success: true, deletedSource: deleteSource && slice[0].filePath ? true : false })
   } catch (error) {
     console.error('Error deleting slice:', error)
     res.status(500).json({ error: 'Failed to delete slice' })
@@ -2263,6 +2350,58 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (magA * magB)
 }
 
+// Build a normalized feature vector from scalar audio features.
+// Used as fallback when YAMNet embeddings are unavailable.
+function buildScalarFeatureVector(f: Record<string, any>): number[] | null {
+  const vec: number[] = []
+  let populated = 0
+
+  const push = (val: any, scale: number, weight = 1) => {
+    const n = typeof val === 'number' && Number.isFinite(val) ? val : null
+    vec.push(n !== null ? Math.min(Math.max(n / scale, -2), 2) * weight : 0)
+    if (n !== null) populated++
+  }
+
+  // Core spectral features – present at every analysis level
+  push(f.spectralCentroid, 8000, 2)
+  push(f.spectralRolloff, 12000, 1.5)
+  push(f.spectralBandwidth, 4000, 1)
+  push(f.spectralFlux, 1, 1)
+  push(f.spectralFlatness, 1, 1)
+  push(f.zeroCrossingRate, 1, 1.5)
+  push(f.rmsEnergy, 1, 1.5)
+  push(f.attackTime, 1, 1)
+  push(f.kurtosis, 50, 0.5)
+
+  // Perceptual / Phase-1 features (0-1 normalised, present after standard analysis)
+  push(f.brightness, 1, 2)
+  push(f.warmth, 1, 2)
+  push(f.hardness, 1, 1.5)
+  push(f.sharpness, 1, 1)
+
+  // Rhythmic / pitch
+  push(f.bpm, 200, 1.5)
+  push(f.fundamentalFrequency, 2000, 1)
+
+  // MFCC coefficients 1-12 (skip 0 – encodes loudness, already covered)
+  if (f.mfccMean) {
+    try {
+      const mfcc = JSON.parse(f.mfccMean) as number[]
+      for (let i = 1; i <= 12; i++) {
+        const v = mfcc[i]
+        vec.push(typeof v === 'number' && Number.isFinite(v) ? v / 30 : 0)
+        if (typeof v === 'number' && Number.isFinite(v)) populated++
+      }
+    } catch {
+      for (let k = 0; k < 12; k++) vec.push(0)
+    }
+  } else {
+    for (let k = 0; k < 12; k++) vec.push(0)
+  }
+
+  return populated >= 3 ? vec : null
+}
+
 // GET /api/slices/:id/similar - Find similar samples based on YAMNet embeddings
 router.get('/slices/:id/similar', async (req, res) => {
   const sliceId = Number.parseInt(req.params.id, 10)
@@ -2281,39 +2420,58 @@ router.get('/slices/:id/similar', async (req, res) => {
       .limit(1)
       
 
-    if (targetFeatures.length === 0 || !targetFeatures[0].yamnetEmbeddings) {
-      return res.status(404).json({
-        error: 'No YAMNet embeddings found for this slice. Try re-analyzing with advanced level.'
-      })
+    if (targetFeatures.length === 0) {
+      return res.json([])
     }
 
-    const targetEmbeddings = JSON.parse(targetFeatures[0].yamnetEmbeddings) as number[]
+    const target = targetFeatures[0]
+    let similarities: { sliceId: number; similarity: number }[] = []
 
-    // Get all other slices with embeddings
-    const allFeatures = await db
-      .select({
-        sliceId: schema.audioFeatures.sliceId,
-        yamnetEmbeddings: schema.audioFeatures.yamnetEmbeddings,
-      })
-      .from(schema.audioFeatures)
-      .where(sql`${schema.audioFeatures.sliceId} != ${sliceId} AND ${schema.audioFeatures.yamnetEmbeddings} IS NOT NULL`)
+    if (target.yamnetEmbeddings) {
+      // Best quality: use 1024-dim YAMNet embeddings
+      const targetEmbeddings = JSON.parse(target.yamnetEmbeddings) as number[]
+      const allFeatures = await db
+        .select({
+          sliceId: schema.audioFeatures.sliceId,
+          yamnetEmbeddings: schema.audioFeatures.yamnetEmbeddings,
+        })
+        .from(schema.audioFeatures)
+        .where(sql`${schema.audioFeatures.sliceId} != ${sliceId} AND ${schema.audioFeatures.yamnetEmbeddings} IS NOT NULL`)
 
-    // Calculate similarity scores
-    const similarities = allFeatures
-      .map(f => {
-        const candidateSliceId = Number(f.sliceId)
-        if (Number.isNaN(candidateSliceId)) {
-          return null
-        }
+      similarities = allFeatures
+        .map(f => {
+          const candidateSliceId = Number(f.sliceId)
+          if (Number.isNaN(candidateSliceId)) return null
+          const embeddings = JSON.parse(f.yamnetEmbeddings!) as number[]
+          return { sliceId: candidateSliceId, similarity: cosineSimilarity(targetEmbeddings, embeddings) }
+        })
+        .filter((s): s is { sliceId: number; similarity: number } => Boolean(s))
+        .filter(s => s.sliceId !== sliceId && s.similarity > 0.5)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, limit)
+    } else {
+      // Fallback: cosine similarity over normalised scalar audio features
+      const targetVec = buildScalarFeatureVector(target)
+      if (targetVec) {
+        const allFeatures = await db
+          .select()
+          .from(schema.audioFeatures)
+          .where(sql`${schema.audioFeatures.sliceId} != ${sliceId}`)
 
-        const embeddings = JSON.parse(f.yamnetEmbeddings!) as number[]
-        const similarity = cosineSimilarity(targetEmbeddings, embeddings)
-        return { sliceId: candidateSliceId, similarity }
-      })
-      .filter((s): s is { sliceId: number; similarity: number } => Boolean(s))
-      .filter(s => s.sliceId !== sliceId && s.similarity > 0.5) // Exclude current sample + only return reasonably similar samples
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit)
+        similarities = allFeatures
+          .map(f => {
+            const candidateSliceId = Number(f.sliceId)
+            if (Number.isNaN(candidateSliceId)) return null
+            const candidateVec = buildScalarFeatureVector(f)
+            if (!candidateVec) return null
+            return { sliceId: candidateSliceId, similarity: cosineSimilarity(targetVec, candidateVec) }
+          })
+          .filter((s): s is { sliceId: number; similarity: number } => Boolean(s))
+          .filter(s => s.sliceId !== sliceId && s.similarity > 0.5)
+          .sort((a, b) => b.similarity - a.similarity)
+          .slice(0, limit)
+      }
+    }
 
     // Get slice details for similar samples
     const similarSliceIds = Array.from(new Set(similarities.map(s => s.sliceId)))
