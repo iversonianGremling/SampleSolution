@@ -8,6 +8,8 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
+import { isReducibleDimensionTag } from '../constants/reducibleTags.js'
+import { extractCategorizedTagsFromText } from './ollama.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -22,6 +24,60 @@ const PYTHON_EXECUTABLE = process.env.PYTHON_PATH || VENV_PYTHON
  * Analysis level type
  */
 export type AnalysisLevel = 'advanced'
+export type TagCategory = 'type' | 'energy' | 'instrument' | 'general' | 'filename'
+export type SemanticTagCategory = Exclude<TagCategory, 'filename'>
+
+export interface ParsedFilenameTag {
+  tag: string
+  confidence: number
+  source: 'filename' | 'folder'
+  category: SemanticTagCategory
+}
+
+const GENERIC_PERCUSSION_TAGS = new Set([
+  'percussion',
+  'perc',
+  'drum',
+  'drums',
+])
+
+const SPECIFIC_PERCUSSION_TAGS = new Set([
+  'kick',
+  '808',
+  '909',
+  'bd',
+  'bassdrum',
+  'snare',
+  'sd',
+  'snr',
+  'clap',
+  'clp',
+  'rim',
+  'rimshot',
+  'hihat',
+  'hh',
+  'hat',
+  'ride',
+  'crash',
+  'cymbal',
+  'tom',
+  'shaker',
+  'tambourine',
+  'cowbell',
+  'conga',
+  'bongo',
+  'woodblock',
+  'timbales',
+  'maraca',
+  'maracas',
+])
+
+function removeRedundantPercussionFamilyTags(tags: ParsedFilenameTag[]): ParsedFilenameTag[] {
+  const hasSpecificPercussionTag = tags.some((entry) => SPECIFIC_PERCUSSION_TAGS.has(entry.tag))
+  if (!hasSpecificPercussionTag) return tags
+
+  return tags.filter((entry) => !GENERIC_PERCUSSION_TAGS.has(entry.tag))
+}
 
 /**
  * Audio features extracted from analysis
@@ -771,26 +827,84 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
 export function parseFilenameTags(
   filename: string,
   folderPath: string | null
-): Array<{ tag: string; confidence: number; source: 'filename' | 'folder'; category: string }> {
-  const tags: Array<{ tag: string; confidence: number; source: 'filename' | 'folder'; category: string }> = []
+): ParsedFilenameTag[] {
+  const byTag = new Map<string, ParsedFilenameTag>()
 
-  const KEYWORD_CATEGORIES: Record<string, string[]> = {
-    percussion: ['kick', '808', 'bd', 'bassdrum', 'snare', 'sd', 'snr', 'clap', 'clp', 'rim', 'rimshot', 'hihat', 'hh', 'hat', 'hi-hat', 'ride', 'crash', 'perc', 'percussion', 'tom', 'shaker', 'tambourine', 'cowbell', 'conga', 'bongo', 'woodblock'],
-    melodic: ['piano', 'keys', 'rhodes', 'synth', 'synthesizer', 'pad', 'lead', 'pluck', 'chord', 'chrd', 'stab', 'arp', 'arpeggio', 'bass', 'sub', 'guitar', 'gtr', 'strings', 'violin', 'cello', 'brass', 'horn', 'flute', 'sax', 'organ', 'bell', 'marimba', 'vibes'],
-    vocal: ['vocal', 'vox', 'voice', 'acapella', 'spoken', 'chant', 'choir', 'adlib'],
-    fx: ['riser', 'rise', 'sweep', 'impact', 'hit', 'noise', 'texture', 'atmosphere', 'atmos', 'ambience', 'foley', 'whoosh', 'boom', 'swell', 'transition', 'downlifter', 'uplifter'],
-    processing: ['tape', 'vinyl', 'lo-fi', 'lofi', 'distorted', 'saturated', 'filtered', 'processed', 'dry', 'wet', 'reverb', 'delay', 'compressed'],
-    character: ['dirty', 'clean', 'analog', 'analogue', 'digital', 'vintage', 'modern', 'fat', 'thin', 'crispy'],
-    type: ['loop', 'beat', 'groove', 'pattern', 'one-shot', 'oneshot', 'one_shot', 'hit', 'shot', 'single', 'fill', 'break', 'top'],
+  const KEYWORD_CATEGORIES: Record<string, { keywords: string[]; category: SemanticTagCategory }> = {
+    percussion: {
+      category: 'instrument',
+      keywords: [
+        'kick', '808', '909', 'bd', 'bassdrum', 'snare', 'sd', 'snr', 'clap', 'clp',
+        'rim', 'rimshot', 'hihat', 'hh', 'hat', 'ride', 'crash', 'perc', 'percussion',
+        'tom', 'shaker', 'tambourine', 'cowbell', 'conga', 'bongo', 'woodblock',
+      ],
+    },
+    melodic: {
+      category: 'instrument',
+      keywords: [
+        'piano', 'keys', 'rhodes', 'synth', 'synthesizer', 'pad', 'lead', 'pluck',
+        'chord', 'chrd', 'stab', 'arp', 'arpeggio', 'bass', 'sub', 'guitar', 'gtr',
+        'strings', 'violin', 'cello', 'brass', 'horn', 'flute', 'sax', 'organ',
+        'bell', 'marimba', 'vibes',
+      ],
+    },
+    vocal: {
+      category: 'instrument',
+      keywords: ['vocal', 'vox', 'voice', 'acapella', 'spoken', 'chant', 'choir', 'adlib'],
+    },
+    fx: {
+      category: 'instrument',
+      keywords: [
+        'fx', 'riser', 'rise', 'sweep', 'impact', 'hit', 'noise', 'texture', 'atmosphere',
+        'atmos', 'ambience', 'foley', 'whoosh', 'boom', 'swell', 'transition',
+        'downlifter', 'uplifter',
+      ],
+    },
+    processing: {
+      category: 'general',
+      keywords: [
+        'tape', 'vinyl', 'lofi', 'lo-fi', 'distorted', 'saturated', 'filtered',
+        'processed', 'dry', 'wet', 'reverb', 'delay', 'compressed',
+      ],
+    },
+    character: {
+      category: 'energy',
+      keywords: ['dirty', 'clean', 'analog', 'analogue', 'digital', 'vintage', 'modern', 'fat', 'thin', 'crispy'],
+    },
+    type: {
+      category: 'type',
+      keywords: ['loop', 'beat', 'groove', 'pattern', 'one-shot', 'oneshot', 'one_shot', 'hit', 'shot', 'single', 'fill', 'break', 'top'],
+    },
   }
 
   function tokenize(str: string): string[] {
-    return str
+    const tokens = str
       .replace(/([a-z])([A-Z])/g, '$1 $2')
       .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
       .split(/[_\-\s.]+/)
       .map(t => t.toLowerCase())
       .filter(t => t.length > 1)
+
+    const lower = str.toLowerCase()
+    if (lower.includes('oneshot') || lower.includes('one_shot') || lower.includes('one-shot')) {
+      tokens.push('oneshot')
+    }
+    if (lower.includes('one shot')) {
+      tokens.push('oneshot')
+    }
+    if (lower.includes('lofi') || lower.includes('lo-fi')) {
+      tokens.push('lofi')
+    }
+
+    return tokens
+  }
+
+  function addTag(entry: ParsedFilenameTag): void {
+    if (isReducibleDimensionTag(entry.tag)) return
+    const existing = byTag.get(entry.tag)
+    if (!existing || entry.confidence > existing.confidence) {
+      byTag.set(entry.tag, entry)
+    }
   }
 
   function matchTokens(tokens: string[], source: 'filename' | 'folder') {
@@ -798,10 +912,10 @@ export function parseFilenameTags(
     const seen = new Set<string>()
 
     for (const token of tokens) {
-      for (const [_category, keywords] of Object.entries(KEYWORD_CATEGORIES)) {
+      for (const { keywords, category } of Object.values(KEYWORD_CATEGORIES)) {
         if (keywords.includes(token) && !seen.has(token)) {
           seen.add(token)
-          tags.push({ tag: token, confidence, source, category: 'filename' })
+          addTag({ tag: token, confidence, source, category })
         }
       }
     }
@@ -817,36 +931,60 @@ export function parseFilenameTags(
     }
   }
 
-  return tags
+  return removeRedundantPercussionFamilyTags(Array.from(byTag.values()))
+    .sort((a, b) => b.confidence - a.confidence)
 }
 
-const DEPRECATED_TEMPO_TAGS = new Set([
-  'slow',
-  'fast',
-  'uptempo',
-  'downtempo',
-  'midtempo',
-  '60-80bpm',
-  '80-100bpm',
-  '100-120bpm',
-  '120-140bpm',
-  '140+bpm',
-])
+/**
+ * Parse filename tags with Ollama classification first, then fallback to heuristics.
+ * Always returns semantic categories (never "filename").
+ */
+export async function parseFilenameTagsSmart(
+  filename: string,
+  folderPath: string | null
+): Promise<ParsedFilenameTag[]> {
+  const heuristicTags = parseFilenameTags(filename, folderPath)
 
-const DEPRECATED_SPECTRAL_TAGS = new Set([
-  'bright',
-  'dark',
-  'mid-range',
-  'midrange',
-  'bass-heavy',
-  'high-freq',
-  'noisy',
-  'smooth',
-])
+  let ollamaTags: Awaited<ReturnType<typeof extractCategorizedTagsFromText>> = []
+  try {
+    ollamaTags = await extractCategorizedTagsFromText({
+      filename,
+      folderPath,
+      maxTags: 10,
+    })
+  } catch {
+    ollamaTags = []
+  }
 
-function isDeprecatedTempoOrSpectralTag(tagName: string): boolean {
-  const lowerTag = tagName.trim().toLowerCase()
-  return lowerTag.includes('bpm') || DEPRECATED_TEMPO_TAGS.has(lowerTag) || DEPRECATED_SPECTRAL_TAGS.has(lowerTag)
+  if (ollamaTags.length === 0) {
+    return heuristicTags
+  }
+
+  const merged = new Map<string, ParsedFilenameTag>()
+  for (const tag of heuristicTags) {
+    merged.set(tag.tag, tag)
+  }
+
+  for (const ollamaTag of ollamaTags) {
+    const normalizedTag = ollamaTag.tag.trim().toLowerCase()
+    if (!normalizedTag) continue
+    if (isReducibleDimensionTag(normalizedTag)) continue
+
+    const candidate: ParsedFilenameTag = {
+      tag: normalizedTag,
+      confidence: Math.max(0.6, Math.min(1, ollamaTag.confidence)),
+      source: 'filename',
+      category: ollamaTag.category,
+    }
+
+    const existing = merged.get(normalizedTag)
+    if (!existing || candidate.confidence > existing.confidence) {
+      merged.set(normalizedTag, candidate)
+    }
+  }
+
+  return removeRedundantPercussionFamilyTags(Array.from(merged.values()))
+    .sort((a, b) => b.confidence - a.confidence)
 }
 
 /**
@@ -861,7 +999,7 @@ export function featuresToTags(features: AudioFeatures): string[] {
         features.suggestedTags
           .map((tag) => tag.trim().toLowerCase())
           .filter((tag) => tag.length > 0)
-          .filter((tag) => !isDeprecatedTempoOrSpectralTag(tag))
+          .filter((tag) => !isReducibleDimensionTag(tag))
       )
     )
   }
@@ -886,41 +1024,47 @@ export function featuresToTags(features: AudioFeatures): string[] {
     .forEach((p) => tags.push(p.name))
 
   // Return unique tags (preserving order)
-  return Array.from(new Set(tags)).filter((tag) => !isDeprecatedTempoOrSpectralTag(tag))
+  return Array.from(new Set(tags)).filter((tag) => !isReducibleDimensionTag(tag))
 }
 
 /**
  * Get tag metadata (color and category based on tag name)
  */
 export function getTagMetadata(
-  tagName: string
-): { color: string; category: 'type' | 'energy' | 'instrument' | 'general' | 'filename' } {
+  tagName: string,
+  preferredCategory?: TagCategory
+): { color: string; category: TagCategory } {
   const lowerTag = tagName.toLowerCase()
 
   // Category determination
-  let category: 'type' | 'energy' | 'instrument' | 'general' | 'filename' =
-    'general'
+  let category: TagCategory = preferredCategory ?? 'general'
 
-  if (
-    ['punchy', 'soft', 'aggressive', 'ambient', 'dynamic', 'compressed'].includes(lowerTag)
-  ) {
-    category = 'energy'
-  } else if (
-    [
-      'kick',
-      'snare',
-      'hihat',
-      'bass',
-      'synth',
-      'guitar',
-      'piano',
-      'vocal',
-      'percussion',
-    ].includes(lowerTag)
-  ) {
-    category = 'instrument'
-  } else if (['one-shot', 'loop'].includes(lowerTag)) {
-    category = 'type'
+  if (!preferredCategory) {
+    if (
+      ['punchy', 'soft', 'aggressive', 'ambient', 'dynamic', 'compressed', 'fat', 'thin'].includes(lowerTag)
+    ) {
+      category = 'energy'
+    } else if (
+      [
+        'kick',
+        'snare',
+        'hihat',
+        'hat',
+        'tom',
+        'clap',
+        'perc',
+        'bass',
+        'synth',
+        'guitar',
+        'piano',
+        'vocal',
+        'percussion',
+      ].includes(lowerTag)
+    ) {
+      category = 'instrument'
+    } else if (['one-shot', 'oneshot', 'one_shot', 'loop'].includes(lowerTag)) {
+      category = 'type'
+    }
   }
 
   // Color scheme by category

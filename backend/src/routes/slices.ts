@@ -18,7 +18,7 @@ import {
   featuresToTags,
   getTagMetadata,
   storeAudioFeatures,
-  parseFilenameTags,
+  parseFilenameTagsSmart,
 } from '../services/audioAnalysis.js'
 
 const router = Router()
@@ -473,6 +473,7 @@ router.post('/slices/:id/render', renderUpload.single('audio'), async (req, res)
 //   notes: comma-separated note names for fundamental frequency filter (optional, e.g., 'C,D,E')
 //   dateAddedFrom/dateAddedTo: added-date range filter in YYYY-MM-DD (optional)
 //   dateCreatedFrom/dateCreatedTo: source-file creation-date range filter in YYYY-MM-DD (optional)
+//   dateUpdatedFrom/dateUpdatedTo: source-file modified-date range filter in YYYY-MM-DD (optional)
 //   similarTo: slice ID to find similar samples (optional)
 //   minSimilarity: minimum similarity threshold 0-1 (optional, default: 0.5)
 //   <dimension>Min/<dimension>Max: normalized dimension ranges, each 0-1
@@ -494,6 +495,8 @@ router.get('/sources/samples', async (req, res) => {
       dateAddedTo,
       dateCreatedFrom,
       dateCreatedTo,
+      dateUpdatedFrom,
+      dateUpdatedTo,
       similarTo,
       minSimilarity,
       brightnessMin,
@@ -533,6 +536,8 @@ router.get('/sources/samples', async (req, res) => {
       dateAddedTo?: string
       dateCreatedFrom?: string
       dateCreatedTo?: string
+      dateUpdatedFrom?: string
+      dateUpdatedTo?: string
       similarTo?: string
       minSimilarity?: string
       brightnessMin?: string
@@ -584,6 +589,8 @@ router.get('/sources/samples', async (req, res) => {
     const dateAddedToTs = parseDateFilterValue(dateAddedTo, 'end')
     const dateCreatedFromTs = parseDateFilterValue(dateCreatedFrom, 'start')
     const dateCreatedToTs = parseDateFilterValue(dateCreatedTo, 'end')
+    const dateUpdatedFromTs = parseDateFilterValue(dateUpdatedFrom, 'start')
+    const dateUpdatedToTs = parseDateFilterValue(dateUpdatedTo, 'end')
     const selectedTagIds = tags
       ? Array.from(
           new Set(
@@ -955,6 +962,13 @@ router.get('/sources/samples', async (req, res) => {
     if (dateCreatedFromTs !== null || dateCreatedToTs !== null) {
       filteredSlices = filteredSlices.filter((slice) =>
         isWithinDateRange(slice.sourceCtime, dateCreatedFromTs, dateCreatedToTs)
+      )
+    }
+
+    // Source file modified-date range filter
+    if (dateUpdatedFromTs !== null || dateUpdatedToTs !== null) {
+      filteredSlices = filteredSlices.filter((slice) =>
+        isWithinDateRange(slice.sourceMtime, dateUpdatedFromTs, dateUpdatedToTs)
       )
     }
 
@@ -2791,9 +2805,10 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
 
             // Apply filename-derived tags if enabled
             if (includeFilenameTags && slice.name) {
-              const filenameTags = parseFilenameTags(slice.name, slice.folderPath ?? null)
+              const filenameTags = await parseFilenameTagsSmart(slice.name, slice.folderPath ?? null)
               for (const ft of filenameTags) {
                 const lowerTag = ft.tag.toLowerCase()
+                const metadata = getTagMetadata(lowerTag, ft.category)
                 try {
                   let tag = await db
                     .select()
@@ -2806,11 +2821,19 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
                       .insert(schema.tags)
                       .values({
                         name: lowerTag,
-                        color: '#f472b6',
-                        category: 'filename',
+                        color: metadata.color,
+                        category: metadata.category,
                       })
                       .returning()
                     tag = [newTag]
+                  } else if (tag[0].category === 'filename' && metadata.category !== 'filename') {
+                    await db
+                      .update(schema.tags)
+                      .set({
+                        color: metadata.color,
+                        category: metadata.category,
+                      })
+                      .where(eq(schema.tags.id, tag[0].id))
                   }
 
                   await db

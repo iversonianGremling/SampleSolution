@@ -9,7 +9,7 @@ import {
   featuresToTags,
   getTagMetadata,
   storeAudioFeatures,
-  parseFilenameTags,
+  parseFilenameTagsSmart,
 } from '../services/audioAnalysis.js'
 import { v4 as uuidv4 } from 'uuid'
 import { and, eq, isNotNull } from 'drizzle-orm'
@@ -499,17 +499,26 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
 
     // Apply filename-based tags immediately (no Python dependency)
     try {
-      const filenameTags = parseFilenameTags(originalName, null)
+      const filenameTags = await parseFilenameTagsSmart(originalName, null)
       for (const ft of filenameTags) {
         const lowerTag = ft.tag.toLowerCase()
+        const metadata = getTagMetadata(lowerTag, ft.category)
         let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
         if (tag.length === 0) {
           const [newTag] = await db.insert(schema.tags).values({
             name: lowerTag,
-            color: '#f472b6',
-            category: 'filename' as any,
+            color: metadata.color,
+            category: metadata.category,
           }).returning()
           tag = [newTag]
+        } else if (tag[0].category === 'filename' && metadata.category !== 'filename') {
+          await db
+            .update(schema.tags)
+            .set({
+              color: metadata.color,
+              category: metadata.category,
+            })
+            .where(eq(schema.tags.id, tag[0].id))
         }
         await db.insert(schema.sliceTags).values({ sliceId: slice.id, tagId: tag[0].id }).onConflictDoNothing()
       }
@@ -678,17 +687,26 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
 
       // Apply filename-based tags immediately
       try {
-        const filenameTags = parseFilenameTags(originalName, null)
+        const filenameTags = await parseFilenameTagsSmart(originalName, null)
         for (const ft of filenameTags) {
           const lowerTag = ft.tag.toLowerCase()
+          const metadata = getTagMetadata(lowerTag, ft.category)
           let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
           if (tag.length === 0) {
             const [newTag] = await db.insert(schema.tags).values({
               name: lowerTag,
-              color: '#f472b6',
-              category: 'filename' as any,
+              color: metadata.color,
+              category: metadata.category,
             }).returning()
             tag = [newTag]
+          } else if (tag[0].category === 'filename' && metadata.category !== 'filename') {
+            await db
+              .update(schema.tags)
+              .set({
+                color: metadata.color,
+                category: metadata.category,
+              })
+              .where(eq(schema.tags.id, tag[0].id))
           }
           await db.insert(schema.sliceTags).values({ sliceId: slice.id, tagId: tag[0].id }).onConflictDoNothing()
         }
@@ -850,17 +868,26 @@ router.post('/import/folder', async (req, res) => {
 
         // Apply filename-based tags immediately
         try {
-          const filenameTags = parseFilenameTags(originalName, folderRootPath)
+          const filenameTags = await parseFilenameTagsSmart(originalName, folderRootPath)
           for (const ft of filenameTags) {
             const lowerTag = ft.tag.toLowerCase()
+            const metadata = getTagMetadata(lowerTag, ft.category)
             let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
             if (tag.length === 0) {
               const [newTag] = await db.insert(schema.tags).values({
                 name: lowerTag,
-                color: '#f472b6',
-                category: 'filename' as any,
+                color: metadata.color,
+                category: metadata.category,
               }).returning()
               tag = [newTag]
+            } else if (tag[0].category === 'filename' && metadata.category !== 'filename') {
+              await db
+                .update(schema.tags)
+                .set({
+                  color: metadata.color,
+                  category: metadata.category,
+                })
+                .where(eq(schema.tags.id, tag[0].id))
             }
             await db.insert(schema.sliceTags).values({ sliceId: slice.id, tagId: tag[0].id }).onConflictDoNothing()
           }

@@ -271,6 +271,15 @@ export function BulkRenamePanel({
                   placeholder="Text to replace"
                   className={inputClassName}
                 />
+                <label className="inline-flex items-center gap-2 text-xs text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={rules.caseSensitive}
+                    onChange={(e) => updateRule('caseSensitive', e.target.checked)}
+                    className="accent-accent-primary"
+                  />
+                  Case-sensitive match
+                </label>
               </div>
 
               <div className="space-y-1.5">
@@ -298,16 +307,6 @@ export function BulkRenamePanel({
                 </div>
               </div>
             </div>
-
-            <label className="inline-flex items-center gap-2 text-xs text-slate-400">
-              <input
-                type="checkbox"
-                checked={rules.caseSensitive}
-                onChange={(e) => updateRule('caseSensitive', e.target.checked)}
-                className="accent-accent-primary"
-              />
-              Case-sensitive match
-            </label>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="space-y-1.5">

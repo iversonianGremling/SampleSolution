@@ -32,6 +32,7 @@ import { CustomOrderModal } from './CustomOrderModal'
 import { BulkRenamePanel } from './BulkRenamePanel'
 import { ResizableDivider } from './ResizableDivider'
 import { SourcesAudioFilter, AudioFilterState } from './SourcesAudioFilter'
+import { SourcesDimensionFilter, type DimensionCategory } from './SourcesDimensionFilter'
 import { LibraryImportModal } from './LibraryImportModal'
 import { SampleSearchScopeMenu } from './SampleSearchScopeMenu'
 import { SampleSortMenu } from './SampleSortMenu'
@@ -111,8 +112,8 @@ type DuplicateModeFilter = 'all-duplicates' | 'smart-remove'
 type FilterDockTab =
   | 'advanced'
   | 'categories'
+  | 'dimensions'
   | 'features'
-  | 'spectral'
   | 'duplicates'
   | 'bulkActions'
 
@@ -338,6 +339,7 @@ export function SourcesView({
   const [queryRules, setQueryRules] = useState<FilterRule[]>([])
   const [activeFilterDockTab, setActiveFilterDockTab] = useState<FilterDockTab>('categories')
   const [isFilterDockOpen, setIsFilterDockOpen] = useState(true)
+  const [activeDimensionCategory, setActiveDimensionCategory] = useState<DimensionCategory>('spectral')
   const [tagFilterSearchQuery, setTagFilterSearchQuery] = useState('')
   const [activeTagCategory, setActiveTagCategory] = useState<string>('all')
   const [isTagCategoryMoreOpen, setIsTagCategoryMoreOpen] = useState(false)
@@ -500,6 +502,26 @@ export function SourcesView({
     selectedEnvelopeTypes: [],
     minBrightness: 0,
     maxBrightness: 1,
+    minHarmonicity: 0,
+    maxHarmonicity: 1,
+    minNoisiness: 0,
+    maxNoisiness: 1,
+    minAttack: 0,
+    maxAttack: 1,
+    minDynamics: 0,
+    maxDynamics: 1,
+    minSaturation: 0,
+    maxSaturation: 1,
+    minSurface: 0,
+    maxSurface: 1,
+    minDensity: 0,
+    maxDensity: 1,
+    minAmbience: 0,
+    maxAmbience: 1,
+    minStereoWidth: 0,
+    maxStereoWidth: 1,
+    minDepth: 0,
+    maxDepth: 1,
     minWarmth: 0,
     maxWarmth: 1,
     minHardness: 0,
@@ -541,6 +563,14 @@ export function SourcesView({
   // Data queries
   const { data: collections = [] } = useCollections()
   const { data: sourceTree, isLoading: isTreeLoading } = useSourceTree()
+  const toDimensionMin = (value: number | undefined) => {
+    const normalized = Number.isFinite(value) ? (value as number) : 0
+    return normalized > 0 ? normalized : undefined
+  }
+  const toDimensionMax = (value: number | undefined) => {
+    const normalized = Number.isFinite(value) ? (value as number) : 1
+    return normalized < 1 ? normalized : undefined
+  }
   const { data: samplesData, isLoading: isSamplesLoading } = useScopedSamples(
     currentScope,
     selectedTags,
@@ -561,6 +591,28 @@ export function SourcesView({
       dateUpdatedTo: audioFilter.dateUpdatedTo || undefined,
       similarTo: similarityMode?.enabled ? similarityMode.referenceSampleId : undefined,
       minSimilarity: similarityMode?.enabled ? similarityMode.minSimilarity : undefined,
+      brightnessMin: toDimensionMin(audioFilter.minBrightness),
+      brightnessMax: toDimensionMax(audioFilter.maxBrightness),
+      harmonicityMin: toDimensionMin(audioFilter.minHarmonicity),
+      harmonicityMax: toDimensionMax(audioFilter.maxHarmonicity),
+      noisinessMin: toDimensionMin(audioFilter.minNoisiness),
+      noisinessMax: toDimensionMax(audioFilter.maxNoisiness),
+      attackMin: toDimensionMin(audioFilter.minAttack),
+      attackMax: toDimensionMax(audioFilter.maxAttack),
+      dynamicsMin: toDimensionMin(audioFilter.minDynamics),
+      dynamicsMax: toDimensionMax(audioFilter.maxDynamics),
+      saturationMin: toDimensionMin(audioFilter.minSaturation),
+      saturationMax: toDimensionMax(audioFilter.maxSaturation),
+      surfaceMin: toDimensionMin(audioFilter.minSurface),
+      surfaceMax: toDimensionMax(audioFilter.maxSurface),
+      densityMin: toDimensionMin(audioFilter.minDensity),
+      densityMax: toDimensionMax(audioFilter.maxDensity),
+      ambienceMin: toDimensionMin(audioFilter.minAmbience),
+      ambienceMax: toDimensionMax(audioFilter.maxAmbience),
+      stereoWidthMin: toDimensionMin(audioFilter.minStereoWidth),
+      stereoWidthMax: toDimensionMax(audioFilter.maxStereoWidth),
+      depthMin: toDimensionMin(audioFilter.minDepth),
+      depthMax: toDimensionMax(audioFilter.maxDepth),
     }
   )
   const { data: overviewSamplesData } = useScopedSamples(currentScope, [], '', false)
@@ -971,6 +1023,33 @@ export function SourcesView({
 
   // Filter samples by duration and advanced features
   const samples = useMemo(() => {
+    const isRangeActive = (min: number | undefined, max: number | undefined) =>
+      (min ?? 0) > 0 || (max ?? 1) < 1
+
+    const matchesNormalizedRange = (
+      value: number | null | undefined,
+      min: number | undefined,
+      max: number | undefined,
+    ) => {
+      if (!isRangeActive(min, max)) return true
+      if (typeof value !== 'number' || !Number.isFinite(value)) return false
+      const minValue = min ?? 0
+      const maxValue = max ?? 1
+      return value >= minValue && value <= maxValue
+    }
+
+    const matchesDateRange = (
+      value: string | null | undefined,
+      from: string,
+      to: string,
+    ) => {
+      if (!from && !to) return true
+      if (!value) return false
+      if (from && value < from) return false
+      if (to && value > `${to}T23:59:59`) return false
+      return true
+    }
+
     return allSamples.filter(sample => {
       if (!matchesScopeFallback(sample)) return false
 
@@ -1034,18 +1113,6 @@ export function SourcesView({
         }
       }
 
-      const matchesDateRange = (
-        value: string | null | undefined,
-        from: string,
-        to: string,
-      ) => {
-        if (!from && !to) return true
-        if (!value) return false
-        if (from && value < from) return false
-        if (to && value > `${to}T23:59:59`) return false
-        return true
-      }
-
       if (!matchesDateRange(sample.dateAdded, audioFilter.dateAddedFrom, audioFilter.dateAddedTo)) {
         return false
       }
@@ -1056,14 +1123,70 @@ export function SourcesView({
         return false
       }
 
+      const normalizedDimensions = sample.dimensionNormalized
+      const normalizedSubjective = sample.subjectiveNormalized
+      const normalizedWarmth = normalizedSubjective?.warmth ?? sample.warmth
+      const normalizedHardness = normalizedSubjective?.hardness ?? sample.hardness
+      const normalizedBrightness = normalizedDimensions?.brightness ?? normalizedSubjective?.brightness ?? sample.brightness
+      const normalizedHarmonicity = normalizedDimensions?.harmonicity
+      const normalizedNoisiness =
+        normalizedDimensions?.noisiness ??
+        normalizedSubjective?.noisiness ??
+        sample.noisiness ??
+        sample.roughness
+      const normalizedAttack = normalizedDimensions?.attack ?? normalizedSubjective?.hardness ?? sample.hardness
+      const normalizedDynamics = normalizedDimensions?.dynamics
+      const normalizedSaturation = normalizedDimensions?.saturation ?? sample.roughness
+      const normalizedSurface = normalizedDimensions?.surface ?? sample.roughness
+      const normalizedDensity = normalizedDimensions?.density
+      const normalizedAmbience = normalizedDimensions?.ambience
+      const normalizedStereoWidth = normalizedDimensions?.stereoWidth
+      const normalizedDepth = normalizedDimensions?.depth
+
+      if (!matchesNormalizedRange(normalizedBrightness, audioFilter.minBrightness, audioFilter.maxBrightness)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedWarmth, audioFilter.minWarmth, audioFilter.maxWarmth)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedHardness, audioFilter.minHardness, audioFilter.maxHardness)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedHarmonicity, audioFilter.minHarmonicity, audioFilter.maxHarmonicity)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedNoisiness, audioFilter.minNoisiness, audioFilter.maxNoisiness)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedAttack, audioFilter.minAttack, audioFilter.maxAttack)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedDynamics, audioFilter.minDynamics, audioFilter.maxDynamics)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedSaturation, audioFilter.minSaturation, audioFilter.maxSaturation)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedSurface, audioFilter.minSurface, audioFilter.maxSurface)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedDensity, audioFilter.minDensity, audioFilter.maxDensity)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedAmbience, audioFilter.minAmbience, audioFilter.maxAmbience)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedStereoWidth, audioFilter.minStereoWidth, audioFilter.maxStereoWidth)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedDepth, audioFilter.minDepth, audioFilter.maxDepth)) {
+        return false
+      }
+
       // Database-style rule builder filters
       if (!matchesFilterRuleQuery(sample, queryRules, ruleEvaluationContext)) {
         return false
       }
-
-      // Note: Perceptual features (brightness, warmth, hardness) filtering
-      // would require fetching full AudioFeatures data, which is not available
-      // on the SliceWithTrackExtended type. This can be added when needed.
 
       return true
     })
@@ -2233,6 +2356,8 @@ export function SourcesView({
 
   const activeFilterCount = useMemo(() => {
     let count = 0
+    const isRangeActive = (min: number | undefined, max: number | undefined) =>
+      (min ?? 0) > 0 || (max ?? 1) < 1
     count += selectedTags.length
     count += queryRules.filter((rule) => rule.value.trim().length > 0).length
     if (minDuration > 0 || maxDuration < 300) count += 1
@@ -2251,11 +2376,31 @@ export function SourcesView({
     ) {
       count += 1
     }
-    if (audioFilter.minBrightness > 0 || audioFilter.maxBrightness < 1) count += 1
-    if (audioFilter.minWarmth > 0 || audioFilter.maxWarmth < 1) count += 1
-    if (audioFilter.minHardness > 0 || audioFilter.maxHardness < 1) count += 1
+    if (isRangeActive(audioFilter.minBrightness, audioFilter.maxBrightness)) count += 1
+    if (isRangeActive(audioFilter.minWarmth, audioFilter.maxWarmth)) count += 1
+    if (isRangeActive(audioFilter.minHardness, audioFilter.maxHardness)) count += 1
+    if (isRangeActive(audioFilter.minHarmonicity, audioFilter.maxHarmonicity)) count += 1
+    if (isRangeActive(audioFilter.minNoisiness, audioFilter.maxNoisiness)) count += 1
+    if (isRangeActive(audioFilter.minAttack, audioFilter.maxAttack)) count += 1
+    if (isRangeActive(audioFilter.minDynamics, audioFilter.maxDynamics)) count += 1
+    if (isRangeActive(audioFilter.minSaturation, audioFilter.maxSaturation)) count += 1
+    if (isRangeActive(audioFilter.minSurface, audioFilter.maxSurface)) count += 1
+    if (isRangeActive(audioFilter.minDensity, audioFilter.maxDensity)) count += 1
+    if (isRangeActive(audioFilter.minAmbience, audioFilter.maxAmbience)) count += 1
+    if (isRangeActive(audioFilter.minStereoWidth, audioFilter.maxStereoWidth)) count += 1
+    if (isRangeActive(audioFilter.minDepth, audioFilter.maxDepth)) count += 1
     return count
   }, [audioFilter, maxDuration, maxLoudness, minDuration, minLoudness, queryRules, selectedTags.length])
+
+  const dimensionCategoryTabs = useMemo(
+    () => [
+      { key: 'spectral' as const, label: 'Spectral' },
+      { key: 'energy' as const, label: 'Energy' },
+      { key: 'texture' as const, label: 'Texture' },
+      { key: 'space' as const, label: 'Space' },
+    ],
+    [],
+  )
 
   const collectionOverview = useMemo<CollectionOverview>(() => {
     const trackIds = new Set<number>()
@@ -3014,8 +3159,8 @@ export function SourcesView({
                         <div className="inline-flex items-center gap-0.5 rounded-md border border-surface-border bg-surface-base p-0.5 min-w-max">
                           {[
                             { id: 'categories' as const, label: 'Tags' },
+                            { id: 'dimensions' as const, label: 'Dimensions' },
                             { id: 'features' as const, label: 'Features' },
-                            { id: 'spectral' as const, label: 'Spectral' },
                             { id: 'advanced' as const, label: 'Advanced' },
                             { id: 'bulkActions' as const, label: 'Bulk Actions' },
                             { id: 'duplicates' as const, label: 'Duplicates' },
@@ -3258,69 +3403,71 @@ export function SourcesView({
                             <div className="space-y-1.5">
                               <div className="text-[11px] text-slate-400 uppercase tracking-wide">Loudness (dB)</div>
                               <div className="flex flex-wrap items-center gap-1.5">
-                                <input
-                                  type="number"
-                                  value={minLoudness.toFixed(1)}
-                                  onChange={(e) => {
-                                    const val = parseFloat(e.target.value)
-                                    if (Number.isNaN(val)) return
-                                    setMinLoudness(Math.max(-80, Math.min(val, maxLoudness)))
-                                  }}
-                                  className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
-                                  min="-80"
-                                  max={maxLoudness}
-                                  step="0.1"
-                                />
-                                <span className="text-xs text-slate-500">to</span>
-                                <input
-                                  type="number"
-                                  value={maxLoudness.toFixed(1)}
-                                  onChange={(e) => {
-                                    const val = parseFloat(e.target.value)
-                                    if (Number.isNaN(val)) return
-                                    setMaxLoudness(Math.min(6, Math.max(val, minLoudness)))
-                                  }}
-                                  className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
-                                  min={minLoudness}
-                                  max="6"
-                                  step="0.1"
-                                />
-                                {(minLoudness > -60 || maxLoudness < 0) && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setMinLoudness(-60)
-                                      setMaxLoudness(0)
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <input
+                                    type="number"
+                                    value={minLoudness.toFixed(1)}
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value)
+                                      if (Number.isNaN(val)) return
+                                      setMinLoudness(Math.max(-80, Math.min(val, maxLoudness)))
                                     }}
-                                    className="text-xs text-slate-400 hover:text-white transition-colors"
-                                  >
-                                    Reset
-                                  </button>
-                                )}
-                              </div>
-                              <div className="flex flex-wrap gap-1">
-                                {LOUDNESS_PRESETS.map((preset) => {
-                                  const isActive =
-                                    Math.abs(minLoudness - preset.min) < 0.05 &&
-                                    Math.abs(maxLoudness - preset.max) < 0.05
-                                  return (
+                                    className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
+                                    min="-80"
+                                    max={maxLoudness}
+                                    step="0.1"
+                                  />
+                                  <span className="text-xs text-slate-500">to</span>
+                                  <input
+                                    type="number"
+                                    value={maxLoudness.toFixed(1)}
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value)
+                                      if (Number.isNaN(val)) return
+                                      setMaxLoudness(Math.min(6, Math.max(val, minLoudness)))
+                                    }}
+                                    className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
+                                    min={minLoudness}
+                                    max="6"
+                                    step="0.1"
+                                  />
+                                  {(minLoudness > -60 || maxLoudness < 0) && (
                                     <button
-                                      key={preset.id}
                                       type="button"
                                       onClick={() => {
-                                        setMinLoudness(preset.min)
-                                        setMaxLoudness(preset.max)
+                                        setMinLoudness(-60)
+                                        setMaxLoudness(0)
                                       }}
-                                      className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
-                                        isActive
-                                          ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/45'
-                                          : 'bg-surface-raised text-slate-300 border border-surface-border hover:text-white'
-                                      }`}
+                                      className="text-xs text-slate-400 hover:text-white transition-colors"
                                     >
-                                      {preset.label}
+                                      Reset
                                     </button>
-                                  )
-                                })}
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap gap-1 md:ml-auto">
+                                  {LOUDNESS_PRESETS.map((preset) => {
+                                    const isActive =
+                                      Math.abs(minLoudness - preset.min) < 0.05 &&
+                                      Math.abs(maxLoudness - preset.max) < 0.05
+                                    return (
+                                      <button
+                                        key={preset.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setMinLoudness(preset.min)
+                                          setMaxLoudness(preset.max)
+                                        }}
+                                        className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
+                                          isActive
+                                            ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/45'
+                                            : 'bg-surface-raised text-slate-300 border border-surface-border hover:text-white'
+                                        }`}
+                                      >
+                                        {preset.label}
+                                      </button>
+                                    )
+                                  })}
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -3343,16 +3490,28 @@ export function SourcesView({
                       </div>
                     )}
 
-                    {activeFilterDockTab === 'spectral' && (
-                      <div className="rounded-lg border border-surface-border bg-surface-base p-3">
-                        <SourcesAudioFilter
-                          mode="perceptual"
-                          perceptualExpandable={false}
+                    {activeFilterDockTab === 'dimensions' && (
+                      <div className="rounded-lg border border-surface-border bg-surface-base p-3 space-y-3">
+                        <div className="inline-flex items-center gap-1 rounded-sm border border-surface-border bg-surface-raised p-0.5">
+                          {dimensionCategoryTabs.map((tab) => (
+                            <button
+                              key={tab.key}
+                              type="button"
+                              onClick={() => setActiveDimensionCategory(tab.key)}
+                              className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[11px] transition-colors ${
+                                activeDimensionCategory === tab.key
+                                  ? 'border border-accent-primary/45 bg-accent-primary/20 text-accent-primary'
+                                  : 'border border-transparent text-slate-300 hover:text-white'
+                              }`}
+                            >
+                              <span className="uppercase tracking-wide">{tab.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <SourcesDimensionFilter
+                          category={activeDimensionCategory}
                           filterState={audioFilter}
                           onChange={setAudioFilter}
-                          availableKeys={[...new Set(samples.map(s => s.keyEstimate).filter(Boolean) as string[])]}
-                          availableEnvelopeTypes={[...new Set(samples.map(s => s.envelopeType).filter(Boolean) as string[])]}
-                          showSortControls={false}
                         />
                       </div>
                     )}

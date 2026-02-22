@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import * as schema from './schema.js'
 import path from 'path'
+import { REDUCIBLE_DIMENSION_TAGS } from '../constants/reducibleTags.js'
 
 let sqlite: Database.Database | null = null
 let drizzleDb: BetterSQLite3Database<typeof schema> | null = null
@@ -146,6 +147,28 @@ function initDatabase() {
       DELETE FROM tags
       WHERE category IN ('tempo', 'spectral');
     `)
+  }
+
+  // Migration: Remove only reducible one-dimensional tags (keep semantic tags).
+  const reducibleTagPlaceholders = REDUCIBLE_DIMENSION_TAGS.map(() => '?').join(',')
+  const reducibleTagRows = sqlite
+    .prepare(
+      `SELECT id FROM tags WHERE lower(name) IN (${reducibleTagPlaceholders})`
+    )
+    .all(...REDUCIBLE_DIMENSION_TAGS) as Array<{ id: number }>
+  const reducibleTagIds = reducibleTagRows.map((row) => row.id)
+  if (reducibleTagIds.length > 0) {
+    console.log(`[DB] Migrating: Removing ${reducibleTagIds.length} reducible dimension tags`)
+    const tagIdPlaceholders = reducibleTagIds.map(() => '?').join(',')
+    sqlite
+      .prepare(`DELETE FROM slice_tags WHERE tag_id IN (${tagIdPlaceholders})`)
+      .run(...reducibleTagIds)
+    sqlite
+      .prepare(`DELETE FROM track_tags WHERE tag_id IN (${tagIdPlaceholders})`)
+      .run(...reducibleTagIds)
+    sqlite
+      .prepare(`DELETE FROM tags WHERE id IN (${tagIdPlaceholders})`)
+      .run(...reducibleTagIds)
   }
 
   // Migration: Add favorite column to slices if it doesn't exist
