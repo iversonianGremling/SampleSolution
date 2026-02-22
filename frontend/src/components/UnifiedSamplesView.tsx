@@ -98,7 +98,7 @@ export function UnifiedSamplesView() {
               }`
             : 'relative'
           }
-          w-[280px] flex-shrink-0 overflow-y-auto scrollbar-hide
+          w-[280px] flex-shrink-0 overflow-y-auto
         `}
       >
         <div className="h-full">
@@ -193,7 +193,7 @@ export function UnifiedSamplesView() {
         {/* Backdrop overlay when panels are open on medium screens - click to close */}
         {isMediumScreen && (showFilterPanel || showListPanel) && (
           <div
-            className="absolute inset-0 bg-black/20 z-20 transition-opacity duration-300 cursor-pointer"
+            className="absolute inset-0 bg-surface-base/20 z-20 transition-opacity duration-300 cursor-pointer"
             onClick={() => {
               setShowFilterPanel(false)
               setShowListPanel(false)

@@ -11,12 +11,26 @@ import { useClustering, getClusterColor, type ClusterMethod } from '../hooks/use
 import { useAllSlices } from '../hooks/useTracks'
 import { enrichAudioFeatures } from '../utils/enrichAudioFeatures'
 import { applySliceFilters } from '../utils/sliceFilters'
+import { getRelatedKeys, getRelatedNotes, freqToNoteName } from '../utils/musicTheory'
 import AudioManager from '../services/AudioManager'
-import type { FeatureWeights, NormalizationMethod, SamplePoint, SliceFilterState } from '../types'
+import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
+import type { FeatureWeights, NormalizationMethod, SamplePoint, SliceFilterState, AudioFeaturesWithMetadata } from '../types'
+import type { AudioFilterState } from './SourcesAudioFilter'
+import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
 
 interface SampleSpaceViewProps {
   hideFilter?: boolean
   externalFilterState?: SliceFilterState
+  externalAudioFilter?: AudioFilterState
+  tuneTargetNote?: string | null
+  tunePlaybackMode?: TunePlaybackMode
+  /**
+   * Optional source-of-truth slice ids from parent (e.g. SourcesView).
+   * When provided, SampleSpaceView mirrors that already-filtered sample set
+   * instead of re-applying filters that may rely on fields unavailable in
+   * /slices/features payloads.
+   */
+  externalSliceIds?: number[]
   selectedSliceId?: number | null
   onSliceSelect?: (id: number | null) => void
   externalWeights?: FeatureWeights
@@ -34,6 +48,10 @@ interface SampleSpaceViewProps {
 export function SampleSpaceView({
   hideFilter: _hideFilter,
   externalFilterState,
+  externalAudioFilter,
+  tuneTargetNote = null,
+  tunePlaybackMode: _tunePlaybackMode = 'tape',
+  externalSliceIds,
   selectedSliceId: externalSelectedId,
   onSliceSelect,
   externalWeights: _externalWeights,
@@ -60,8 +78,8 @@ export function SampleSpaceView({
   const [selectedPoint, setSelectedPoint] = useState<SamplePoint | null>(null)
   const [_selectedIds, setSelectedIds] = useState<number[]>([])
 
-  // Sidebar hover state for small screens
-  const [isPanelHovered, setIsPanelHovered] = useState(false)
+  // Sidebar state for small screens
+  const [isPanelOpen, setIsPanelOpen] = useState(false)
   const [isSmallScreen, setIsSmallScreen] = useState(false)
 
   // Audio playback
@@ -100,11 +118,124 @@ export function SampleSpaceView({
 
   // Apply external filter state
   const rawFilteredFeatures = useMemo(() => {
-    if (externalFilterState) {
-      return applySliceFilters(enrichedFeatures, externalFilterState)
+    const hasExternalSliceIds = Array.isArray(externalSliceIds)
+
+    let filtered: AudioFeaturesWithMetadata[] = hasExternalSliceIds
+      ? (() => {
+          const allowed = new Set(externalSliceIds)
+          return enrichedFeatures.filter((item) => allowed.has(item.id))
+        })()
+      : externalFilterState
+        ? applySliceFilters(enrichedFeatures, externalFilterState)
+        : enrichedFeatures
+
+    // If the parent already provides the exact filtered ids, do not re-apply
+    // audio filters here. Re-filtering can diverge when some optional fields
+    // (e.g. fundamentalFrequency in certain backend payloads) are missing.
+    if (externalAudioFilter && !hasExternalSliceIds) {
+      const af = externalAudioFilter
+
+      // Compute effective keys (selected + related levels)
+      const effectiveKeys = (() => {
+        const keys = [...af.selectedKeys]
+        if (af.relatedKeysLevels.length > 0) {
+          for (const group of getRelatedKeys(af.selectedKeys)) {
+            if (af.relatedKeysLevels.includes(group.level)) keys.push(...group.keys)
+          }
+        }
+        return keys
+      })()
+
+      // Compute effective notes (selected + related levels)
+      const effectiveNotes = (() => {
+        const notes = [...(af.selectedNotes || [])]
+        if ((af.relatedNotesLevels || []).length > 0) {
+          for (const group of getRelatedNotes(af.selectedNotes || [])) {
+            if ((af.relatedNotesLevels || []).includes(group.level)) notes.push(...group.keys)
+          }
+        }
+        return notes
+      })()
+
+      filtered = filtered.filter(item => {
+        // BPM filter
+        if (af.minBpm > 0 || af.maxBpm < 300) {
+          if (item.bpm == null) return false
+          if (item.bpm < af.minBpm || item.bpm > af.maxBpm) return false
+        }
+
+        // Key filter (scale mode) - case-insensitive to match backend behaviour
+        if (af.pitchFilterMode === 'scale' && effectiveKeys.length > 0) {
+          const keyLower = item.keyEstimate?.toLowerCase()
+          if (!keyLower || !effectiveKeys.some(k => k.toLowerCase() === keyLower)) return false
+        }
+
+        // Note filter (fundamental frequency mode)
+        if (af.pitchFilterMode === 'fundamental' && effectiveNotes.length > 0) {
+          const noteName = item.fundamentalFrequency ? freqToNoteName(item.fundamentalFrequency) : null
+          if (!noteName || !effectiveNotes.includes(noteName)) return false
+        }
+
+        // Envelope type filter
+        if (af.selectedEnvelopeTypes.length > 0) {
+          if (!item.envelopeType || !af.selectedEnvelopeTypes.includes(item.envelopeType)) return false
+        }
+
+        // Instrument filter
+        if (af.selectedInstruments.length > 0) {
+          const instrType = item.instrumentType || item.instrumentPrimary
+          if (!instrType || !af.selectedInstruments.includes(instrType)) return false
+        }
+
+        // Genre filter
+        if (af.selectedGenres.length > 0) {
+          if (!item.genrePrimary || !af.selectedGenres.includes(item.genrePrimary)) return false
+        }
+
+        // Perceptual feature filters
+        if (af.minBrightness > 0 || af.maxBrightness < 1) {
+          if (item.brightness == null) return false
+          if (item.brightness < af.minBrightness || item.brightness > af.maxBrightness) return false
+        }
+        if (af.minWarmth > 0 || af.maxWarmth < 1) {
+          if (item.warmth == null) return false
+          if (item.warmth < af.minWarmth || item.warmth > af.maxWarmth) return false
+        }
+        if (af.minHardness > 0 || af.maxHardness < 1) {
+          if (item.hardness == null) return false
+          if (item.hardness < af.minHardness || item.hardness > af.maxHardness) return false
+        }
+
+        // Date added filter
+        if (af.dateAddedFrom || af.dateAddedTo) {
+          const dateAdded = item.dateAdded
+          if (!dateAdded) return false
+          if (af.dateAddedFrom && dateAdded < af.dateAddedFrom) return false
+          if (af.dateAddedTo && dateAdded > af.dateAddedTo + 'T23:59:59') return false
+        }
+
+        // Date created filter
+        if (af.dateCreatedFrom || af.dateCreatedTo) {
+          const dateCreated = item.dateCreated
+          if (!dateCreated) return false
+          if (af.dateCreatedFrom && dateCreated < af.dateCreatedFrom) return false
+          if (af.dateCreatedTo && dateCreated > af.dateCreatedTo + 'T23:59:59') return false
+        }
+
+        // Date updated filter
+        if (af.dateUpdatedFrom || af.dateUpdatedTo) {
+          const dateUpdated = item.dateModified
+          if (!dateUpdated) return false
+          if (af.dateUpdatedFrom && dateUpdated < af.dateUpdatedFrom) return false
+          if (af.dateUpdatedTo && dateUpdated > af.dateUpdatedTo + 'T23:59:59') return false
+        }
+
+        return true
+      })
     }
-    return enrichedFeatures
-  }, [externalFilterState, enrichedFeatures])
+
+    return filtered
+  }, [externalFilterState, externalAudioFilter, enrichedFeatures, externalSliceIds])
 
   // Debounced filtered features to avoid rapid updates causing crashes
   const [filteredFeatures, setFilteredFeatures] = useState(rawFilteredFeatures)
@@ -182,7 +313,11 @@ export function SampleSpaceView({
         })
       }
       // Check if screen is small (less than 2/3rds of typical desktop width)
-      setIsSmallScreen(window.innerWidth < 1200)
+      const nextIsSmallScreen = window.innerWidth < 1200
+      setIsSmallScreen(nextIsSmallScreen)
+      if (!nextIsSmallScreen) {
+        setIsPanelOpen(false)
+      }
     }
 
     updateDimensions()
@@ -218,9 +353,16 @@ export function SampleSpaceView({
       return
     }
 
-    // Play the audio
-    audioManager.play(point.id, getSliceDownloadUrl(point.id))
-  }, [])
+    const sample = allSlices?.find((slice) => slice.id === point.id)
+
+    if (!sample) {
+      audioManager.play(point.id, getSliceDownloadUrl(point.id), { playbackRate: 1 })
+      return
+    }
+
+    const { url, playbackRate } = prepareSamplePreviewPlayback(sample, tuneTargetNote)
+    audioManager.play(point.id, url, { playbackRate })
+  }, [allSlices, tuneTargetNote])
 
   // Cleanup audio
   useEffect(() => {
@@ -282,6 +424,17 @@ export function SampleSpaceView({
 
   return (
     <div className="relative w-full h-full flex overflow-hidden">
+      {isSmallScreen && isPanelOpen && (
+        <button
+          type="button"
+          aria-label="Close controls panel"
+          className="panel-surface absolute inset-0 z-20 bg-surface-base/20"
+          onClick={() => setIsPanelOpen(false)}
+          onMouseMove={(event) => event.stopPropagation()}
+          onPointerMove={(event) => event.stopPropagation()}
+        />
+      )}
+
       {/* Main Canvas Container */}
       <div className="flex-1 relative overflow-hidden min-h-0">
         <div
@@ -311,6 +464,22 @@ export function SampleSpaceView({
             width={dimensions.width}
             height={dimensions.height}
           />
+
+          {isSmallScreen && (
+            <button
+              type="button"
+              aria-controls="sample-space-controls-panel"
+              aria-expanded={isPanelOpen}
+              onClick={() => setIsPanelOpen((prev) => !prev)}
+              onMouseMove={(event) => event.stopPropagation()}
+              onPointerMove={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              className="panel-surface absolute top-3 right-3 z-40 rounded-md border border-surface-border bg-surface-raised/90 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:text-white hover:bg-surface-overlay transition-colors"
+            >
+              {isPanelOpen ? 'Close Controls' : 'Open Controls'}
+            </button>
+          )}
 
 
           {/* Bottom Information Row - On top of canvas with minimal opacity */}
@@ -351,8 +520,8 @@ export function SampleSpaceView({
           </div>
         </div>
 
-        {/* Selected Detail Panel - Below Canvas */}
-        {selectedPoint && (() => {
+        {/* Selected Detail Panel - Below Canvas (hidden when parent handles selection) */}
+        {selectedPoint && !onSliceSelect && (() => {
           const sliceData = allSlices?.find(s => s.id === selectedPoint.id)
           if (!sliceData) {
             return (
@@ -377,25 +546,17 @@ export function SampleSpaceView({
         className={`border-l overflow-y-auto transition-all duration-300 ${
           isSmallScreen
             ? `absolute right-0 top-0 bottom-0 z-30 w-80 ${
-                isPanelHovered
-                  ? 'translate-x-0 bg-surface-raised border-surface-border'
-                  : 'translate-x-72 bg-transparent border-transparent'
+                isPanelOpen
+                  ? 'translate-x-0 bg-surface-raised border-surface-border shadow-2xl pointer-events-auto'
+                  : 'translate-x-full bg-surface-raised border-surface-border pointer-events-none'
               }`
             : 'w-80 relative flex-shrink-0 bg-surface-raised border-surface-border'
-        }`}
-        onMouseEnter={() => isSmallScreen && setIsPanelHovered(true)}
-        onMouseLeave={() => isSmallScreen && setIsPanelHovered(false)}
+        } panel-surface`}
+        id="sample-space-controls-panel"
+        onMouseMove={(event) => event.stopPropagation()}
+        onPointerMove={(event) => event.stopPropagation()}
       >
-        {/* Toggle indicator for small screens */}
-        {isSmallScreen && !isPanelHovered && (
-          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-300 transition-colors">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M7 15l5-5-5-5v10z"/>
-            </svg>
-          </div>
-        )}
-
-        <div className={`p-4 ${isSmallScreen && !isPanelHovered ? 'opacity-0' : 'opacity-100'} transition-opacity duration-300`}>
+        <div className="p-4">
           <FeatureWeightsPanel
             weights={weights}
             onWeightsChange={setWeights}

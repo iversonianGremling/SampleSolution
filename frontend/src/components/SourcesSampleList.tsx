@@ -12,9 +12,10 @@ import {
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended } from '../types'
-import { getSliceDownloadUrl } from '../api/client'
 import { createManagedAudio, releaseManagedAudio } from '../services/globalAudioVolume'
+import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
 import { freqToNoteName } from '../utils/musicTheory'
+import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
 
 type SortField =
   | 'name'
@@ -22,6 +23,14 @@ type SortField =
   | 'artist'
   | 'album'
   | 'year'
+  | 'albumArtist'
+  | 'genre'
+  | 'composer'
+  | 'trackNumber'
+  | 'discNumber'
+  | 'tagBpm'
+  | 'musicalKey'
+  | 'isrc'
   | 'bpm'
   | 'key'
   | 'scale'
@@ -45,6 +54,20 @@ type SortField =
 type SortOrder = 'asc' | 'desc'
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
+type DuplicatePairMatchType = 'exact' | 'content' | 'file'
+
+interface DuplicatePairListMeta {
+  pairId: string
+  pairIndex: number
+  role: 'keep' | 'duplicate'
+  partnerSampleId: number
+  selectedForDelete: boolean
+  selectedDeleteSampleId: number | null
+  canDelete: boolean
+  matchType: DuplicatePairMatchType
+  similarityPercent: number
+}
+
 type ColumnKey = keyof SourcesListColumnVisibility
 type MenuPosition = { top: number; left: number }
 type ResizeState = {
@@ -57,11 +80,19 @@ const COLUMN_VISIBILITY_STORAGE_KEY = 'sources-list-column-visibility-v1'
 const COLUMN_WIDTHS_STORAGE_KEY = 'sources-list-column-widths-v1'
 
 const MIN_COLUMN_WIDTHS: SourcesListColumnWidths = {
-  name: 160,
+  name: 96,
   tags: 100,
   artist: 100,
   album: 100,
   year: 56,
+  albumArtist: 110,
+  genre: 100,
+  composer: 110,
+  trackNumber: 72,
+  discNumber: 72,
+  tagBpm: 72,
+  musicalKey: 84,
+  isrc: 96,
   bpm: 56,
   key: 64,
   scale: 64,
@@ -82,7 +113,7 @@ const MIN_COLUMN_WIDTHS: SourcesListColumnWidths = {
   path: 140,
   duration: 68,
   similarity: 72,
-  actions: 84,
+  actions: 70,
 }
 
 const MAX_COLUMN_WIDTH = 520
@@ -92,6 +123,14 @@ const COLUMN_OPTIONS: Array<{ key: ColumnKey; label: string }> = [
   { key: 'artist', label: 'Artist' },
   { key: 'album', label: 'Album' },
   { key: 'year', label: 'Year' },
+  { key: 'albumArtist', label: 'Album Artist' },
+  { key: 'genre', label: 'Genre' },
+  { key: 'composer', label: 'Composer' },
+  { key: 'trackNumber', label: 'Track #' },
+  { key: 'discNumber', label: 'Disc #' },
+  { key: 'tagBpm', label: 'Tag BPM' },
+  { key: 'musicalKey', label: 'Tag Key' },
+  { key: 'isrc', label: 'ISRC' },
   { key: 'bpm', label: 'BPM' },
   { key: 'key', label: 'Key' },
   { key: 'scale', label: 'Scale' },
@@ -110,6 +149,87 @@ const COLUMN_OPTIONS: Array<{ key: ColumnKey; label: string }> = [
   { key: 'dateCreated', label: 'Date Created' },
   { key: 'dateModified', label: 'Date Modified' },
   { key: 'path', label: 'Path' },
+]
+
+const DEFAULT_LIST_ROW_HEIGHT_PX = 40
+const LIST_ROW_OVERSCAN = 4
+const MAX_RENDERED_LIST_ROWS = 80
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
+type ColumnMinBreakpoint = 'sm' | 'md' | 'lg' | 'xl'
+
+const BREAKPOINT_MIN_WIDTH: Record<ColumnMinBreakpoint, number> = {
+  sm: 640,
+  md: 768,
+  lg: 1024,
+  xl: 1280,
+}
+
+const COLUMN_MIN_BREAKPOINT: Partial<Record<ColumnKey, ColumnMinBreakpoint>> = {
+  tags: 'sm',
+  artist: 'lg',
+  album: 'lg',
+  year: 'lg',
+  albumArtist: 'xl',
+  genre: 'xl',
+  composer: 'xl',
+  trackNumber: 'xl',
+  discNumber: 'xl',
+  tagBpm: 'xl',
+  musicalKey: 'xl',
+  isrc: 'xl',
+  bpm: 'md',
+  key: 'lg',
+  scale: 'lg',
+  envelope: 'xl',
+  brightness: 'xl',
+  noisiness: 'xl',
+  warmth: 'xl',
+  hardness: 'xl',
+  sharpness: 'xl',
+  loudness: 'xl',
+  sampleRate: 'xl',
+  channels: 'xl',
+  format: 'xl',
+  polyphony: 'xl',
+  dateAdded: 'xl',
+  dateCreated: 'xl',
+  dateModified: 'xl',
+  path: 'xl',
+}
+
+const OPTIONAL_COLUMNS: ColumnKey[] = [
+  'tags',
+  'artist',
+  'album',
+  'year',
+  'albumArtist',
+  'genre',
+  'composer',
+  'trackNumber',
+  'discNumber',
+  'tagBpm',
+  'musicalKey',
+  'isrc',
+  'bpm',
+  'key',
+  'scale',
+  'envelope',
+  'brightness',
+  'noisiness',
+  'warmth',
+  'hardness',
+  'sharpness',
+  'loudness',
+  'sampleRate',
+  'channels',
+  'format',
+  'polyphony',
+  'dateAdded',
+  'dateCreated',
+  'dateModified',
+  'path',
 ]
 
 function parseDate(value: string | null | undefined): number | null {
@@ -138,6 +258,22 @@ function getSortValue(sample: SliceWithTrackExtended, field: SortField): string 
       return sample.track.album?.toLowerCase() ?? null
     case 'year':
       return sample.track.year ?? null
+    case 'albumArtist':
+      return sample.track.albumArtist?.toLowerCase() ?? null
+    case 'genre':
+      return sample.track.genre?.toLowerCase() ?? null
+    case 'composer':
+      return sample.track.composer?.toLowerCase() ?? null
+    case 'trackNumber':
+      return sample.track.trackNumber ?? null
+    case 'discNumber':
+      return sample.track.discNumber ?? null
+    case 'tagBpm':
+      return sample.track.tagBpm ?? null
+    case 'musicalKey':
+      return sample.track.musicalKey?.toLowerCase() ?? null
+    case 'isrc':
+      return sample.track.isrc?.toLowerCase() ?? null
     case 'bpm':
       return sample.bpm ?? null
     case 'key':
@@ -190,6 +326,7 @@ interface SourcesSampleListProps {
   onSelect: (id: number) => void
   onToggleSelect: (id: number) => void
   onToggleSelectAll: () => void
+  showSelectAllControl?: boolean
   onToggleFavorite: (id: number) => void
   onUpdateName: (id: number, name: string) => void
   onDelete: (id: number) => void
@@ -197,11 +334,16 @@ interface SourcesSampleListProps {
   isLoading?: boolean
   playMode?: PlayMode
   loopEnabled?: boolean
+  tuneTargetNote?: string | null
+  tunePlaybackMode?: TunePlaybackMode
+  bulkRenamePreviewById?: Map<number, { nextName: string; hasChange: boolean }>
   similarityMode?: {
     enabled: boolean
     referenceSampleId: number
     referenceSampleName: string
   } | null
+  duplicatePairMetaBySampleId?: Map<number, DuplicatePairListMeta>
+  onToggleDuplicateDeleteTarget?: (sampleId: number) => void
 }
 
 function loadColumnVisibility(): SourcesListColumnVisibility {
@@ -253,46 +395,36 @@ function loadColumnWidths(): SourcesListColumnWidths {
 function getRowMinWidth(
   columnVisibility: SourcesListColumnVisibility,
   columnWidths: SourcesListColumnWidths,
-  showSimilarity = false
+  viewportWidth: number,
+  showSimilarity = false,
+  showInstrumentColumn = true,
 ): number {
   let width = 0
+  const controlsColumnWidth = Math.max(
+    72,
+    Math.min(columnWidths.actions, DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.actions),
+  )
 
-  // checkbox + play button + instrument slot
+  // checkbox + unified controls cluster + optional instrument slot
   width += 24
-  width += 40
-  width += 16
+  width += controlsColumnWidth
+  if (showInstrumentColumn) width += 16
 
   // always visible content columns
   width += columnWidths.name
   width += columnWidths.duration
-  width += columnWidths.actions
 
-  if (columnVisibility.tags) width += columnWidths.tags
-  if (columnVisibility.artist) width += columnWidths.artist
-  if (columnVisibility.album) width += columnWidths.album
-  if (columnVisibility.year) width += columnWidths.year
-  if (columnVisibility.bpm) width += columnWidths.bpm
-  if (columnVisibility.key) width += columnWidths.key
-  if (columnVisibility.scale) width += columnWidths.scale
-  if (columnVisibility.envelope) width += columnWidths.envelope
-  if (columnVisibility.brightness) width += columnWidths.brightness
-  if (columnVisibility.noisiness) width += columnWidths.noisiness
-  if (columnVisibility.warmth) width += columnWidths.warmth
-  if (columnVisibility.hardness) width += columnWidths.hardness
-  if (columnVisibility.sharpness) width += columnWidths.sharpness
-  if (columnVisibility.loudness) width += columnWidths.loudness
-  if (columnVisibility.sampleRate) width += columnWidths.sampleRate
-  if (columnVisibility.channels) width += columnWidths.channels
-  if (columnVisibility.format) width += columnWidths.format
-  if (columnVisibility.polyphony) width += columnWidths.polyphony
-  if (columnVisibility.dateAdded) width += columnWidths.dateAdded
-  if (columnVisibility.dateCreated) width += columnWidths.dateCreated
-  if (columnVisibility.dateModified) width += columnWidths.dateModified
-  if (columnVisibility.path) width += columnWidths.path
+  for (const key of OPTIONAL_COLUMNS) {
+    if (!columnVisibility[key]) continue
+    const minBreakpoint = COLUMN_MIN_BREAKPOINT[key]
+    if (minBreakpoint && viewportWidth < BREAKPOINT_MIN_WIDTH[minBreakpoint]) continue
+    width += columnWidths[key]
+  }
+
   if (showSimilarity) width += columnWidths.similarity
 
   // row gaps + left/right padding
-  width += 260
+  width += 220
 
   return width
 }
@@ -304,6 +436,7 @@ export function SourcesSampleList({
   onSelect,
   onToggleSelect,
   onToggleSelectAll,
+  showSelectAllControl = true,
   onToggleFavorite,
   onUpdateName,
   onDelete,
@@ -311,22 +444,38 @@ export function SourcesSampleList({
   isLoading = false,
   playMode = 'normal',
   loopEnabled = false,
+  tuneTargetNote = null,
+  tunePlaybackMode: _tunePlaybackMode = 'tape',
+  bulkRenamePreviewById = new Map<number, { nextName: string; hasChange: boolean }>(),
   similarityMode = null,
+  duplicatePairMetaBySampleId = new Map<number, DuplicatePairListMeta>(),
+  onToggleDuplicateDeleteTarget,
 }: SourcesSampleListProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const listContainerRef = useRef<HTMLDivElement>(null)
+  const headerRef = useRef<HTMLDivElement>(null)
+  const rowsContainerRef = useRef<HTMLDivElement>(null)
   const [sortField, setSortField] = useState<SortField | null>(null)
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
   const [columnVisibility, setColumnVisibility] = useState<SourcesListColumnVisibility>(loadColumnVisibility)
   const [columnWidths, setColumnWidths] = useState<SourcesListColumnWidths>(loadColumnWidths)
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === 'undefined' ? BREAKPOINT_MIN_WIDTH.xl : window.innerWidth
+  )
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(0)
+  const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null)
   const [showColumnsMenu, setShowColumnsMenu] = useState(false)
   const [columnsMenuPosition, setColumnsMenuPosition] = useState<MenuPosition>({ top: 0, left: 0 })
   const dragPreviewRef = useRef<HTMLElement | null>(null)
-  const columnsMenuRef = useRef<HTMLDivElement>(null)
   const columnsMenuPopoverRef = useRef<HTMLDivElement>(null)
   const columnsMenuButtonRef = useRef<HTMLButtonElement>(null)
   const resizeStateRef = useRef<ResizeState | null>(null)
+  const isDuplicatePairMode = duplicatePairMetaBySampleId.size > 0
+
+  const preparePlaybackForSample = (sample: SliceWithTrackExtended) =>
+    prepareSamplePreviewPlayback(sample, tuneTargetNote)
 
   useEffect(() => {
     return () => {
@@ -351,10 +500,21 @@ export function SourcesSampleList({
   }, [columnWidths])
 
   useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const handleResize = () => {
+      setViewportWidth(window.innerWidth)
+    }
+
+    handleResize()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node
-      if (!columnsMenuRef.current) return
-      if (columnsMenuRef.current.contains(target)) return
+      if (columnsMenuButtonRef.current?.contains(target)) return
       if (columnsMenuPopoverRef.current?.contains(target)) return
       setShowColumnsMenu(false)
     }
@@ -402,6 +562,48 @@ export function SourcesSampleList({
     }
   }, [])
 
+  useEffect(() => {
+    const listContainer = listContainerRef.current
+    if (!listContainer) return
+
+    let rafId: number | null = null
+    let resizeObserver: ResizeObserver | null = null
+
+    const readScrollMetrics = () => {
+      setScrollTop(listContainer.scrollTop)
+      setViewportHeight(listContainer.clientHeight)
+    }
+
+    const scheduleMetricsRead = () => {
+      if (rafId !== null) return
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null
+        readScrollMetrics()
+      })
+    }
+
+    readScrollMetrics()
+    listContainer.addEventListener('scroll', scheduleMetricsRead, { passive: true })
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', scheduleMetricsRead)
+    } else {
+      resizeObserver = new ResizeObserver(scheduleMetricsRead)
+      resizeObserver.observe(listContainer)
+    }
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId)
+      }
+      listContainer.removeEventListener('scroll', scheduleMetricsRead)
+      window.removeEventListener('resize', scheduleMetricsRead)
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+      }
+    }
+  }, [])
+
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
 
@@ -418,15 +620,31 @@ export function SourcesSampleList({
           audioRef.current.pause()
           releaseManagedAudio(audioRef.current)
         }
-        const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: loopEnabled })
-        audio.onended = () => {
+        const sample = samples.find((s) => s.id === id)
+        if (!sample) return
+        try {
+          const { url, playbackRate } = preparePlaybackForSample(sample)
+          const audio = createManagedAudio(url, { loop: loopEnabled })
+          audio.playbackRate = playbackRate
+          audio.onended = () => {
+            setPlayingId(null)
+            releaseManagedAudio(audio)
+            audioRef.current = null
+          }
+          void audio.play().catch((error) => {
+            console.error('Failed to play sample preview:', error)
+            releaseManagedAudio(audio)
+            if (audioRef.current === audio) {
+              audioRef.current = null
+            }
+            setPlayingId(null)
+          })
+          audioRef.current = audio
+          setPlayingId(id)
+        } catch (error) {
+          console.error('Failed to play sample preview:', error)
           setPlayingId(null)
-          releaseManagedAudio(audio)
-          audioRef.current = null
         }
-        audio.play()
-        audioRef.current = audio
-        setPlayingId(id)
       }
     } else if (playMode === 'one-shot') {
       if (audioRef.current) {
@@ -434,15 +652,31 @@ export function SourcesSampleList({
         releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
-      const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: false })
-      audio.onended = () => {
+      const sample = samples.find((s) => s.id === id)
+      if (!sample) return
+      try {
+        const { url, playbackRate } = preparePlaybackForSample(sample)
+        const audio = createManagedAudio(url, { loop: false })
+        audio.playbackRate = playbackRate
+        audio.onended = () => {
+          setPlayingId(null)
+          releaseManagedAudio(audio)
+          audioRef.current = null
+        }
+        void audio.play().catch((error) => {
+          console.error('Failed to play sample preview:', error)
+          releaseManagedAudio(audio)
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          setPlayingId(null)
+        })
+        audioRef.current = audio
+        setPlayingId(id)
+      } catch (error) {
+        console.error('Failed to play sample preview:', error)
         setPlayingId(null)
-        releaseManagedAudio(audio)
-        audioRef.current = null
       }
-      audio.play()
-      audioRef.current = audio
-      setPlayingId(id)
     }
   }
 
@@ -455,15 +689,31 @@ export function SourcesSampleList({
         releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
-      const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: loopEnabled })
-      audio.onended = () => {
+      const sample = samples.find((s) => s.id === id)
+      if (!sample) return
+      try {
+        const { url, playbackRate } = preparePlaybackForSample(sample)
+        const audio = createManagedAudio(url, { loop: loopEnabled })
+        audio.playbackRate = playbackRate
+        audio.onended = () => {
+          setPlayingId(null)
+          releaseManagedAudio(audio)
+          audioRef.current = null
+        }
+        void audio.play().catch((error) => {
+          console.error('Failed to play sample preview:', error)
+          releaseManagedAudio(audio)
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          setPlayingId(null)
+        })
+        audioRef.current = audio
+        setPlayingId(id)
+      } catch (error) {
+        console.error('Failed to play sample preview:', error)
         setPlayingId(null)
-        releaseManagedAudio(audio)
-        audioRef.current = null
       }
-      audio.play()
-      audioRef.current = audio
-      setPlayingId(id)
     }
   }
 
@@ -480,7 +730,14 @@ export function SourcesSampleList({
     }
   }
 
+  useEffect(() => {
+    if (!isDuplicatePairMode) return
+    setSortField(null)
+    setSortOrder('asc')
+  }, [isDuplicatePairMode])
+
   const handleSortClick = (field: SortField) => {
+    if (isDuplicatePairMode) return
     if (sortField === field) {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
     } else {
@@ -518,7 +775,7 @@ export function SourcesSampleList({
   }
 
   const sortedSamples = useMemo(() => {
-    if (!sortField) return samples
+    if (!sortField || isDuplicatePairMode) return samples
 
     return [...samples].sort((a, b) => {
       const aValue = getSortValue(a, sortField)
@@ -542,15 +799,157 @@ export function SourcesSampleList({
 
       return sortOrder === 'asc' ? compareValue : -compareValue
     })
-  }, [samples, sortField, sortOrder])
+  }, [samples, sortField, sortOrder, isDuplicatePairMode])
+
+  useEffect(() => {
+    const listContainer = listContainerRef.current
+    if (!listContainer) return
+
+    let frameId: number | null = null
+    frameId = window.requestAnimationFrame(() => {
+      setScrollTop(listContainer.scrollTop)
+      setViewportHeight(listContainer.clientHeight)
+    })
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [sortedSamples])
+
+  useEffect(() => {
+    // Layout changes can affect row height, so re-measure on next paint.
+    setMeasuredRowHeight(null)
+  }, [columnVisibility, columnWidths, similarityMode?.enabled, bulkRenamePreviewById])
 
   const selectAllIndeterminate = selectedIds.size > 0 && selectedIds.size < sortedSamples.length
   const selectAllChecked = selectedIds.size === sortedSamples.length && sortedSamples.length > 0
+  const showInstrumentColumn = useMemo(
+    () => samples.some((sample) => Boolean(sample.instrumentType || sample.instrumentPrimary)),
+    [samples],
+  )
 
   const rowMinWidth = useMemo(
-    () => getRowMinWidth(columnVisibility, columnWidths, similarityMode?.enabled),
-    [columnVisibility, columnWidths, similarityMode?.enabled]
+    () => getRowMinWidth(columnVisibility, columnWidths, viewportWidth, similarityMode?.enabled, showInstrumentColumn),
+    [columnVisibility, columnWidths, viewportWidth, similarityMode?.enabled, showInstrumentColumn]
   )
+  const controlsColumnWidth = Math.max(
+    72,
+    Math.min(columnWidths.actions, DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.actions),
+  )
+
+  const virtualWindow = useMemo(() => {
+    const totalRows = sortedSamples.length
+    if (totalRows === 0) {
+      return {
+        startIndex: 0,
+        endIndex: 0,
+        topSpacer: 0,
+        bottomSpacer: 0,
+      }
+    }
+
+    const rowHeight = measuredRowHeight ?? DEFAULT_LIST_ROW_HEIGHT_PX
+    if (viewportHeight <= 0 || rowHeight <= 0) {
+      const fallbackEndIndex = Math.min(totalRows, MAX_RENDERED_LIST_ROWS)
+      return {
+        startIndex: 0,
+        endIndex: fallbackEndIndex,
+        topSpacer: 0,
+        bottomSpacer: Math.max(0, totalRows - fallbackEndIndex) * rowHeight,
+      }
+    }
+
+    const visibleTop = scrollTop
+    const visibleBottom = visibleTop + viewportHeight
+
+    const rawStartRow = Math.floor(visibleTop / rowHeight) - LIST_ROW_OVERSCAN
+    const rawEndRowExclusive = Math.ceil(visibleBottom / rowHeight) + LIST_ROW_OVERSCAN
+    const startRow = clamp(rawStartRow, 0, totalRows)
+    const endRowExclusive = clamp(rawEndRowExclusive, 0, totalRows)
+
+    if (startRow >= endRowExclusive) {
+      if (rawEndRowExclusive <= 0) {
+        const fallbackEndIndex = Math.min(totalRows, MAX_RENDERED_LIST_ROWS)
+        return {
+          startIndex: 0,
+          endIndex: fallbackEndIndex,
+          topSpacer: 0,
+          bottomSpacer: Math.max(0, totalRows - fallbackEndIndex) * rowHeight,
+        }
+      }
+
+      if (rawStartRow >= totalRows) {
+        const fallbackStartRow = Math.max(0, totalRows - MAX_RENDERED_LIST_ROWS)
+        return {
+          startIndex: fallbackStartRow,
+          endIndex: totalRows,
+          topSpacer: fallbackStartRow * rowHeight,
+          bottomSpacer: 0,
+        }
+      }
+
+      return {
+        startIndex: startRow,
+        endIndex: startRow,
+        topSpacer: startRow * rowHeight,
+        bottomSpacer: Math.max(0, totalRows - startRow) * rowHeight,
+      }
+    }
+
+    const cappedEndRowExclusive = Math.min(endRowExclusive, startRow + MAX_RENDERED_LIST_ROWS)
+    return {
+      startIndex: startRow,
+      endIndex: cappedEndRowExclusive,
+      topSpacer: startRow * rowHeight,
+      bottomSpacer: Math.max(0, totalRows - cappedEndRowExclusive) * rowHeight,
+    }
+  }, [sortedSamples.length, scrollTop, viewportHeight, measuredRowHeight])
+
+  const visibleSamples = useMemo(
+    () => sortedSamples.slice(virtualWindow.startIndex, virtualWindow.endIndex),
+    [sortedSamples, virtualWindow.startIndex, virtualWindow.endIndex]
+  )
+
+  useEffect(() => {
+    let frameId: number | null = null
+    frameId = window.requestAnimationFrame(() => {
+      const rowsContainer = rowsContainerRef.current
+      if (!rowsContainer) return
+      const rows = Array.from(
+        rowsContainer.querySelectorAll<HTMLElement>('[data-sources-list-row="true"]')
+      )
+      if (rows.length === 0) return
+
+      const heights = rows
+        .map((row) => row.offsetHeight)
+        .filter((height) => Number.isFinite(height) && height > 0)
+        .sort((a, b) => a - b)
+      if (heights.length === 0) return
+
+      const medianHeight = heights[Math.floor(heights.length / 2)]
+      setMeasuredRowHeight((previous) => {
+        if (previous !== null && Math.abs(previous - medianHeight) < 1) {
+          return previous
+        }
+        return medianHeight
+      })
+    })
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [
+    virtualWindow.startIndex,
+    virtualWindow.endIndex,
+    columnVisibility,
+    columnWidths,
+    similarityMode?.enabled,
+    bulkRenamePreviewById,
+  ])
 
   if (isLoading) {
     return (
@@ -635,40 +1034,62 @@ export function SourcesSampleList({
         event.stopPropagation()
         resetColumnWidth(key)
       }}
-      className={`group absolute right-[-7px] top-0 flex h-full w-4 cursor-col-resize items-center justify-center rounded-sm border-l border-surface-border/60 bg-surface-base/25 hover:bg-accent-primary/20 transition-colors ${className ?? ''}`}
+      className={`group absolute right-[-7px] top-0 z-10 flex h-full w-4 cursor-col-resize touch-none items-center justify-center rounded-sm border-l border-surface-border/60 bg-surface-base/25 hover:bg-accent-primary/20 transition-colors ${className ?? ''}`}
       title="Drag to resize (double-click to reset)"
       tabIndex={-1}
       aria-label={`Resize ${key} column`}
     >
-      <GripVertical size={11} className="text-slate-400 group-hover:text-slate-200 pointer-events-none" />
+      <GripVertical size={11} className="text-slate-400 opacity-0 group-hover:opacity-100 group-hover:text-slate-200 transition-opacity pointer-events-none" />
+    </button>
+  )
+
+  const columnsButton = (
+    <button
+      ref={columnsMenuButtonRef}
+      onClick={toggleColumnsMenu}
+      className="flex items-center gap-1 rounded-md border border-surface-border bg-surface-base px-2 py-1 text-slate-300 hover:text-white hover:bg-surface-overlay transition-colors flex-shrink-0"
+      title="Show or hide list columns"
+      aria-label="Show or hide list columns"
+    >
+      <SlidersHorizontal size={13} />
+      <span className="text-[11px]">Columns</span>
     </button>
   )
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className={`sources-list-compact flex flex-col h-full overflow-hidden ${isDuplicatePairMode ? 'bg-surface-base/30' : ''}`}>
       <div ref={listContainerRef} className="flex-1 overflow-auto">
         <div
-          className="sticky top-0 border-b border-surface-border px-4 py-2 flex-shrink-0 z-10 bg-surface-raised"
-          style={{ minWidth: rowMinWidth }}
+          ref={headerRef}
+          className="sticky top-0 border-b border-surface-border flex-shrink-0 z-20 bg-surface-raised/95 backdrop-blur-sm relative"
         >
-          <div className="flex items-center gap-2 sm:gap-3">
-            <CustomCheckbox
-              checked={selectAllChecked}
-              indeterminate={selectAllIndeterminate}
-              onChange={onToggleSelectAll}
-              className="flex-shrink-0"
-              title="Select all samples"
-            />
+          <div className="grid">
+            <div className="col-start-1 row-start-1 flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 pr-2" style={{ minWidth: rowMinWidth }}>
+            {showSelectAllControl ? (
+              <CustomCheckbox
+                checked={selectAllChecked}
+                indeterminate={selectAllIndeterminate}
+                onChange={onToggleSelectAll}
+                className="flex-shrink-0"
+                title="Select all samples"
+              />
+            ) : (
+              <div className="w-5 flex-shrink-0" aria-hidden />
+            )}
 
-            <span className="w-8 sm:w-10 flex-shrink-0 text-xs font-semibold text-slate-400 uppercase text-left">Play</span>
-            <span className="w-4 flex-shrink-0" aria-hidden />
+            <div className="relative flex-shrink-0" style={{ width: controlsColumnWidth }}>
+              <div className="h-3.5" aria-hidden />
+              {renderResizeHandle('actions')}
+            </div>
+
+            {showInstrumentColumn && <span className="w-4 flex-shrink-0" aria-hidden />}
 
             {similarityMode?.enabled && (
-              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.similarity }}>
+              <div className="relative flex flex-shrink-0 justify-end pr-1" style={{ width: columnWidths.similarity }}>
                 <button
                   onClick={() => handleSortClick('similarity')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'similarity' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-end text-right section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'similarity' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Similar
@@ -681,8 +1102,8 @@ export function SourcesSampleList({
             <div className="relative flex-shrink-0 min-w-0 pl-1" style={{ width: columnWidths.name }}>
               <button
                 onClick={() => handleSortClick('name')}
-                className={`w-full min-w-0 flex items-center text-left text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                  sortField === 'name' ? 'text-accent-primary' : 'text-slate-400'
+                className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                  sortField === 'name' ? 'text-accent-primary' : ''
                 }`}
               >
                 Name
@@ -695,8 +1116,8 @@ export function SourcesSampleList({
               <div className="relative hidden sm:flex flex-shrink-0 text-left pl-1" style={{ width: columnWidths.tags }}>
                 <button
                   onClick={() => handleSortClick('tags')}
-                  className={`w-full min-w-0 flex items-center text-left text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'tags' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'tags' ? 'text-accent-primary' : ''
                   }`}
                 >
                   <span className="truncate">Tags</span>
@@ -710,8 +1131,8 @@ export function SourcesSampleList({
               <div className="relative hidden lg:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.artist }}>
                 <button
                   onClick={() => handleSortClick('artist')}
-                  className={`w-full min-w-0 flex items-center text-left text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'artist' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'artist' ? 'text-accent-primary' : ''
                   }`}
                 >
                   <span className="truncate">Artist</span>
@@ -724,8 +1145,8 @@ export function SourcesSampleList({
               <div className="relative hidden lg:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.album }}>
                 <button
                   onClick={() => handleSortClick('album')}
-                  className={`w-full min-w-0 flex items-center text-left text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'album' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'album' ? 'text-accent-primary' : ''
                   }`}
                 >
                   <span className="truncate">Album</span>
@@ -738,8 +1159,8 @@ export function SourcesSampleList({
               <div className="relative hidden lg:flex flex-shrink-0 justify-center" style={{ width: columnWidths.year }}>
                 <button
                   onClick={() => handleSortClick('year')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'year' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'year' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Year
@@ -749,12 +1170,132 @@ export function SourcesSampleList({
               </div>
             )}
 
+            {columnVisibility.albumArtist && (
+              <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.albumArtist }}>
+                <button
+                  onClick={() => handleSortClick('albumArtist')}
+                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'albumArtist' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  <span className="truncate">Alb Artist</span>
+                  {getSortIcon('albumArtist')}
+                </button>
+                {renderResizeHandle('albumArtist', 'hidden xl:block')}
+              </div>
+            )}
+
+            {columnVisibility.genre && (
+              <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.genre }}>
+                <button
+                  onClick={() => handleSortClick('genre')}
+                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'genre' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  <span className="truncate">Genre</span>
+                  {getSortIcon('genre')}
+                </button>
+                {renderResizeHandle('genre', 'hidden xl:block')}
+              </div>
+            )}
+
+            {columnVisibility.composer && (
+              <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.composer }}>
+                <button
+                  onClick={() => handleSortClick('composer')}
+                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'composer' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  <span className="truncate">Composer</span>
+                  {getSortIcon('composer')}
+                </button>
+                {renderResizeHandle('composer', 'hidden xl:block')}
+              </div>
+            )}
+
+            {columnVisibility.trackNumber && (
+              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.trackNumber }}>
+                <button
+                  onClick={() => handleSortClick('trackNumber')}
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'trackNumber' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  Trk
+                  {getSortIcon('trackNumber')}
+                </button>
+                {renderResizeHandle('trackNumber', 'hidden xl:block')}
+              </div>
+            )}
+
+            {columnVisibility.discNumber && (
+              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.discNumber }}>
+                <button
+                  onClick={() => handleSortClick('discNumber')}
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'discNumber' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  Disc
+                  {getSortIcon('discNumber')}
+                </button>
+                {renderResizeHandle('discNumber', 'hidden xl:block')}
+              </div>
+            )}
+
+            {columnVisibility.tagBpm && (
+              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.tagBpm }}>
+                <button
+                  onClick={() => handleSortClick('tagBpm')}
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'tagBpm' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  Tag BPM
+                  {getSortIcon('tagBpm')}
+                </button>
+                {renderResizeHandle('tagBpm', 'hidden xl:block')}
+              </div>
+            )}
+
+            {columnVisibility.musicalKey && (
+              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.musicalKey }}>
+                <button
+                  onClick={() => handleSortClick('musicalKey')}
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'musicalKey' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  Tag Key
+                  {getSortIcon('musicalKey')}
+                </button>
+                {renderResizeHandle('musicalKey', 'hidden xl:block')}
+              </div>
+            )}
+
+            {columnVisibility.isrc && (
+              <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.isrc }}>
+                <button
+                  onClick={() => handleSortClick('isrc')}
+                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'isrc' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  <span className="truncate">ISRC</span>
+                  {getSortIcon('isrc')}
+                </button>
+                {renderResizeHandle('isrc', 'hidden xl:block')}
+              </div>
+            )}
+
             {columnVisibility.bpm && (
-              <div className="relative hidden md:flex flex-shrink-0 items-center justify-end" style={{ width: columnWidths.bpm }}>
+              <div className="relative hidden md:flex flex-shrink-0 items-center justify-center" style={{ width: columnWidths.bpm }}>
                 <button
                   onClick={() => handleSortClick('bpm')}
-                  className={`w-full flex items-center justify-end text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'bpm' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'bpm' ? 'text-accent-primary' : ''
                   }`}
                 >
                   BPM
@@ -768,8 +1309,8 @@ export function SourcesSampleList({
               <div className="relative hidden lg:flex flex-shrink-0 items-center justify-center" style={{ width: columnWidths.key }}>
                 <button
                   onClick={() => handleSortClick('key')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'key' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'key' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Key
@@ -783,8 +1324,8 @@ export function SourcesSampleList({
               <div className="relative hidden lg:flex flex-shrink-0 justify-center" style={{ width: columnWidths.scale }}>
                 <button
                   onClick={() => handleSortClick('scale')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'scale' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'scale' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Scale
@@ -797,8 +1338,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.envelope }}>
                 <button
                   onClick={() => handleSortClick('envelope')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'envelope' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'envelope' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Env
@@ -811,8 +1352,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.brightness }}>
                 <button
                   onClick={() => handleSortClick('brightness')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'brightness' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'brightness' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Bright
@@ -825,8 +1366,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.noisiness }}>
                 <button
                   onClick={() => handleSortClick('noisiness')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'noisiness' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'noisiness' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Noisy
@@ -839,8 +1380,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.warmth }}>
                 <button
                   onClick={() => handleSortClick('warmth')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'warmth' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'warmth' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Warmth
@@ -853,8 +1394,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.hardness }}>
                 <button
                   onClick={() => handleSortClick('hardness')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'hardness' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'hardness' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Hard
@@ -867,8 +1408,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.sharpness }}>
                 <button
                   onClick={() => handleSortClick('sharpness')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'sharpness' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'sharpness' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Sharp
@@ -881,8 +1422,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.loudness }}>
                 <button
                   onClick={() => handleSortClick('loudness')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'loudness' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'loudness' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Loud
@@ -895,8 +1436,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.sampleRate }}>
                 <button
                   onClick={() => handleSortClick('sampleRate')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'sampleRate' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'sampleRate' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Rate
@@ -909,8 +1450,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.channels }}>
                 <button
                   onClick={() => handleSortClick('channels')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'channels' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'channels' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Ch
@@ -923,8 +1464,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.format }}>
                 <button
                   onClick={() => handleSortClick('format')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'format' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'format' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Fmt
@@ -937,8 +1478,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.polyphony }}>
                 <button
                   onClick={() => handleSortClick('polyphony')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'polyphony' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'polyphony' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Poly
@@ -951,8 +1492,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateAdded }}>
                 <button
                   onClick={() => handleSortClick('dateAdded')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'dateAdded' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'dateAdded' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Added
@@ -965,8 +1506,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateCreated }}>
                 <button
                   onClick={() => handleSortClick('dateCreated')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'dateCreated' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'dateCreated' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Created
@@ -979,8 +1520,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateModified }}>
                 <button
                   onClick={() => handleSortClick('dateModified')}
-                  className={`w-full flex items-center justify-center text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'dateModified' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'dateModified' ? 'text-accent-primary' : ''
                   }`}
                 >
                   Modified
@@ -993,8 +1534,8 @@ export function SourcesSampleList({
               <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.path }}>
                 <button
                   onClick={() => handleSortClick('path')}
-                  className={`w-full min-w-0 flex items-center text-left text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                    sortField === 'path' ? 'text-accent-primary' : 'text-slate-400'
+                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'path' ? 'text-accent-primary' : ''
                   }`}
                 >
                   <span className="truncate">Path</span>
@@ -1004,66 +1545,80 @@ export function SourcesSampleList({
               </div>
             )}
 
-            <div className="relative flex-shrink-0 flex items-center justify-end" style={{ width: columnWidths.duration }}>
-              <button
-                onClick={() => handleSortClick('duration')}
-                className={`w-full flex items-center justify-end text-xs font-semibold uppercase transition-colors hover:text-slate-200 ${
-                  sortField === 'duration' ? 'text-accent-primary' : 'text-slate-400'
-                }`}
-              >
-                Duration
-                {getSortIcon('duration')}
-              </button>
-              {renderResizeHandle('duration')}
+              <div className="relative flex-shrink-0 flex items-center justify-end" style={{ width: columnWidths.duration }}>
+                <button
+                  onClick={() => handleSortClick('duration')}
+                  className={`w-full flex items-center justify-end section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'duration' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  Duration
+                  {getSortIcon('duration')}
+                </button>
+                {renderResizeHandle('duration')}
+              </div>
             </div>
 
-            <div ref={columnsMenuRef} className="relative flex-shrink-0" style={{ width: columnWidths.actions }}>
-              <div className="flex items-center justify-end gap-1">
-                <span className="inline-flex items-center gap-0.5 text-[10px] text-slate-500">
-                  <GripVertical size={10} />
-                  Resize
-                </span>
-                <span className="text-right text-xs font-semibold text-slate-400 uppercase">Actions</span>
-                <button
-                  ref={columnsMenuButtonRef}
-                  onClick={toggleColumnsMenu}
-                  className="p-1 rounded text-slate-400 hover:text-white hover:bg-surface-base transition-colors"
-                  title="Show/hide columns"
-                >
-                  <SlidersHorizontal size={14} />
-                </button>
+            <div className="col-start-1 row-start-1 sticky right-3 z-20 self-center justify-self-end pointer-events-none">
+              <div className="pointer-events-auto">
+                {columnsButton}
               </div>
-              {renderResizeHandle('actions')}
             </div>
           </div>
         </div>
 
-        <div className="divide-y divide-surface-border">
-          {sortedSamples.map((sample) => (
-            <SourcesSampleListRow
-              key={sample.id}
-              sample={sample}
-              isSelected={selectedId === sample.id}
-              isChecked={selectedIds.has(sample.id)}
-              isPlaying={playingId === sample.id}
-              onSelect={() => onSelect(sample.id)}
-              onToggleCheck={() => onToggleSelect(sample.id)}
-              onPlay={(e) => handlePlay(sample.id, e as any)}
-              onMouseDown={(e) => handleMouseDown(sample.id, e as any)}
-              onMouseUp={handleMouseUp}
-              onToggleFavorite={() => onToggleFavorite(sample.id)}
-              onUpdateName={(name) => onUpdateName(sample.id, name)}
-              onDelete={() => onDelete(sample.id)}
-              onTagClick={onTagClick}
-              onDragStart={handleDragStart(sample)}
-              onDragEnd={handleDragEnd}
-              playMode={playMode}
-              columnVisibility={columnVisibility}
-              columnWidths={columnWidths}
-              minWidth={rowMinWidth}
-              showSimilarity={similarityMode?.enabled}
-            />
-          ))}
+        {isDuplicatePairMode && (
+          <div className="border-b border-surface-border bg-surface-raised/70 px-3 py-1 text-[10px] text-slate-400">
+            Duplicate pair mode keeps keep/duplicate rows adjacent.
+          </div>
+        )}
+
+        <div ref={rowsContainerRef}>
+          {virtualWindow.topSpacer > 0 && (
+            <div aria-hidden="true" style={{ height: `${virtualWindow.topSpacer}px` }} />
+          )}
+
+          <div className="divide-y divide-surface-border">
+            {visibleSamples.map((sample) => {
+              const renamePreview = bulkRenamePreviewById.get(sample.id)
+              const duplicatePairMeta = duplicatePairMetaBySampleId.get(sample.id)
+              return (
+                <SourcesSampleListRow
+                  key={sample.id}
+                  sample={sample}
+                  isSelected={selectedId === sample.id}
+                  isChecked={selectedIds.has(sample.id)}
+                  isPlaying={playingId === sample.id}
+                  onSelect={() => onSelect(sample.id)}
+                  onToggleCheck={() => onToggleSelect(sample.id)}
+                  onPlay={(e) => handlePlay(sample.id, e as any)}
+                  onMouseDown={(e) => handleMouseDown(sample.id, e as any)}
+                  onMouseUp={handleMouseUp}
+                  onToggleFavorite={() => onToggleFavorite(sample.id)}
+                  onUpdateName={(name) => onUpdateName(sample.id, name)}
+                  onDelete={() => onDelete(sample.id)}
+                  onTagClick={onTagClick}
+                  onDragStart={handleDragStart(sample)}
+                  onDragEnd={handleDragEnd}
+                  playMode={playMode}
+                  columnVisibility={columnVisibility}
+                  columnWidths={columnWidths}
+                  minWidth={rowMinWidth}
+                  showInstrumentColumn={showInstrumentColumn}
+                  showSimilarity={similarityMode?.enabled}
+                  bulkRenamePreviewName={renamePreview?.hasChange ? renamePreview.nextName : null}
+                  duplicatePairMeta={duplicatePairMeta}
+                  onToggleDuplicateDeleteTarget={
+                    duplicatePairMeta ? () => onToggleDuplicateDeleteTarget?.(sample.id) : undefined
+                  }
+                />
+              )
+            })}
+          </div>
+
+          {virtualWindow.bottomSpacer > 0 && (
+            <div aria-hidden="true" style={{ height: `${virtualWindow.bottomSpacer}px` }} />
+          )}
         </div>
       </div>
 

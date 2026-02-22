@@ -4,18 +4,37 @@ import { YouTubeSearch } from './YouTubeSearch'
 import { PlaylistImport } from './PlaylistImport'
 import { useAuthStatus } from '../hooks/useTracks'
 import { getGoogleAuthUrl } from '../api/client'
-import { LogIn, ExternalLink } from 'lucide-react'
+import { LogIn, ExternalLink, X } from 'lucide-react'
 
 interface YouTubeHubProps {
   onTracksAdded: () => void
+  onClose?: () => void
 }
 
-export function YouTubeHub({ onTracksAdded }: YouTubeHubProps) {
+export function YouTubeHub({ onTracksAdded, onClose }: YouTubeHubProps) {
   const { data: authStatus } = useAuthStatus()
   const [activeSubTab, setActiveSubTab] = useState<'search' | 'playlists'>('search')
 
   return (
     <div className="flex flex-col h-full gap-4 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+          Import Sources
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-surface-border bg-surface-overlay text-xs text-text-secondary hover:text-text-primary hover:bg-surface-raised transition-colors"
+            title="Close import sources"
+            aria-label="Close import sources"
+          >
+            <X size={13} />
+            <span>Close</span>
+          </button>
+        )}
+      </div>
+
       {/* Import Section - Top */}
       <div className="flex-shrink-0">
         <LinkImport onTracksAdded={onTracksAdded} />

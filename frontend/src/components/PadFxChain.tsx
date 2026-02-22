@@ -19,6 +19,10 @@ const getPitchModeLabel = (mode: LabPitchMode) => {
   return 'Tape'
 }
 
+const MINI_KNOB_SIZE = 34
+const OFFSET_KNOB_SIZE = 40
+const ADVANCED_KNOB_SIZE = 34
+
 export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
   const { pads, padFxSettings, setPadFxSettings, clearPadFx } = useDrumRack()
   const settings = padFxSettings.get(padIndex) ?? DEFAULT_LAB_SETTINGS
@@ -70,7 +74,10 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
 
       {/* Mini controls - always visible */}
       <div className="px-3 py-3 border-b border-surface-border/30">
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-2">
+        <div
+          className="grid gap-2"
+          style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 170px), 1fr))' }}
+        >
           <div className="rounded-md border border-cyan-500/25 bg-cyan-500/5 p-2">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] text-cyan-300/80 uppercase tracking-wider">Core</span>
@@ -85,7 +92,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 ))}
               </select>
             </div>
-            <div className="flex items-center justify-center gap-1">
+            <div className="grid grid-cols-2 gap-1 place-items-center">
               <VstKnob
                 label="Pitch"
                 value={settings.pitchSemitones}
@@ -96,7 +103,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('pitchSemitones', v)}
                 format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}st`}
                 color="#06b6d4"
-                size={36}
+                size={MINI_KNOB_SIZE}
               />
               <VstKnob
                 label="Spd"
@@ -108,7 +115,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('tempo', v)}
                 format={(v) => `${v.toFixed(2)}x`}
                 color="#06b6d4"
-                size={36}
+                size={MINI_KNOB_SIZE}
                 disabled={settings.pitchMode === 'tape'}
               />
             </div>
@@ -116,7 +123,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
 
           <div className="rounded-md border border-emerald-500/25 bg-emerald-500/5 p-2">
             <div className="text-[10px] text-emerald-300/80 uppercase tracking-wider mb-1">Dynamics</div>
-            <div className="flex items-center justify-center gap-1">
+            <div className="grid grid-cols-2 gap-1 place-items-center">
               <VstKnob
                 label="Vel"
                 value={settings.velocity}
@@ -127,7 +134,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('velocity', v)}
                 format={(v) => `${Math.round(v * 100)}%`}
                 color="#34d399"
-                size={36}
+                size={MINI_KNOB_SIZE}
               />
               <VstKnob
                 label="Gain"
@@ -139,14 +146,14 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('outputGain', v)}
                 format={formatDb}
                 color="#34d399"
-                size={36}
+                size={MINI_KNOB_SIZE}
               />
             </div>
           </div>
 
           <div className="rounded-md border border-violet-500/25 bg-violet-500/5 p-2">
             <div className="text-[10px] text-violet-300/80 uppercase tracking-wider mb-1">Env</div>
-            <div className="flex items-center justify-center gap-1">
+            <div className="grid grid-cols-2 gap-1 place-items-center">
               <VstKnob
                 label="In"
                 value={settings.fadeIn}
@@ -157,7 +164,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('fadeIn', v)}
                 format={(v) => `${v.toFixed(2)}s`}
                 color="#a78bfa"
-                size={36}
+                size={MINI_KNOB_SIZE}
               />
               <VstKnob
                 label="Out"
@@ -169,7 +176,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('fadeOut', v)}
                 format={(v) => `${v.toFixed(2)}s`}
                 color="#a78bfa"
-                size={36}
+                size={MINI_KNOB_SIZE}
               />
             </div>
           </div>
@@ -183,7 +190,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 color="#818cf8"
               />
             </div>
-            <div className="flex items-center justify-center gap-1">
+            <div className="grid grid-cols-2 gap-1 place-items-center">
               <VstKnob
                 label="Freq"
                 value={settings.lowpassFrequency}
@@ -194,7 +201,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('lowpassFrequency', v)}
                 format={(v) => `${Math.round(v)}Hz`}
                 color="#818cf8"
-                size={36}
+                size={MINI_KNOB_SIZE}
                 disabled={!settings.lowpassEnabled}
               />
               <VstKnob
@@ -207,7 +214,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('lowpassQ', v)}
                 format={(v) => v.toFixed(1)}
                 color="#818cf8"
-                size={36}
+                size={MINI_KNOB_SIZE}
                 disabled={!settings.lowpassEnabled}
               />
             </div>
@@ -222,7 +229,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 color="#818cf8"
               />
             </div>
-            <div className="flex items-center justify-center gap-1">
+            <div className="grid grid-cols-2 gap-1 place-items-center">
               <VstKnob
                 label="Freq"
                 value={settings.highpassFrequency}
@@ -233,7 +240,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('highpassFrequency', v)}
                 format={(v) => `${Math.round(v)}Hz`}
                 color="#818cf8"
-                size={36}
+                size={MINI_KNOB_SIZE}
                 disabled={!settings.highpassEnabled}
               />
               <VstKnob
@@ -246,7 +253,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('highpassQ', v)}
                 format={(v) => v.toFixed(1)}
                 color="#818cf8"
-                size={36}
+                size={MINI_KNOB_SIZE}
                 disabled={!settings.highpassEnabled}
               />
             </div>
@@ -254,7 +261,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
 
           <div className="rounded-md border border-amber-500/25 bg-amber-500/5 p-2">
             <div className="text-[10px] text-amber-300/80 uppercase tracking-wider mb-1">Offset</div>
-            <div className="flex items-center justify-center gap-1">
+            <div className="flex items-center justify-center">
               <VstKnob
                 label="Start"
                 value={safeOffset}
@@ -265,7 +272,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('offset', clamp(v, 0, maxOffset))}
                 format={(v) => `${v.toFixed(2)}s`}
                 color="#fbbf24"
-                size={44}
+                size={OFFSET_KNOB_SIZE}
               />
             </div>
             <div className="text-[10px] text-slate-500 text-center mt-0.5">
@@ -288,7 +295,10 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
       </button>
 
       <div className={`fx-accordion ${showAdvanced ? 'fx-accordion-open' : ''}`}>
-        <div className="px-3 pb-3 pt-1 grid grid-cols-1 lg:grid-cols-2 gap-2">
+        <div
+          className="px-3 pb-3 pt-1 grid gap-2"
+          style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 210px), 1fr))' }}
+        >
           <div className="rounded-md border border-orange-500/25 bg-orange-500/5 p-2">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[10px] text-orange-300/80 uppercase tracking-wider">Distortion</span>
@@ -309,7 +319,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('distortionAmount', v)}
                 format={(v) => `${Math.round(v * 100)}%`}
                 color="#fb923c"
-                size={42}
+                size={ADVANCED_KNOB_SIZE}
                 disabled={!settings.distortionEnabled}
               />
             </div>
@@ -324,7 +334,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 color="#fb7185"
               />
             </div>
-            <div className="flex items-center justify-center gap-1">
+            <div className="grid grid-cols-2 gap-1 place-items-center">
               <VstKnob
                 label="Thresh"
                 value={settings.compressorThreshold}
@@ -335,7 +345,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('compressorThreshold', v)}
                 format={(v) => `${Math.round(v)}dB`}
                 color="#fb7185"
-                size={36}
+                size={ADVANCED_KNOB_SIZE}
                 disabled={!settings.compressorEnabled}
               />
               <VstKnob
@@ -348,7 +358,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('compressorRatio', v)}
                 format={(v) => `${v.toFixed(1)}:1`}
                 color="#fb7185"
-                size={36}
+                size={ADVANCED_KNOB_SIZE}
                 disabled={!settings.compressorEnabled}
               />
             </div>
@@ -363,7 +373,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 color="#fbbf24"
               />
             </div>
-            <div className="flex items-center justify-center gap-1">
+            <div className="grid grid-cols-3 gap-1 place-items-center">
               <VstKnob
                 label="Time"
                 value={settings.delayTime}
@@ -374,7 +384,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('delayTime', v)}
                 format={(v) => `${v.toFixed(2)}s`}
                 color="#fbbf24"
-                size={36}
+                size={ADVANCED_KNOB_SIZE}
                 disabled={!settings.delayEnabled}
               />
               <VstKnob
@@ -387,7 +397,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('delayFeedback', v)}
                 format={(v) => `${Math.round(v * 100)}%`}
                 color="#fbbf24"
-                size={36}
+                size={ADVANCED_KNOB_SIZE}
                 disabled={!settings.delayEnabled}
               />
               <VstKnob
@@ -400,7 +410,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('delayMix', v)}
                 format={(v) => `${Math.round(v * 100)}%`}
                 color="#fbbf24"
-                size={36}
+                size={ADVANCED_KNOB_SIZE}
                 disabled={!settings.delayEnabled}
               />
             </div>
@@ -415,7 +425,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 color="#34d399"
               />
             </div>
-            <div className="flex items-center justify-center gap-1">
+            <div className="grid grid-cols-3 gap-1 place-items-center">
               <VstKnob
                 label="Len"
                 value={settings.reverbSeconds}
@@ -426,7 +436,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('reverbSeconds', v)}
                 format={(v) => `${v.toFixed(2)}s`}
                 color="#34d399"
-                size={36}
+                size={ADVANCED_KNOB_SIZE}
                 disabled={!settings.reverbEnabled}
               />
               <VstKnob
@@ -439,7 +449,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('reverbDecay', v)}
                 format={(v) => v.toFixed(2)}
                 color="#34d399"
-                size={36}
+                size={ADVANCED_KNOB_SIZE}
                 disabled={!settings.reverbEnabled}
               />
               <VstKnob
@@ -452,7 +462,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 onChange={(v) => update('reverbMix', v)}
                 format={(v) => `${Math.round(v * 100)}%`}
                 color="#34d399"
-                size={36}
+                size={ADVANCED_KNOB_SIZE}
                 disabled={!settings.reverbEnabled}
               />
             </div>

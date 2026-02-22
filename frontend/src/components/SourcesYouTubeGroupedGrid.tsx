@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect } from 'react'
-import { Play, Pause, Heart, ChevronDown, ChevronRight, GripVertical, Scissors } from 'lucide-react'
+import { useState, useRef, useEffect, useMemo, type ReactNode } from 'react'
+import { Play, Pause, Heart, ChevronDown, ChevronRight, GripVertical, Scissors, Trash2 } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended, SourceTree } from '../types'
-import { getSliceDownloadUrl } from '../api/client'
+import { createManagedAudio, releaseManagedAudio } from '../services/globalAudioVolume'
+import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
+import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
@@ -29,7 +31,56 @@ interface SourcesYouTubeGroupedGridProps {
   isLoading?: boolean
   playMode?: PlayMode
   loopEnabled?: boolean
+  tuneTargetNote?: string | null
+  tunePlaybackMode?: TunePlaybackMode
   sourceTree?: SourceTree | undefined
+  onDeleteSource?: (scope: string, label: string) => void
+}
+
+const GRID_GAP_PX = 8
+const GRID_HORIZONTAL_PADDING_PX = 32
+const CARD_ASPECT_RATIO = 3 / 4
+const CARD_META_HEIGHT_PX = 50
+const ROW_OVERSCAN = 1
+const MAX_RENDERED_ROWS = 5
+const YOUTUBE_SLICE_CARD_SELECTOR = '[data-youtube-slice-card="true"]'
+
+const getResponsiveColumnCount = (width: number) => {
+  if (width >= 1536) return 7
+  if (width >= 1280) return 6
+  if (width >= 1024) return 5
+  if (width >= 768) return 4
+  if (width >= 640) return 3
+  return 2
+}
+
+const findScrollParent = (node: HTMLElement | null): HTMLElement | null => {
+  if (!node) return null
+  let current: HTMLElement | null = node.parentElement
+  while (current) {
+    const style = window.getComputedStyle(current)
+    if (/(auto|scroll|overlay)/.test(style.overflowY)) {
+      return current
+    }
+    current = current.parentElement
+  }
+  return null
+}
+
+const getOffsetTopWithinParent = (element: HTMLElement, parent: HTMLElement) => {
+  const elementRect = element.getBoundingClientRect()
+  const parentRect = parent.getBoundingClientRect()
+  return elementRect.top - parentRect.top + parent.scrollTop
+}
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
+function FadeInOnMount({ children }: { children: ReactNode }) {
+  return (
+    <div className="animate-fade-in motion-reduce:animate-none">
+      {children}
+    </div>
+  )
 }
 
 export function SourcesYouTubeGroupedGrid({
@@ -44,28 +95,158 @@ export function SourcesYouTubeGroupedGrid({
   onTagClick,
   isLoading = false,
   playMode = 'normal',
-  loopEnabled: _loopEnabled = false,
+  loopEnabled = false,
+  tuneTargetNote = null,
+  tunePlaybackMode: _tunePlaybackMode = 'tape',
   sourceTree,
+  onDeleteSource,
 }: SourcesYouTubeGroupedGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const scrollParentRef = useRef<HTMLElement | null>(null)
+  const groupGridRefs = useRef<Record<number, HTMLDivElement | null>>({})
   const [draggedId, setDraggedId] = useState<number | null>(null)
   const dragPreviewRef = useRef<HTMLElement | null>(null)
   const [expandedVideos, setExpandedVideos] = useState<Set<number>>(new Set())
   const [tagPopupId, setTagPopupId] = useState<number | null>(null)
-  const [popupPosition, setPopupPosition] = useState<Record<number, { bottom: number; left: number }>>({})
-  const tagTriggerRefs = useRef<Record<number, HTMLDivElement | null>>({})
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 0))
+  const [gridWidth, setGridWidth] = useState(0)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(0)
+  const [useWindowScroll, setUseWindowScroll] = useState(false)
+  const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null)
   const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const preparePlaybackForSample = (sample: SliceWithTrackExtended) =>
+    prepareSamplePreviewPlayback(sample, tuneTargetNote)
 
   // Stop audio when unmounting
   useEffect(() => {
     return () => {
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
+      }
+      if (closeTimeoutRef.current) {
+        clearTimeout(closeTimeoutRef.current)
+        closeTimeoutRef.current = null
       }
     }
   }, [])
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const scrollParent = findScrollParent(root)
+    scrollParentRef.current = scrollParent ?? null
+    let rafId: number | null = null
+    let resizeObserver: ResizeObserver | null = null
+
+    const readScrollMetrics = () => {
+      const activeScrollParent = scrollParentRef.current
+      const hasScrollParent = Boolean(activeScrollParent && activeScrollParent.clientHeight > 0)
+      setViewportWidth(window.innerWidth)
+      if (hasScrollParent && activeScrollParent) {
+        setUseWindowScroll(false)
+        setScrollTop(activeScrollParent.scrollTop)
+        setViewportHeight(activeScrollParent.clientHeight)
+      } else {
+        setUseWindowScroll(true)
+        setScrollTop(window.scrollY || document.documentElement.scrollTop || 0)
+        setViewportHeight(window.innerHeight)
+      }
+    }
+
+    const updateScrollState = () => {
+      if (rafId !== null) return
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null
+        setTagPopupId(null)
+        readScrollMetrics()
+      })
+    }
+
+    readScrollMetrics()
+    if (scrollParent) {
+      scrollParent.addEventListener('scroll', updateScrollState, { passive: true })
+    }
+    window.addEventListener('scroll', updateScrollState, { passive: true })
+    window.addEventListener('resize', updateScrollState)
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(updateScrollState)
+      resizeObserver.observe(root)
+      if (scrollParent) {
+        resizeObserver.observe(scrollParent)
+      }
+    }
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId)
+      }
+      if (scrollParent) {
+        scrollParent.removeEventListener('scroll', updateScrollState)
+      }
+      window.removeEventListener('scroll', updateScrollState)
+      window.removeEventListener('resize', updateScrollState)
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+
+    const updateGridWidth = () => {
+      setGridWidth(root.clientWidth)
+    }
+
+    updateGridWidth()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateGridWidth)
+      return () => {
+        window.removeEventListener('resize', updateGridWidth)
+      }
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateGridWidth()
+    })
+    observer.observe(root)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
+
+  useEffect(() => {
+    let frameId: number | null = null
+    frameId = window.requestAnimationFrame(() => {
+      const scrollParent = scrollParentRef.current
+      setViewportWidth(window.innerWidth)
+
+      if (scrollParent && scrollParent.clientHeight > 0) {
+        setUseWindowScroll(false)
+        setScrollTop(scrollParent.scrollTop)
+        setViewportHeight(scrollParent.clientHeight)
+        return
+      }
+
+      setUseWindowScroll(true)
+      setScrollTop(window.scrollY || document.documentElement.scrollTop || 0)
+      setViewportHeight(window.innerHeight)
+    })
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [samples, expandedVideos])
 
   // Group samples by video - use sourceTree if available to show all videos
   const videoGroups: VideoGroup[] = (() => {
@@ -120,6 +301,97 @@ export function SourcesYouTubeGroupedGrid({
     setExpandedVideos(new Set(videoGroups.map(v => v.trackId)))
   }, [])
 
+  const columnCount = useMemo(() => getResponsiveColumnCount(viewportWidth), [viewportWidth])
+
+  const estimatedRowHeight = useMemo(() => {
+    const usableWidth = Math.max(
+      0,
+      gridWidth - GRID_HORIZONTAL_PADDING_PX - GRID_GAP_PX * Math.max(0, columnCount - 1),
+    )
+    const cardWidth = columnCount > 0 ? usableWidth / columnCount : usableWidth
+    return cardWidth * CARD_ASPECT_RATIO + CARD_META_HEIGHT_PX + GRID_GAP_PX
+  }, [gridWidth, columnCount])
+
+  const rowHeight = measuredRowHeight ?? estimatedRowHeight
+
+  const getVirtualWindow = (itemCount: number, gridNode: HTMLElement | null) => {
+    const safeColumnCount = Math.max(1, columnCount)
+    const totalRows = Math.ceil(itemCount / safeColumnCount)
+    const buildRowWindow = (targetRow: number) => {
+      const maxStartRow = Math.max(0, totalRows - MAX_RENDERED_ROWS)
+      const startRow = clamp(targetRow, 0, maxStartRow)
+      const endRowExclusive = Math.min(totalRows, startRow + MAX_RENDERED_ROWS)
+      return {
+        startIndex: Math.min(itemCount, startRow * safeColumnCount),
+        endIndex: Math.min(itemCount, endRowExclusive * safeColumnCount),
+        topSpacer: startRow * rowHeight,
+        bottomSpacer: Math.max(0, totalRows - endRowExclusive) * rowHeight,
+      }
+    }
+
+    if (totalRows === 0) {
+      return {
+        startIndex: 0,
+        endIndex: 0,
+        topSpacer: 0,
+        bottomSpacer: 0,
+      }
+    }
+
+    if (!gridNode || viewportHeight <= 0 || rowHeight <= 0) {
+      const fallbackEndIndex = Math.min(itemCount, safeColumnCount * MAX_RENDERED_ROWS)
+      const fallbackRenderedRows = Math.ceil(fallbackEndIndex / safeColumnCount)
+      return {
+        startIndex: 0,
+        endIndex: fallbackEndIndex,
+        topSpacer: 0,
+        bottomSpacer: rowHeight > 0 ? Math.max(0, totalRows - fallbackRenderedRows) * rowHeight : 0,
+      }
+    }
+
+    const scrollParent = scrollParentRef.current
+    const gridOffsetTop = useWindowScroll
+      ? gridNode.getBoundingClientRect().top + (window.scrollY || document.documentElement.scrollTop || 0)
+      : scrollParent
+      ? getOffsetTopWithinParent(gridNode, scrollParent)
+      : gridNode.offsetTop
+    const visibleTop = scrollTop - gridOffsetTop
+    const visibleBottom = visibleTop + viewportHeight
+
+    const rawStartRow = Math.floor(visibleTop / rowHeight) - ROW_OVERSCAN
+    const rawEndRowExclusive = Math.ceil(visibleBottom / rowHeight) + ROW_OVERSCAN
+    const startRow = clamp(rawStartRow, 0, totalRows)
+    const endRowExclusive = clamp(rawEndRowExclusive, 0, totalRows)
+
+    if (startRow >= endRowExclusive) {
+      if (rawEndRowExclusive <= 0) {
+        return buildRowWindow(0)
+      }
+
+      if (rawStartRow >= totalRows) {
+        return buildRowWindow(totalRows - MAX_RENDERED_ROWS)
+      }
+
+      return buildRowWindow(startRow)
+    }
+
+    const cappedEndRowExclusive = Math.min(endRowExclusive, startRow + MAX_RENDERED_ROWS)
+    const startIndex = Math.min(itemCount, startRow * safeColumnCount)
+    const endIndex = Math.min(itemCount, cappedEndRowExclusive * safeColumnCount)
+    const renderedRows = Math.max(0, cappedEndRowExclusive - startRow)
+
+    if (endIndex <= startIndex) {
+      return buildRowWindow(startRow)
+    }
+
+    return {
+      startIndex,
+      endIndex,
+      topSpacer: startRow * rowHeight,
+      bottomSpacer: Math.max(0, totalRows - startRow - renderedRows) * rowHeight,
+    }
+  }
+
   const formatDuration = (startTime: number, endTime: number) => {
     const duration = endTime - startTime
     if (duration < 60) {
@@ -139,6 +411,7 @@ export function SourcesYouTubeGroupedGrid({
         // Stop playing
         if (audioRef.current) {
           audioRef.current.pause()
+          releaseManagedAudio(audioRef.current)
           audioRef.current = null
         }
         setPlayingId(null)
@@ -146,33 +419,67 @@ export function SourcesYouTubeGroupedGrid({
         // Stop previous
         if (audioRef.current) {
           audioRef.current.pause()
+          releaseManagedAudio(audioRef.current)
         }
-        // Play new
-        const audio = new Audio(getSliceDownloadUrl(id))
-        audio.onended = () => {
+        const sample = samples.find((s) => s.id === id)
+        if (!sample) return
+        try {
+          const { url, playbackRate } = preparePlaybackForSample(sample)
+          const audio = createManagedAudio(url, { loop: loopEnabled })
+          audio.playbackRate = playbackRate
+          audio.onended = () => {
+            setPlayingId(null)
+            releaseManagedAudio(audio)
+            audioRef.current = null
+          }
+          void audio.play().catch((error) => {
+            console.error('Failed to play sample preview:', error)
+            releaseManagedAudio(audio)
+            if (audioRef.current === audio) {
+              audioRef.current = null
+            }
+            setPlayingId(null)
+          })
+          audioRef.current = audio
+          setPlayingId(id)
+        } catch (error) {
+          console.error('Failed to play sample preview:', error)
           setPlayingId(null)
-          audioRef.current = null
         }
-        audio.play()
-        audioRef.current = audio
-        setPlayingId(id)
       }
     } else if (playMode === 'one-shot') {
       // One-shot mode: always play the whole sample, stop others
       // Stop previous
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
-      // Play new
-      const audio = new Audio(getSliceDownloadUrl(id))
-      audio.onended = () => {
+      const sample = samples.find((s) => s.id === id)
+      if (!sample) return
+      try {
+        const { url, playbackRate } = preparePlaybackForSample(sample)
+        const audio = createManagedAudio(url, { loop: false })
+        audio.playbackRate = playbackRate
+        audio.onended = () => {
+          setPlayingId(null)
+          releaseManagedAudio(audio)
+          audioRef.current = null
+        }
+        void audio.play().catch((error) => {
+          console.error('Failed to play sample preview:', error)
+          releaseManagedAudio(audio)
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          setPlayingId(null)
+        })
+        audioRef.current = audio
+        setPlayingId(id)
+      } catch (error) {
+        console.error('Failed to play sample preview:', error)
         setPlayingId(null)
-        audioRef.current = null
       }
-      audio.play()
-      audioRef.current = audio
-      setPlayingId(id)
     }
   }
 
@@ -183,17 +490,34 @@ export function SourcesYouTubeGroupedGrid({
       // Stop current if playing
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
-      // Play from the beginning
-      const audio = new Audio(getSliceDownloadUrl(id))
-      audio.onended = () => {
+      const sample = samples.find((s) => s.id === id)
+      if (!sample) return
+      try {
+        const { url, playbackRate } = preparePlaybackForSample(sample)
+        const audio = createManagedAudio(url, { loop: loopEnabled })
+        audio.playbackRate = playbackRate
+        audio.onended = () => {
+          setPlayingId(null)
+          releaseManagedAudio(audio)
+          audioRef.current = null
+        }
+        void audio.play().catch((error) => {
+          console.error('Failed to play sample preview:', error)
+          releaseManagedAudio(audio)
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          setPlayingId(null)
+        })
+        audioRef.current = audio
+        setPlayingId(id)
+      } catch (error) {
+        console.error('Failed to play sample preview:', error)
         setPlayingId(null)
-        audioRef.current = null
       }
-      audio.play()
-      audioRef.current = audio
-      setPlayingId(id)
     }
   }
 
@@ -204,6 +528,7 @@ export function SourcesYouTubeGroupedGrid({
       // Stop playing when mouse is released
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
       setPlayingId(null)
@@ -272,20 +597,6 @@ export function SourcesYouTubeGroupedGrid({
       clearTimeout(closeTimeoutRef.current)
       closeTimeoutRef.current = null
     }
-
-    // Calculate fixed position for the popup - always upward and to the left
-    const triggerElement = tagTriggerRefs.current[sampleId]
-    if (triggerElement) {
-      const rect = triggerElement.getBoundingClientRect()
-
-      setPopupPosition(prev => ({
-        ...prev,
-        [sampleId]: {
-          bottom: window.innerHeight - rect.top + 2,
-          left: rect.right
-        }
-      }))
-    }
     setTagPopupId(sampleId)
   }
 
@@ -304,6 +615,50 @@ export function SourcesYouTubeGroupedGrid({
     }
     setTagPopupId(sampleId)
   }
+
+  useEffect(() => {
+    // Layout changes invalidate any previously measured row height.
+    setMeasuredRowHeight(null)
+  }, [columnCount, gridWidth, expandedVideos])
+
+  useEffect(() => {
+    let frameId: number | null = null
+    frameId = window.requestAnimationFrame(() => {
+      const root = rootRef.current
+      if (!root) return
+      const cards = Array.from(root.querySelectorAll<HTMLElement>(YOUTUBE_SLICE_CARD_SELECTOR))
+      if (cards.length === 0) return
+
+      const uniqueRowTops = Array.from(new Set(cards.map((card) => card.offsetTop))).sort((a, b) => a - b)
+      let measuredHeight = cards[0].offsetHeight + GRID_GAP_PX
+
+      if (uniqueRowTops.length > 1) {
+        const rowSteps = uniqueRowTops
+          .slice(1)
+          .map((top, index) => top - uniqueRowTops[index])
+          .filter((step) => Number.isFinite(step) && step > 0)
+          .sort((a, b) => a - b)
+
+        if (rowSteps.length > 0) {
+          measuredHeight = rowSteps[Math.floor(rowSteps.length / 2)]
+        }
+      }
+
+      if (!Number.isFinite(measuredHeight) || measuredHeight <= 0) return
+      setMeasuredRowHeight((previous) => {
+        if (previous !== null && Math.abs(previous - measuredHeight) < 1) {
+          return previous
+        }
+        return measuredHeight
+      })
+    })
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [columnCount, gridWidth, scrollTop, samples.length, expandedVideos])
 
   if (isLoading) {
     return (
@@ -327,9 +682,9 @@ export function SourcesYouTubeGroupedGrid({
   const selectAllChecked = selectedIds.size === samples.length && samples.length > 0
 
   return (
-    <div className="flex flex-col">
+    <div ref={rootRef} className="relative isolate flex min-h-0 flex-col">
       {/* Controls */}
-      <div className="flex items-center gap-2 px-4 pt-4 pb-2">
+      <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-surface-border bg-surface-base/95 px-4 py-2 backdrop-blur-sm">
         {onToggleSelect && onToggleSelectAll && (
           <>
             <CustomCheckbox
@@ -345,6 +700,16 @@ export function SourcesYouTubeGroupedGrid({
         <span className="min-w-0 flex-1 truncate text-sm text-slate-400">
           {videoGroups.length} video{videoGroups.length !== 1 ? 's' : ''}{samples.length > 0 && `, ${samples.length} slice${samples.length !== 1 ? 's' : ''}`}
         </span>
+        {onDeleteSource && (
+          <button
+            onClick={() => onDeleteSource('youtube', 'all YouTube sources')}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+            title="Delete all YouTube sources"
+          >
+            <Trash2 size={14} />
+            <span className="text-xs sm:text-sm">Delete All</span>
+          </button>
+        )}
       </div>
 
       {/* Video groups */}
@@ -383,7 +748,7 @@ export function SourcesYouTubeGroupedGrid({
           }
 
           return (
-            <div key={group.trackId} className="bg-surface-raised rounded-lg overflow-hidden">
+            <div key={group.trackId} className="bg-surface-raised rounded-lg overflow-visible">
               {/* Video header */}
               <div className="flex items-center gap-2 sm:gap-3 p-2 sm:p-3 hover:bg-surface-base transition-colors">
                 <button
@@ -447,65 +812,82 @@ export function SourcesYouTubeGroupedGrid({
               </div>
 
               {/* Slices grid */}
-              {isExpanded && (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2 p-3 pt-0">
-                  {group.slices.map(sample => {
+              {isExpanded && (() => {
+                const groupVirtualWindow = getVirtualWindow(group.slices.length, groupGridRefs.current[group.trackId] ?? null)
+                const visibleSlices = group.slices.slice(groupVirtualWindow.startIndex, groupVirtualWindow.endIndex)
+
+                return (
+                  <div
+                    ref={(el) => { groupGridRefs.current[group.trackId] = el }}
+                    className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2 p-3 pt-0"
+                  >
+                    {groupVirtualWindow.topSpacer > 0 && (
+                      <div
+                        aria-hidden="true"
+                        style={{ height: `${groupVirtualWindow.topSpacer}px`, gridColumn: '1 / -1' }}
+                      />
+                    )}
+                    {visibleSlices.map(sample => {
                     const isSelected = selectedId === sample.id
                     const isChecked = selectedIds.has(sample.id)
                     const isPlaying = playingId === sample.id
                     const isDragging = draggedId === sample.id
+                    const isTagPopupOpen = tagPopupId === sample.id
 
                     return (
-                      <div
-                        key={sample.id}
-                        onClick={() => onSelect(sample.id)}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, sample)}
-                        onDragEnd={handleDragEnd}
-                        className={`group relative bg-surface-base rounded-lg overflow-hidden cursor-pointer transition-all ${
-                          isSelected
-                            ? 'ring-2 ring-accent-primary shadow-lg shadow-accent-primary/20'
-                            : isChecked
-                            ? 'ring-2 ring-indigo-400/60 shadow-md shadow-indigo-400/10'
-                            : 'hover:bg-surface-raised hover:shadow-md'
-                        } ${isDragging ? 'opacity-50' : ''}`}
-                      >
-                        {/* YouTube thumbnail as background */}
-                        <div className="aspect-[4/3] relative flex items-center justify-center overflow-hidden">
-                          <img
-                            src={group.thumbnailUrl}
-                            alt=""
-                            className="absolute inset-0 w-full h-full object-cover opacity-40"
-                          />
+                      <FadeInOnMount key={sample.id}>
+                        <div
+                          data-youtube-slice-card="true"
+                          onClick={() => onSelect(sample.id)}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, sample)}
+                          onDragEnd={handleDragEnd}
+                          className={`group relative ${isTagPopupOpen ? 'z-[70]' : 'z-0 hover:z-10'} bg-surface-base rounded-lg overflow-visible cursor-pointer transition-all ${
+                            isSelected
+                              ? 'ring-2 ring-accent-primary shadow-lg shadow-accent-primary/20'
+                              : isChecked
+                              ? 'ring-2 ring-indigo-400/60 shadow-md shadow-indigo-400/10'
+                              : 'hover:bg-surface-raised hover:shadow-md'
+                          } ${isDragging ? 'opacity-50' : ''}`}
+                        >
+                          {/* YouTube thumbnail as background */}
+                          <div className="aspect-[4/3] relative flex items-center justify-center overflow-hidden rounded-t-lg bg-gradient-to-br from-slate-700/60 via-slate-800/70 to-slate-950/90">
+                            {group.thumbnailUrl && (
+                              <img
+                                src={group.thumbnailUrl}
+                                alt=""
+                                className="absolute inset-0 w-full h-full object-cover opacity-55"
+                              />
+                            )}
 
-                          {/* Overlay gradient */}
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+                            {/* Overlay gradient */}
+                            <div className="absolute inset-0 bg-gradient-to-t from-surface-base/35 via-surface-base/12 to-transparent" />
 
-                          {/* Play button overlay */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              if (playMode !== 'reproduce-while-clicking') {
-                                handlePlay(sample.id, e)
-                              }
-                            }}
-                            onMouseDown={playMode === 'reproduce-while-clicking' ? (e) => handleMouseDown(sample.id, e) : undefined}
-                            onMouseUp={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
-                            onMouseLeave={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
-                            className={`relative z-10 transition-opacity ${
-                              isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                            }`}
-                          >
-                            <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
-                              isPlaying ? 'bg-accent-primary' : 'bg-black/60 hover:bg-black/80'
-                            }`}>
-                              {isPlaying && playMode === 'normal' ? (
-                                <Pause size={14} className="text-white" />
-                              ) : (
-                                <Play size={14} className="text-white ml-0.5" />
-                              )}
-                            </div>
-                          </button>
+                            {/* Play button overlay */}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                if (playMode !== 'reproduce-while-clicking') {
+                                  handlePlay(sample.id, e)
+                                }
+                              }}
+                              onMouseDown={playMode === 'reproduce-while-clicking' ? (e) => handleMouseDown(sample.id, e) : undefined}
+                              onMouseUp={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
+                              onMouseLeave={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
+                              className={`relative z-10 transition-opacity ${
+                                isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                              }`}
+                            >
+                              <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                                isPlaying ? 'bg-accent-primary' : 'bg-surface-base/60 hover:bg-surface-base/80'
+                              }`}>
+                                {isPlaying && playMode === 'normal' ? (
+                                  <Pause size={14} className="text-white" />
+                                ) : (
+                                  <Play size={14} className="text-white ml-0.5" />
+                                )}
+                              </div>
+                            </button>
 
                           {/* Checkbox for selection */}
                           {onToggleSelect && (
@@ -554,16 +936,16 @@ export function SourcesYouTubeGroupedGrid({
                           )}
 
                           {/* Duration badge */}
-                          <span className="absolute bottom-1 right-1 px-1.5 py-0.5 text-[10px] font-medium bg-black/80 rounded text-white z-10">
+                          <span className="absolute bottom-1 right-1 px-1.5 py-0.5 text-[10px] font-medium bg-surface-base/80 rounded text-white z-10">
                             {formatDuration(sample.startTime, sample.endTime)}
                           </span>
                         </div>
 
-                        {/* Info */}
-                        <div className="p-1.5">
-                          <p className="text-xs font-medium text-white truncate" title={sample.name}>
-                            {sample.name}
-                          </p>
+                          {/* Info */}
+                          <div className="h-[50px] p-1.5 overflow-visible">
+                            <p className="text-xs font-medium text-white truncate" title={sample.name}>
+                              {sample.name}
+                            </p>
 
                           {/* Tags preview */}
                           {sample.tags.length > 0 && (
@@ -577,7 +959,7 @@ export function SourcesYouTubeGroupedGrid({
                                       onTagClick(tag.id)
                                     }
                                   }}
-                                  className={`px-1 py-0.5 text-[9px] rounded-full ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                                  className={`inline-flex items-center rounded-full px-1 py-0.5 text-[9px] leading-none whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
                                   style={{
                                     backgroundColor: tag.color + '25',
                                     color: tag.color,
@@ -589,22 +971,16 @@ export function SourcesYouTubeGroupedGrid({
                               ))}
                               {sample.tags.length > 1 && (
                                 <div
-                                  ref={(el) => { tagTriggerRefs.current[sample.id] = el }}
                                   className="relative inline-block"
                                   onMouseEnter={() => handleTagPopupOpen(sample.id)}
                                   onMouseLeave={handleTagPopupClose}
                                 >
-                                  <span className="px-1 py-0.5 text-[9px] text-slate-500 cursor-default">
+                                  <span className="inline-flex items-center rounded-full px-1 py-0.5 text-[9px] leading-none text-slate-500 cursor-default bg-surface-overlay/50">
                                     +{sample.tags.length - 1}
                                   </span>
-                                  {tagPopupId === sample.id && popupPosition[sample.id] && (
+                                  {isTagPopupOpen && (
                                     <div
-                                      className="fixed z-50 bg-surface-raised border border-surface-border rounded-lg shadow-lg py-1 px-2 max-w-[200px]"
-                                      style={{
-                                        bottom: popupPosition[sample.id].bottom !== undefined ? `${popupPosition[sample.id].bottom}px` : undefined,
-                                        left: `${popupPosition[sample.id].left}px`,
-                                        transform: 'translateX(-100%)'
-                                      }}
+                                      className="absolute right-0 bottom-full mb-1 z-[80] bg-surface-raised border border-surface-border rounded-lg shadow-lg py-1 px-2 max-w-[200px] max-h-40 overflow-y-auto"
                                       onClick={(e) => e.stopPropagation()}
                                       onMouseEnter={() => handleTagPopupEnter(sample.id)}
                                       onMouseLeave={handleTagPopupClose}
@@ -624,7 +1000,7 @@ export function SourcesYouTubeGroupedGrid({
                                                 }
                                               }
                                             }}
-                                            className={`px-1 py-0.5 text-[9px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                                            className={`inline-flex items-center rounded-full px-1 py-0.5 text-[9px] leading-none whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
                                             style={{
                                               backgroundColor: tag.color + '25',
                                               color: tag.color,
@@ -641,12 +1017,20 @@ export function SourcesYouTubeGroupedGrid({
                               )}
                             </div>
                           )}
+                          </div>
                         </div>
-                      </div>
+                      </FadeInOnMount>
                     )
-                  })}
-                </div>
-              )}
+                    })}
+                    {groupVirtualWindow.bottomSpacer > 0 && (
+                      <div
+                        aria-hidden="true"
+                        style={{ height: `${groupVirtualWindow.bottomSpacer}px`, gridColumn: '1 / -1' }}
+                      />
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           )
         })}

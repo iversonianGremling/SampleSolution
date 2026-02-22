@@ -1,5 +1,32 @@
 export const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
 
+const ENHARMONIC_EQUIVALENTS: Record<string, (typeof NOTES)[number]> = {
+  Bb: 'A#',
+  Db: 'C#',
+  Eb: 'D#',
+  Gb: 'F#',
+  Ab: 'G#',
+  Cb: 'B',
+  Fb: 'E',
+  'E#': 'F',
+  'B#': 'C',
+}
+
+export function normalizeNoteName(note: string): (typeof NOTES)[number] | null {
+  if (!note) return null
+
+  const cleaned = note.trim().replace('♯', '#').replace('♭', 'b')
+  const match = cleaned.match(/^([A-Ga-g])([#b]?)/)
+  if (!match) return null
+
+  const canonical = `${match[1].toUpperCase()}${match[2] || ''}`
+  if ((NOTES as readonly string[]).includes(canonical)) {
+    return canonical as (typeof NOTES)[number]
+  }
+
+  return ENHARMONIC_EQUIVALENTS[canonical] ?? null
+}
+
 export interface RelatedKeyGroup {
   level: number
   label: string
@@ -12,9 +39,11 @@ export interface RelatedKeyGroup {
  * Parse a key string like "C major" or "A minor" into note index and mode
  */
 function parseKey(key: string): { noteIdx: number; mode: 'major' | 'minor' } | null {
-  const match = key.match(/^([A-G]#?)\s*(major|minor)$/i)
+  const match = key.match(/^([A-G](?:#|b)?)\s*(major|minor)$/i)
   if (!match) return null
-  const noteIdx = NOTES.indexOf(match[1].charAt(0).toUpperCase() + match[1].slice(1) as any)
+  const normalized = normalizeNoteName(match[1])
+  if (!normalized) return null
+  const noteIdx = NOTES.indexOf(normalized)
   if (noteIdx === -1) return null
   return { noteIdx, mode: match[2].toLowerCase() as 'major' | 'minor' }
 }
@@ -273,6 +302,31 @@ export function getScaleDegree(sampleKey: string, referenceKey: string): string 
 
   const semitones = ((sample.noteIdx - ref.noteIdx) + 12) % 12
   return DEGREE_NAMES[semitones] || 'Unknown'
+}
+
+/**
+ * Calculate the semitone shift needed to move from sourceNote to targetNote,
+ * taking the shortest path (result is in the range [-6, +6]).
+ */
+export function calcSemitoneShift(sourceNote: string, targetNote: string): number {
+  const normalizedSource = normalizeNoteName(sourceNote)
+  const normalizedTarget = normalizeNoteName(targetNote)
+  if (!normalizedSource || !normalizedTarget) return 0
+
+  const sourceIdx = NOTES.indexOf(normalizedSource)
+  const targetIdx = NOTES.indexOf(normalizedTarget)
+  if (sourceIdx === -1 || targetIdx === -1) return 0
+  const diff = ((targetIdx - sourceIdx) + 12) % 12
+  return diff <= 6 ? diff : diff - 12
+}
+
+/**
+ * Extract the tonic/root note from a key string like "C major" or "A minor".
+ */
+export function extractTonic(key: string): string | null {
+  const match = key.match(/^([A-G](?:#|b)?)/i)
+  if (!match) return null
+  return normalizeNoteName(match[1])
 }
 
 /**

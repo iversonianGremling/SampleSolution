@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Electron Setup Script for Sample Solution
+# Electron Setup Script
 # This script installs Electron dependencies and tests both web and electron modes
 
 set -e
 
-echo "🚀 Setting up Electron for Sample Solution..."
+echo "🚀 Setting up Electron..."
 echo ""
 
 # Check if we're in the frontend directory

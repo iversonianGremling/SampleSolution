@@ -9,8 +9,22 @@ import type { Express } from 'express'
 // Mock ffmpeg to avoid actual audio processing
 vi.mock('../src/services/ffmpeg.js', () => ({
   extractSlice: vi.fn().mockResolvedValue('/tmp/slice.mp3'),
+  convertAudioFile: vi.fn().mockImplementation(async (inputPath: string, outputPath: string) => {
+    fs.copyFileSync(inputPath, outputPath)
+    return outputPath
+  }),
   generatePeaks: vi.fn().mockResolvedValue([0.5, 0.7]),
   getAudioDuration: vi.fn().mockResolvedValue(180),
+  getAudioFileMetadata: vi.fn().mockImplementation(async (inputPath: string) => {
+    const extension = path.extname(inputPath).replace(/^\./, '').toLowerCase() || 'mp3'
+    return {
+      sampleRate: 44100,
+      channels: 2,
+      format: extension,
+      modifiedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    }
+  }),
 }))
 
 describe('Slices API', () => {
@@ -236,6 +250,62 @@ describe('Slices API', () => {
     })
   })
 
+  describe('POST /api/slices/batch-convert', () => {
+    it('returns 400 when sliceIds is missing', async () => {
+      const res = await request(app)
+        .post('/api/slices/batch-convert')
+        .send({ targetFormat: 'wav' })
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBe('sliceIds array required')
+    })
+
+    it('converts selected slices and updates file path + modified flag', async () => {
+      const track = await createTestTrack(app)
+      const slice = await createTestSlice(track.id, { name: 'Convert Me' })
+
+      const slicesDir = path.join(TEST_DATA_DIR, 'slices')
+      const originalPath = path.join(slicesDir, 'convert-me.mp3')
+      fs.writeFileSync(originalPath, Buffer.from('audio-source-data'))
+
+      const db = await getAppDb()
+      db.prepare('UPDATE slices SET file_path = ? WHERE id = ?').run(originalPath, slice.id)
+      db.prepare(`
+        INSERT INTO audio_features (slice_id, duration, analysis_version, created_at, file_format)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(slice.id, 1.0, 'test', new Date().toISOString(), 'mp3')
+
+      const res = await request(app)
+        .post('/api/slices/batch-convert')
+        .send({ sliceIds: [slice.id], targetFormat: 'wav' })
+
+      expect(res.status).toBe(200)
+      expect(res.body).toMatchObject({
+        targetFormat: 'wav',
+        total: 1,
+        converted: 1,
+        skipped: 0,
+        failed: 0,
+      })
+      expect(res.body.results).toHaveLength(1)
+      expect(res.body.results[0]).toMatchObject({
+        sliceId: slice.id,
+        success: true,
+        skipped: false,
+      })
+
+      const persistedSlice = db
+        .prepare('SELECT file_path as filePath, sample_modified as sampleModified FROM slices WHERE id = ?')
+        .get(slice.id) as { filePath: string; sampleModified: number }
+
+      expect(persistedSlice.filePath).toContain(`${path.sep}slices${path.sep}`)
+      expect(persistedSlice.filePath.endsWith('.wav')).toBe(true)
+      expect(persistedSlice.sampleModified).toBe(1)
+      expect(fs.existsSync(persistedSlice.filePath)).toBe(true)
+      expect(fs.existsSync(originalPath)).toBe(false)
+    })
+  })
+
   describe('GET /api/slices/:id/similar', () => {
     it('does not include the current slice in similar results', async () => {
       const track = await createTestTrack(app)
@@ -362,6 +432,73 @@ describe('Slices API', () => {
         .query({ dateCreatedFrom: '2024-01-01', dateCreatedTo: '2024-12-31' })
       expect(excludeByCreated.status).toBe(200)
       expect(excludeByCreated.body.total).toBe(0)
+    })
+
+    it('filters imported folder scopes using nested relative paths', async () => {
+      const db = await getAppDb()
+      const now = new Date().toISOString()
+      const rootPath = '/library/drums'
+
+      const insertTrack = db.prepare(`
+        INSERT INTO tracks (
+          youtube_id, title, description, thumbnail_url, duration, status, source, folder_path, relative_path, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      const insertSlice = db.prepare(`
+        INSERT INTO slices (track_id, name, start_time, end_time, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `)
+
+      const kickTrack = insertTrack.run(
+        `local-scope-kick-${Date.now()}`,
+        'Kick source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        rootPath,
+        'electronic/kicks/kick.wav',
+        now
+      )
+      insertSlice.run(kickTrack.lastInsertRowid as number, 'Kick', 0, 1, now)
+
+      const snareTrack = insertTrack.run(
+        `local-scope-snare-${Date.now()}`,
+        'Snare source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        rootPath,
+        'electronic/snares/snare.wav',
+        now
+      )
+      insertSlice.run(snareTrack.lastInsertRowid as number, 'Snare', 0, 1, now)
+
+      const hihatTrack = insertTrack.run(
+        `local-scope-hihat-${Date.now()}`,
+        'Hihat source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        rootPath,
+        'acoustic/hihat.wav',
+        now
+      )
+      insertSlice.run(hihatTrack.lastInsertRowid as number, 'Hihat', 0, 1, now)
+
+      const res = await request(app)
+        .get('/api/sources/samples')
+        .query({ scope: 'folder:/library/drums/electronic' })
+
+      expect(res.status).toBe(200)
+      expect(res.body.total).toBe(2)
+      const returnedNames = res.body.samples.map((sample: { name: string }) => sample.name).sort()
+      expect(returnedNames).toEqual(['Kick', 'Snare'])
     })
   })
 

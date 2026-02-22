@@ -18,6 +18,8 @@ const initialAudioFilter: AudioFilterState = {
   dateAddedTo: '',
   dateCreatedFrom: '',
   dateCreatedTo: '',
+  dateUpdatedFrom: '',
+  dateUpdatedTo: '',
   pitchFilterMode: 'fundamental',
   selectedNotes: [],
   relatedNotesLevels: [],
@@ -111,6 +113,8 @@ export function DrumRackSamplePanel() {
       dateAddedTo: audioFilter.dateAddedTo || undefined,
       dateCreatedFrom: audioFilter.dateCreatedFrom || undefined,
       dateCreatedTo: audioFilter.dateCreatedTo || undefined,
+      dateUpdatedFrom: audioFilter.dateUpdatedFrom || undefined,
+      dateUpdatedTo: audioFilter.dateUpdatedTo || undefined,
     }
   )
 
@@ -154,6 +158,29 @@ export function DrumRackSamplePanel() {
           return false
         }
       }
+
+      const matchesDateRange = (
+        value: string | null | undefined,
+        from: string,
+        to: string,
+      ) => {
+        if (!from && !to) return true
+        if (!value) return false
+        if (from && value < from) return false
+        if (to && value > `${to}T23:59:59`) return false
+        return true
+      }
+
+      if (!matchesDateRange(sample.dateAdded, audioFilter.dateAddedFrom, audioFilter.dateAddedTo)) {
+        return false
+      }
+      if (!matchesDateRange(sample.dateCreated, audioFilter.dateCreatedFrom, audioFilter.dateCreatedTo)) {
+        return false
+      }
+      if (!matchesDateRange(sample.dateModified, audioFilter.dateUpdatedFrom, audioFilter.dateUpdatedTo)) {
+        return false
+      }
+
       return true
     })
   }, [allSamples, minDuration, maxDuration, audioFilter])

@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronDown, ChevronRight, Loader2, Scissors } from 'lucide-react'
+import { ChevronDown, ChevronRight, Loader2, Scissors, Trash2 } from 'lucide-react'
 import { SourcesSampleListRow } from './SourcesSampleListRow'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended, SourceTree } from '../types'
-import { getSliceDownloadUrl } from '../api/client'
+import { createManagedAudio, releaseManagedAudio } from '../services/globalAudioVolume'
+import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
+import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
@@ -32,8 +34,17 @@ interface SourcesYouTubeGroupedListProps {
   isLoading?: boolean
   playMode?: PlayMode
   loopEnabled: boolean
+  tuneTargetNote?: string | null
+  tunePlaybackMode?: TunePlaybackMode
   sourceTree?: SourceTree | undefined
+  onDeleteSource?: (scope: string, label: string) => void
 }
+
+const DEFAULT_LIST_ROW_HEIGHT_PX = 46
+const LIST_ROW_OVERSCAN = 4
+const MAX_RENDERED_LIST_ROWS = 80
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
 export function SourcesYouTubeGroupedList({
   samples,
@@ -49,19 +60,31 @@ export function SourcesYouTubeGroupedList({
   onTagClick,
   isLoading = false,
   playMode = 'normal',
-  loopEnabled: _loopEnabled,
+  loopEnabled,
+  tuneTargetNote = null,
+  tunePlaybackMode: _tunePlaybackMode = 'tape',
   sourceTree,
+  onDeleteSource,
 }: SourcesYouTubeGroupedListProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const listBodyRef = useRef<HTMLDivElement | null>(null)
+  const groupedRowsRef = useRef<Record<number, HTMLDivElement | null>>({})
   const dragPreviewRef = useRef<HTMLElement | null>(null)
   const [expandedVideos, setExpandedVideos] = useState<Set<number>>(new Set())
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(0)
+  const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null)
+
+  const preparePlaybackForSample = (sample: SliceWithTrackExtended) =>
+    prepareSamplePreviewPlayback(sample, tuneTargetNote)
 
   // Stop audio when unmounting
   useEffect(() => {
     return () => {
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
     }
@@ -120,6 +143,70 @@ export function SourcesYouTubeGroupedList({
     setExpandedVideos(new Set(videoGroups.map(v => v.trackId)))
   }, [])
 
+  useEffect(() => {
+    const listBody = listBodyRef.current
+    if (!listBody) return
+
+    let rafId: number | null = null
+    let resizeObserver: ResizeObserver | null = null
+
+    const readScrollMetrics = () => {
+      setScrollTop(listBody.scrollTop)
+      setViewportHeight(listBody.clientHeight)
+    }
+
+    const scheduleMetricsRead = () => {
+      if (rafId !== null) return
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null
+        readScrollMetrics()
+      })
+    }
+
+    readScrollMetrics()
+    listBody.addEventListener('scroll', scheduleMetricsRead, { passive: true })
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', scheduleMetricsRead)
+    } else {
+      resizeObserver = new ResizeObserver(scheduleMetricsRead)
+      resizeObserver.observe(listBody)
+    }
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId)
+      }
+      listBody.removeEventListener('scroll', scheduleMetricsRead)
+      window.removeEventListener('resize', scheduleMetricsRead)
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const listBody = listBodyRef.current
+    if (!listBody) return
+
+    let frameId: number | null = null
+    frameId = window.requestAnimationFrame(() => {
+      setScrollTop(listBody.scrollTop)
+      setViewportHeight(listBody.clientHeight)
+    })
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [samples, expandedVideos])
+
+  useEffect(() => {
+    // Group expand/collapse changes layout; force a fresh row-height measurement.
+    setMeasuredRowHeight(null)
+  }, [expandedVideos, samples.length])
+
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
 
@@ -129,6 +216,7 @@ export function SourcesYouTubeGroupedList({
         // Stop playing
         if (audioRef.current) {
           audioRef.current.pause()
+          releaseManagedAudio(audioRef.current)
           audioRef.current = null
         }
         setPlayingId(null)
@@ -136,33 +224,67 @@ export function SourcesYouTubeGroupedList({
         // Stop previous
         if (audioRef.current) {
           audioRef.current.pause()
+          releaseManagedAudio(audioRef.current)
         }
-        // Play new
-        const audio = new Audio(getSliceDownloadUrl(id))
-        audio.onended = () => {
+        const sample = samples.find((s) => s.id === id)
+        if (!sample) return
+        try {
+          const { url, playbackRate } = preparePlaybackForSample(sample)
+          const audio = createManagedAudio(url, { loop: loopEnabled })
+          audio.playbackRate = playbackRate
+          audio.onended = () => {
+            setPlayingId(null)
+            releaseManagedAudio(audio)
+            audioRef.current = null
+          }
+          void audio.play().catch((error) => {
+            console.error('Failed to play sample preview:', error)
+            releaseManagedAudio(audio)
+            if (audioRef.current === audio) {
+              audioRef.current = null
+            }
+            setPlayingId(null)
+          })
+          audioRef.current = audio
+          setPlayingId(id)
+        } catch (error) {
+          console.error('Failed to play sample preview:', error)
           setPlayingId(null)
-          audioRef.current = null
         }
-        audio.play()
-        audioRef.current = audio
-        setPlayingId(id)
       }
     } else if (playMode === 'one-shot') {
       // One-shot mode: always play the whole sample, stop others
       // Stop previous
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
-      // Play new
-      const audio = new Audio(getSliceDownloadUrl(id))
-      audio.onended = () => {
+      const sample = samples.find((s) => s.id === id)
+      if (!sample) return
+      try {
+        const { url, playbackRate } = preparePlaybackForSample(sample)
+        const audio = createManagedAudio(url, { loop: false })
+        audio.playbackRate = playbackRate
+        audio.onended = () => {
+          setPlayingId(null)
+          releaseManagedAudio(audio)
+          audioRef.current = null
+        }
+        void audio.play().catch((error) => {
+          console.error('Failed to play sample preview:', error)
+          releaseManagedAudio(audio)
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          setPlayingId(null)
+        })
+        audioRef.current = audio
+        setPlayingId(id)
+      } catch (error) {
+        console.error('Failed to play sample preview:', error)
         setPlayingId(null)
-        audioRef.current = null
       }
-      audio.play()
-      audioRef.current = audio
-      setPlayingId(id)
     }
   }
 
@@ -173,17 +295,34 @@ export function SourcesYouTubeGroupedList({
       // Stop current if playing
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
-      // Play from the beginning
-      const audio = new Audio(getSliceDownloadUrl(id))
-      audio.onended = () => {
+      const sample = samples.find((s) => s.id === id)
+      if (!sample) return
+      try {
+        const { url, playbackRate } = preparePlaybackForSample(sample)
+        const audio = createManagedAudio(url, { loop: loopEnabled })
+        audio.playbackRate = playbackRate
+        audio.onended = () => {
+          setPlayingId(null)
+          releaseManagedAudio(audio)
+          audioRef.current = null
+        }
+        void audio.play().catch((error) => {
+          console.error('Failed to play sample preview:', error)
+          releaseManagedAudio(audio)
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          setPlayingId(null)
+        })
+        audioRef.current = audio
+        setPlayingId(id)
+      } catch (error) {
+        console.error('Failed to play sample preview:', error)
         setPlayingId(null)
-        audioRef.current = null
       }
-      audio.play()
-      audioRef.current = audio
-      setPlayingId(id)
     }
   }
 
@@ -194,6 +333,7 @@ export function SourcesYouTubeGroupedList({
       // Stop playing when mouse is released
       if (audioRef.current) {
         audioRef.current.pause()
+        releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
       setPlayingId(null)
@@ -255,6 +395,106 @@ export function SourcesYouTubeGroupedList({
   // Determine if select-all checkbox should be indeterminate
   const selectAllIndeterminate = selectedIds.size > 0 && selectedIds.size < samples.length
   const selectAllChecked = selectedIds.size === samples.length && samples.length > 0
+  const rowHeight = measuredRowHeight ?? DEFAULT_LIST_ROW_HEIGHT_PX
+
+  const getVirtualWindow = (itemCount: number, groupNode: HTMLDivElement | null) => {
+    if (itemCount === 0) {
+      return {
+        startIndex: 0,
+        endIndex: 0,
+        topSpacer: 0,
+        bottomSpacer: 0,
+      }
+    }
+
+    if (!groupNode || viewportHeight <= 0 || rowHeight <= 0) {
+      const fallbackEndIndex = Math.min(itemCount, MAX_RENDERED_LIST_ROWS)
+      return {
+        startIndex: 0,
+        endIndex: fallbackEndIndex,
+        topSpacer: 0,
+        bottomSpacer: Math.max(0, itemCount - fallbackEndIndex) * rowHeight,
+      }
+    }
+
+    const groupOffsetTop = groupNode.offsetTop
+    const visibleTop = scrollTop - groupOffsetTop
+    const visibleBottom = visibleTop + viewportHeight
+
+    const rawStartRow = Math.floor(visibleTop / rowHeight) - LIST_ROW_OVERSCAN
+    const rawEndRowExclusive = Math.ceil(visibleBottom / rowHeight) + LIST_ROW_OVERSCAN
+    const startRow = clamp(rawStartRow, 0, itemCount)
+    const endRowExclusive = clamp(rawEndRowExclusive, 0, itemCount)
+
+    if (startRow >= endRowExclusive) {
+      if (rawEndRowExclusive <= 0) {
+        const fallbackEndIndex = Math.min(itemCount, MAX_RENDERED_LIST_ROWS)
+        return {
+          startIndex: 0,
+          endIndex: fallbackEndIndex,
+          topSpacer: 0,
+          bottomSpacer: Math.max(0, itemCount - fallbackEndIndex) * rowHeight,
+        }
+      }
+
+      if (rawStartRow >= itemCount) {
+        const fallbackStartRow = Math.max(0, itemCount - MAX_RENDERED_LIST_ROWS)
+        return {
+          startIndex: fallbackStartRow,
+          endIndex: itemCount,
+          topSpacer: fallbackStartRow * rowHeight,
+          bottomSpacer: 0,
+        }
+      }
+
+      return {
+        startIndex: startRow,
+        endIndex: startRow,
+        topSpacer: startRow * rowHeight,
+        bottomSpacer: Math.max(0, itemCount - startRow) * rowHeight,
+      }
+    }
+
+    const cappedEndRowExclusive = Math.min(endRowExclusive, startRow + MAX_RENDERED_LIST_ROWS)
+    return {
+      startIndex: startRow,
+      endIndex: cappedEndRowExclusive,
+      topSpacer: startRow * rowHeight,
+      bottomSpacer: Math.max(0, itemCount - cappedEndRowExclusive) * rowHeight,
+    }
+  }
+
+  useEffect(() => {
+    let frameId: number | null = null
+    frameId = window.requestAnimationFrame(() => {
+      const listBody = listBodyRef.current
+      if (!listBody) return
+      const rows = Array.from(
+        listBody.querySelectorAll<HTMLElement>('[data-sources-list-row="true"]')
+      )
+      if (rows.length === 0) return
+
+      const heights = rows
+        .map((row) => row.offsetHeight)
+        .filter((height) => Number.isFinite(height) && height > 0)
+        .sort((a, b) => a - b)
+      if (heights.length === 0) return
+
+      const medianHeight = heights[Math.floor(heights.length / 2)]
+      setMeasuredRowHeight((previous) => {
+        if (previous !== null && Math.abs(previous - medianHeight) < 1) {
+          return previous
+        }
+        return medianHeight
+      })
+    })
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [scrollTop, viewportHeight, expandedVideos, samples.length])
 
   if (isLoading) {
     return (
@@ -292,13 +532,30 @@ export function SourcesYouTubeGroupedList({
           <span className="text-sm text-slate-400">
             {videoGroups.length} video{videoGroups.length !== 1 ? 's' : ''}{samples.length > 0 && `, ${samples.length} slice${samples.length !== 1 ? 's' : ''}`}
           </span>
+          <div className="flex-1" />
+          {onDeleteSource && (
+            <button
+              onClick={() => onDeleteSource('youtube', 'all YouTube sources')}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+              title="Delete all YouTube sources"
+            >
+              <Trash2 size={14} />
+              <span className="text-xs sm:text-sm">Delete All</span>
+            </button>
+          )}
         </div>
       </div>
 
       {/* List items grouped by video */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={listBodyRef} className="flex-1 overflow-y-auto">
         {videoGroups.map(group => {
           const isExpanded = expandedVideos.has(group.trackId)
+          const groupVirtualWindow = isExpanded
+            ? getVirtualWindow(group.slices.length, groupedRowsRef.current[group.trackId] ?? null)
+            : null
+          const visibleSlices = groupVirtualWindow
+            ? group.slices.slice(groupVirtualWindow.startIndex, groupVirtualWindow.endIndex)
+            : []
 
           // Calculate selection state for this video's slices
           const videoSliceIds = group.slices.map(s => s.id)
@@ -389,28 +646,41 @@ export function SourcesYouTubeGroupedList({
 
               {/* Slices list */}
               {isExpanded && (
-                <div className="divide-y divide-surface-border bg-surface-base">
-                  {group.slices.map((sample) => (
-                    <SourcesSampleListRow
-                      key={sample.id}
-                      sample={sample}
-                      isSelected={selectedId === sample.id}
-                      isChecked={selectedIds.has(sample.id)}
-                      isPlaying={playingId === sample.id}
-                      onSelect={() => onSelect(sample.id)}
-                      onToggleCheck={() => onToggleSelect(sample.id)}
-                      onPlay={(e) => handlePlay(sample.id, e as any)}
-                      onMouseDown={(e) => handleMouseDown(sample.id, e as any)}
-                      onMouseUp={handleMouseUp}
-                      onToggleFavorite={() => onToggleFavorite(sample.id)}
-                      onUpdateName={(name) => onUpdateName(sample.id, name)}
-                      onDelete={() => onDelete(sample.id)}
-                      onTagClick={onTagClick}
-                      onDragStart={handleDragStart(sample)}
-                      onDragEnd={handleDragEnd}
-                      playMode={playMode}
-                    />
-                  ))}
+                <div
+                  ref={(el) => { groupedRowsRef.current[group.trackId] = el }}
+                  className="bg-surface-base"
+                >
+                  {groupVirtualWindow && groupVirtualWindow.topSpacer > 0 && (
+                    <div aria-hidden="true" style={{ height: `${groupVirtualWindow.topSpacer}px` }} />
+                  )}
+
+                  <div className="divide-y divide-surface-border">
+                    {visibleSlices.map((sample) => (
+                      <SourcesSampleListRow
+                        key={sample.id}
+                        sample={sample}
+                        isSelected={selectedId === sample.id}
+                        isChecked={selectedIds.has(sample.id)}
+                        isPlaying={playingId === sample.id}
+                        onSelect={() => onSelect(sample.id)}
+                        onToggleCheck={() => onToggleSelect(sample.id)}
+                        onPlay={(e) => handlePlay(sample.id, e as any)}
+                        onMouseDown={(e) => handleMouseDown(sample.id, e as any)}
+                        onMouseUp={handleMouseUp}
+                        onToggleFavorite={() => onToggleFavorite(sample.id)}
+                        onUpdateName={(name) => onUpdateName(sample.id, name)}
+                        onDelete={() => onDelete(sample.id)}
+                        onTagClick={onTagClick}
+                        onDragStart={handleDragStart(sample)}
+                        onDragEnd={handleDragEnd}
+                        playMode={playMode}
+                      />
+                    ))}
+                  </div>
+
+                  {groupVirtualWindow && groupVirtualWindow.bottomSpacer > 0 && (
+                    <div aria-hidden="true" style={{ height: `${groupVirtualWindow.bottomSpacer}px` }} />
+                  )}
                 </div>
               )}
             </div>

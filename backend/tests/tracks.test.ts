@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import request from 'supertest'
-import { resetDatabase, TEST_DATA_DIR } from './setup.js'
+import { resetDatabase, TEST_DATA_DIR, getAppDb } from './setup.js'
 import { createTestTrack, createTestTrackWithAudio } from './helpers.js'
 
 // Mock yt-dlp service to avoid actual YouTube calls
@@ -60,6 +60,271 @@ describe('Tracks API', () => {
       expect(res.body[0]).toHaveProperty('title', 'Track 1')
       expect(res.body[0]).toHaveProperty('tags')
       expect(res.body[1]).toHaveProperty('title', 'Track 2')
+    })
+  })
+
+  describe('GET /api/sources/tree', () => {
+    it('builds imported folder nodes from nested relative paths', async () => {
+      const db = await getAppDb()
+      const now = new Date().toISOString()
+      const rootPath = '/library/drums'
+
+      const insertTrack = db.prepare(`
+        INSERT INTO tracks (
+          youtube_id, title, description, thumbnail_url, duration, status, source, folder_path, relative_path, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      const insertSlice = db.prepare(`
+        INSERT INTO slices (track_id, name, start_time, end_time, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `)
+
+      const trackKick = insertTrack.run(
+        `local-tree-kick-${Date.now()}`,
+        'Kick source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        rootPath,
+        'electronic/kicks/kick.wav',
+        now
+      )
+      insertSlice.run(trackKick.lastInsertRowid as number, 'Kick', 0, 1, now)
+
+      const trackSnare = insertTrack.run(
+        `local-tree-snare-${Date.now()}`,
+        'Snare source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        rootPath,
+        'electronic/snares/snare.wav',
+        now
+      )
+      insertSlice.run(trackSnare.lastInsertRowid as number, 'Snare', 0, 1, now)
+
+      const trackHihat = insertTrack.run(
+        `local-tree-hihat-${Date.now()}`,
+        'Hihat source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        rootPath,
+        'acoustic/hihat.wav',
+        now
+      )
+      insertSlice.run(trackHihat.lastInsertRowid as number, 'Hihat', 0, 1, now)
+
+      const findNodeByPath = (
+        nodes: Array<{ path: string; sampleCount: number; children: any[] }>,
+        expectedPath: string
+      ): { path: string; sampleCount: number; children: any[] } | undefined => {
+        for (const node of nodes) {
+          if (node.path === expectedPath) return node
+          const childMatch = findNodeByPath(node.children || [], expectedPath)
+          if (childMatch) return childMatch
+        }
+        return undefined
+      }
+
+      const res = await request(app).get('/api/sources/tree')
+
+      expect(res.status).toBe(200)
+      const rootNode = findNodeByPath(res.body.folders, '/library/drums')
+      const electronicNode = findNodeByPath(res.body.folders, '/library/drums/electronic')
+      const kicksNode = findNodeByPath(res.body.folders, '/library/drums/electronic/kicks')
+      const snaresNode = findNodeByPath(res.body.folders, '/library/drums/electronic/snares')
+      const acousticNode = findNodeByPath(res.body.folders, '/library/drums/acoustic')
+
+      expect(rootNode).toBeTruthy()
+      expect(rootNode?.sampleCount).toBe(3)
+      expect(electronicNode?.sampleCount).toBe(2)
+      expect(kicksNode?.sampleCount).toBe(1)
+      expect(snaresNode?.sampleCount).toBe(1)
+      expect(acousticNode?.sampleCount).toBe(1)
+    })
+  })
+
+  describe('DELETE /api/sources', () => {
+    it('deletes one YouTube source by track id scope', async () => {
+      const trackA = await createTestTrack(app, { youtubeId: 'yt-delete-a1', title: 'Delete A' })
+      const trackB = await createTestTrack(app, { youtubeId: 'yt-delete-b1', title: 'Keep B' })
+      const db = await getAppDb()
+      const now = new Date().toISOString()
+
+      db.prepare(`
+        INSERT INTO slices (track_id, name, start_time, end_time, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(trackA.id, 'Slice A', 0, 1, now)
+
+      const res = await request(app)
+        .delete('/api/sources')
+        .send({ scope: `youtube:${trackA.id}` })
+
+      expect(res.status).toBe(200)
+      expect(res.body.success).toBe(true)
+      expect(res.body.deletedTracks).toBe(1)
+
+      const remainingTracks = db.prepare('SELECT id FROM tracks ORDER BY id').all() as Array<{ id: number }>
+      expect(remainingTracks.map((row) => row.id)).toEqual([trackB.id])
+    })
+
+    it('deletes only local non-folder sources for local scope', async () => {
+      const db = await getAppDb()
+      const now = new Date().toISOString()
+      const insertTrack = db.prepare(`
+        INSERT INTO tracks (
+          youtube_id, title, description, thumbnail_url, duration, status, source, folder_path, relative_path, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+
+      const localStandalone = insertTrack.run(
+        `local-standalone-${Date.now()}`,
+        'Local Standalone',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        null,
+        null,
+        now
+      )
+      insertTrack.run(
+        `local-folder-${Date.now()}`,
+        'Local Folder',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        '/library/drums',
+        'kick.wav',
+        now
+      )
+      insertTrack.run(
+        `yt-${Date.now()}`,
+        'YouTube',
+        '',
+        '',
+        1,
+        'ready',
+        'youtube',
+        null,
+        null,
+        now
+      )
+
+      const res = await request(app)
+        .delete('/api/sources')
+        .send({ scope: 'local' })
+
+      expect(res.status).toBe(200)
+      expect(res.body.success).toBe(true)
+      expect(res.body.deletedTracks).toBe(1)
+
+      const deletedId = Number(localStandalone.lastInsertRowid)
+      const deletedTrack = db.prepare('SELECT id FROM tracks WHERE id = ?').get(deletedId) as { id: number } | undefined
+      expect(deletedTrack).toBeUndefined()
+    })
+
+    it('accepts scope from query string when delete request body is missing', async () => {
+      const db = await getAppDb()
+      const now = new Date().toISOString()
+      const insertTrack = db.prepare(`
+        INSERT INTO tracks (
+          youtube_id, title, description, thumbnail_url, duration, status, source, folder_path, relative_path, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+
+      const localStandalone = insertTrack.run(
+        `local-query-${Date.now()}`,
+        'Local Query',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        null,
+        null,
+        now
+      )
+
+      const res = await request(app).delete('/api/sources?scope=local')
+
+      expect(res.status).toBe(200)
+      expect(res.body.success).toBe(true)
+      expect(res.body.deletedTracks).toBe(1)
+
+      const deletedId = Number(localStandalone.lastInsertRowid)
+      const deletedTrack = db.prepare('SELECT id FROM tracks WHERE id = ?').get(deletedId) as { id: number } | undefined
+      expect(deletedTrack).toBeUndefined()
+    })
+
+    it('deletes imported folder sources recursively by folder scope', async () => {
+      const db = await getAppDb()
+      const now = new Date().toISOString()
+      const insertTrack = db.prepare(`
+        INSERT INTO tracks (
+          youtube_id, title, description, thumbnail_url, duration, status, source, folder_path, relative_path, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+
+      insertTrack.run(
+        `local-electronic-${Date.now()}`,
+        'Electronic Kick',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        '/library/drums',
+        'electronic/kicks/kick.wav',
+        now
+      )
+      insertTrack.run(
+        `local-acoustic-${Date.now()}`,
+        'Acoustic Snare',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        '/library/drums',
+        'acoustic/snare.wav',
+        now
+      )
+      insertTrack.run(
+        `local-other-${Date.now()}`,
+        'Other Folder',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        '/library/bass',
+        'subs/sub.wav',
+        now
+      )
+
+      const res = await request(app)
+        .delete('/api/sources')
+        .send({ scope: 'folder:/library/drums' })
+
+      expect(res.status).toBe(200)
+      expect(res.body.success).toBe(true)
+      expect(res.body.deletedTracks).toBe(2)
+
+      const remainingTitles = (
+        db.prepare('SELECT title FROM tracks ORDER BY title').all() as Array<{ title: string }>
+      ).map((row) => row.title)
+      expect(remainingTitles).toEqual(['Other Folder'])
     })
   })
 

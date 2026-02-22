@@ -8,6 +8,24 @@ export interface Track {
   audioPath: string | null
   peaksPath: string | null
   status: 'pending' | 'downloading' | 'ready' | 'error'
+  source?: 'youtube' | 'local'
+  originalPath?: string | null
+  folderPath?: string | null
+  relativePath?: string | null
+  fullPathHint?: string | null
+  artist?: string | null
+  album?: string | null
+  year?: number | null
+  albumArtist?: string | null
+  genre?: string | null
+  composer?: string | null
+  trackNumber?: number | null
+  discNumber?: number | null
+  trackComment?: string | null
+  musicalKey?: string | null
+  tagBpm?: number | null
+  isrc?: string | null
+  metadataRaw?: string | null
   createdAt: string
 }
 
@@ -64,6 +82,11 @@ declare module 'express-session' {
       name: string
       email: string
       picture: string
+    }
+    spotifyTokens?: {
+      access_token: string
+      refresh_token?: string
+      expires_at: number
     }
   }
 }

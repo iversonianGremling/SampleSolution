@@ -24,22 +24,22 @@ export function SourcesBatchActions({
   isAnalyzing = false,
 }: SourcesBatchActionsProps) {
   return (
-    <div className="px-4 py-2 border-b border-accent-primary/30 bg-accent-primary/10 flex items-center gap-3 flex-shrink-0">
+    <div className="px-3 py-1.5 border-b border-accent-primary/30 bg-accent-primary/10 flex items-center gap-2.5 flex-shrink-0">
       {/* Selection count */}
-      <span className="text-sm text-accent-primary font-medium">
+      <span className="text-xs text-accent-primary font-medium leading-none">
         {selectedCount} selected
       </span>
 
       {/* Divider */}
-      <div className="w-px h-5 bg-surface-border"></div>
+      <div className="w-px h-4 bg-surface-border"></div>
 
       {/* Download button */}
       <button
         onClick={() => onBatchDownload(Array.from(selectedIds))}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs font-medium rounded transition-colors"
+        className="flex items-center gap-1 px-2.5 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs font-medium rounded transition-colors leading-none"
         title="Download selected samples"
       >
-        <Download size={14} />
+        <Download size={12} />
         Download
       </button>
 
@@ -47,14 +47,14 @@ export function SourcesBatchActions({
       <button
         onClick={() => onAnalyzeSelected(Array.from(selectedIds))}
         disabled={isAnalyzing || selectedCount === 0}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/20 hover:bg-violet-500/30 disabled:bg-surface-base text-violet-300 disabled:text-slate-400 text-xs font-medium rounded transition-colors"
+        className="flex items-center gap-1 px-2.5 py-1 bg-violet-500/20 hover:bg-violet-500/30 disabled:bg-surface-base text-violet-300 disabled:text-slate-400 text-xs font-medium rounded transition-colors leading-none"
         title={
           modifiedSelectedCount > 0
             ? `Analyze ${selectedCount} selected sample${selectedCount === 1 ? '' : 's'} (${modifiedSelectedCount} modified)`
             : `Analyze ${selectedCount} selected sample${selectedCount === 1 ? '' : 's'}`
         }
       >
-        {isAnalyzing ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+        {isAnalyzing ? <Loader2 className="animate-spin" size={12} /> : <RefreshCw size={12} />}
         Analyze selected
       </button>
 
@@ -62,13 +62,13 @@ export function SourcesBatchActions({
       <button
         onClick={() => onBatchDelete(Array.from(selectedIds))}
         disabled={isDeleting}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 disabled:bg-surface-base text-red-400 disabled:text-slate-400 text-xs font-medium rounded transition-colors"
+        className="flex items-center gap-1 px-2.5 py-1 bg-red-500/20 hover:bg-red-500/30 disabled:bg-surface-base text-red-400 disabled:text-slate-400 text-xs font-medium rounded transition-colors leading-none"
         title="Delete selected samples"
       >
         {isDeleting ? (
-          <Loader2 className="animate-spin" size={14} />
+          <Loader2 className="animate-spin" size={12} />
         ) : (
-          <Trash2 size={14} />
+          <Trash2 size={12} />
         )}
         Delete
       </button>
@@ -79,10 +79,10 @@ export function SourcesBatchActions({
       {/* Clear selection button */}
       <button
         onClick={onClearSelection}
-        className="flex items-center gap-1.5 px-3 py-1.5 text-slate-400 hover:text-slate-300 text-xs font-medium transition-colors"
+        className="flex items-center gap-1 px-2 py-1 text-slate-400 hover:text-slate-300 text-xs font-medium transition-colors leading-none"
         title="Clear selection"
       >
-        <X size={14} />
+        <X size={12} />
         Clear
       </button>
     </div>

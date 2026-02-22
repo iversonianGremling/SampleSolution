@@ -11,10 +11,10 @@ import { getAudioFileMetadata } from '../services/ffmpeg.js'
 import { onTagAdded, onTagRemoved } from '../services/tagFolderSync.js'
 
 const router = Router()
-const AUTO_REANALYSIS_TAG_CATEGORIES = ['type', 'tempo', 'spectral', 'energy', 'instrument', 'general'] as const
+const AUTO_REANALYSIS_TAG_CATEGORIES = ['type', 'energy', 'instrument', 'general'] as const
 
-type TagCategory = 'general' | 'type' | 'tempo' | 'spectral' | 'energy' | 'instrument' | 'filename'
-const TAG_CATEGORIES: TagCategory[] = ['general', 'type', 'tempo', 'spectral', 'energy', 'instrument', 'filename']
+type TagCategory = 'general' | 'type' | 'energy' | 'instrument' | 'filename'
+const TAG_CATEGORIES: TagCategory[] = ['general', 'type', 'energy', 'instrument', 'filename']
 
 function normalizeTagCategory(category?: string): TagCategory {
   if (category && TAG_CATEGORIES.includes(category as TagCategory)) {
@@ -118,7 +118,7 @@ router.put('/:id', async (req, res) => {
     const updates: any = {}
     if (name) updates.name = name.toLowerCase()
     if (color) updates.color = color
-    if (category) updates.category = category
+    if (category) updates.category = normalizeTagCategory(category)
 
     const [updated] = await db
       .update(schema.tags)

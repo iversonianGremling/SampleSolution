@@ -11,6 +11,7 @@ import warnings
 import numpy as np
 import os
 import re
+import hashlib
 
 warnings.filterwarnings('ignore')
 
@@ -155,12 +156,12 @@ def preprocess_audio(y, sr):
     return y, y_original, trim_idx
 
 
-def analyze_audio(audio_path, analysis_level='standard', filename=None):
+def analyze_audio(audio_path, analysis_level='advanced', filename=None):
     """
     Main audio analysis function
     Args:
         audio_path: Path to audio file
-        analysis_level: 'quick', 'standard', or 'advanced'
+        analysis_level: 'advanced'
     Returns dict with all extracted features and suggested tags
     """
     start_time = time.time()
@@ -217,22 +218,27 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
             else:
                 debug_log(f"Fundamental frequency: None (chord or no pitch detected) [{(time.time()-step_start)*1000:.0f}ms]")
 
-        # Extract key features (standard and advanced only, loops only)
-        # Key detection is meaningless for one-shot samples (use fundamental frequency instead)
+        # Extract key/scale features
         key_features = {'key_estimate': None, 'scale': None, 'key_strength': None}
-        if analysis_level in ['standard', 'advanced'] and not is_one_shot:
+        if analysis_level == 'advanced':
             step_start = time.time()
-            key_features = extract_key_features(y, sr)
-            debug_log(f"Key features extracted: {key_features['key_estimate']} [{(time.time()-step_start)*1000:.0f}ms]")
+            if is_one_shot:
+                # F0-anchored chroma analysis for one-shots; Essentia fallback for chords
+                key_features = extract_scale_for_one_shot(y, sr, fundamental_freq=fundamental_freq)
+                debug_log(f"One-shot scale detected: {key_features['key_estimate']} "
+                          f"(strength={key_features['key_strength']}) [{(time.time()-step_start)*1000:.0f}ms]")
+            else:
+                key_features = extract_key_features(y, sr)
+                debug_log(f"Key features extracted: {key_features['key_estimate']} [{(time.time()-step_start)*1000:.0f}ms]")
 
         # Estimate polyphony (approximate simultaneous note count)
         step_start = time.time()
         polyphony = estimate_polyphony(y, sr)
         debug_log(f"Polyphony estimated: {polyphony if polyphony is not None else 'n/a'} [{(time.time()-step_start)*1000:.0f}ms]")
 
-        # Extract tempo only for loops (standard and advanced only)
+        # Extract tempo only for loops (advanced only)
         tempo_features = {}
-        if is_loop and duration > 1.5 and analysis_level in ['standard', 'advanced']:
+        if is_loop and duration > 1.5 and analysis_level == 'advanced':
             step_start = time.time()
             tempo_features = extract_tempo_features(y, sr)
             debug_log(f"Tempo extracted: {tempo_features.get('bpm')} BPM [{(time.time()-step_start)*1000:.0f}ms]")
@@ -275,6 +281,12 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
             # Fundamental frequency (one-shots only)
             'fundamental_frequency': fundamental_freq,
         }
+
+        # Phase 6: Fingerprinting/hash for duplicate detection (all analysis levels)
+        step_start = time.time()
+        fingerprint_features = extract_fingerprint(audio_path, y, sr)
+        debug_log(f"Phase 6: Audio fingerprinting [{(time.time()-step_start)*1000:.0f}ms]")
+        features.update(fingerprint_features)
 
         # Advanced level: Add Phase 1 features (timbral, perceptual, spectral)
         if analysis_level == 'advanced':
@@ -361,12 +373,6 @@ def analyze_audio(audio_path, analysis_level='standard', filename=None):
             event_features = detect_sound_events(y, sr, duration)
             debug_log(f"Phase 5: Sound event detection [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(event_features)
-
-            # Phase 6: Audio fingerprinting and similarity detection
-            step_start = time.time()
-            fingerprint_features = extract_fingerprint(audio_path, y, sr)
-            debug_log(f"Phase 6: Audio fingerprinting [{(time.time()-step_start)*1000:.0f}ms]")
-            features.update(fingerprint_features)
 
         # Generate tags from features
         step_start = time.time()
@@ -675,7 +681,7 @@ def extract_tempo_features(y, sr):
     return {'bpm': None, 'beats_count': None}
 
 
-def extract_spectral_features(y, sr, level='standard'):
+def extract_spectral_features(y, sr, level='advanced'):
     """Extract spectral characteristics"""
     # Spectral centroid - brightness indicator
     centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
@@ -1910,13 +1916,25 @@ def extract_fingerprint(audio_path, y, sr):
         y: Audio time series (mono, float32)
         sr: Sample rate
     Returns:
-        dict with chromaprint_fingerprint
+        dict with chromaprint_fingerprint and similarity_hash
     """
     features = {
         'chromaprint_fingerprint': None,
+        'similarity_hash': None,
     }
 
     try:
+        # SHA-256 content hash fallback for short clips and environments
+        # where chromaprint is unavailable.
+        try:
+            sha256 = hashlib.sha256()
+            with open(audio_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                    sha256.update(chunk)
+            features['similarity_hash'] = sha256.hexdigest()
+        except Exception as e:
+            print(f"Warning: Similarity hash failed: {e}", file=sys.stderr)
+
         # Chromaprint fingerprint for exact/near duplicate detection
         if acoustid is not None:
             try:
@@ -2043,6 +2061,79 @@ def extract_fundamental_frequency(y, sr, filename=None, spectral_features=None):
         return None
 
 
+# Chroma templates (12 semitones, root at index 0)
+_MAJOR_TEMPLATE = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1], dtype=float)
+_MINOR_TEMPLATE = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1], dtype=float)  # natural minor
+_NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+
+def extract_scale_for_one_shot(y, sr, fundamental_freq=None):
+    """
+    Detect scale/mode for a one-shot sample.
+
+    If fundamental_freq is provided (monophonic one-shot):
+        - Compute chroma_cens, rotate so the root note is at index 0,
+          then compare cosine similarity against major/minor templates.
+        - This is F0-anchored scale detection.
+
+    If fundamental_freq is None (chord or polyphonic one-shot):
+        - Fall back to Essentia KeyExtractor (same as loops).
+    """
+    try:
+        if fundamental_freq is not None:
+            # Convert Hz → MIDI pitch class (0=C … 11=B)
+            root_bin = int(round(librosa.hz_to_midi(fundamental_freq))) % 12
+            note_name = _NOTE_NAMES[root_bin]
+
+            # Energy-normalised chroma — robust to loudness variations
+            chroma = librosa.feature.chroma_cens(y=y, sr=sr, hop_length=512)
+            mean_chroma = np.median(chroma, axis=1)  # shape (12,)
+
+            # Rotate so the detected root sits at index 0
+            rotated = np.roll(mean_chroma, -root_bin)
+
+            def cosine_sim(a, b):
+                denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-8
+                return float(np.dot(a, b) / denom)
+
+            sim_major = cosine_sim(rotated, _MAJOR_TEMPLATE)
+            sim_minor = cosine_sim(rotated, _MINOR_TEMPLATE)
+
+            if sim_major >= sim_minor:
+                scale = 'major'
+                strength = sim_major
+            else:
+                scale = 'minor'
+                strength = sim_minor
+
+            # Require minimum confidence to avoid spurious results
+            if strength < 0.5:
+                return {'key_estimate': None, 'scale': None, 'key_strength': None}
+
+            return {
+                'key_estimate': f"{note_name} {scale}",
+                'scale': scale,
+                'key_strength': round(strength, 4),
+            }
+
+        else:
+            # Chord / polyphonic one-shot — fall back to Essentia KeyExtractor
+            if essentia is not None:
+                key_extractor = es.KeyExtractor()
+                key, scale, strength = key_extractor(y.astype('float32'))
+                key_estimate = f"{key} {scale}" if key and scale else None
+                return {
+                    'key_estimate': key_estimate,
+                    'scale': scale if scale else None,
+                    'key_strength': float(strength) if strength and strength > 0 else None,
+                }
+
+    except Exception as e:
+        print(f"Warning: One-shot scale detection failed: {e}", file=sys.stderr)
+
+    return {'key_estimate': None, 'scale': None, 'key_strength': None}
+
+
 def extract_transient_features(y_percussive, sr):
     """
     Extract transient features from the percussive component.
@@ -2152,38 +2243,13 @@ def generate_tags(features):
         else:
             tags.extend(['fast', '140+bpm'])
 
-    # Spectral tags (brightness/frequency content)
-    centroid = features['spectral_centroid']
-    rolloff = features['spectral_rolloff']
-
-    if centroid > 3500:
-        tags.append('bright')
-    elif centroid > 1500:
-        tags.append('mid-range')
-    else:
-        tags.append('dark')
-
-    if rolloff < 2000:
-        tags.append('bass-heavy')
-    elif rolloff > 8000:
-        tags.append('high-freq')
-
     # Energy/dynamics tags
-    loudness = features['loudness']
     onset_strength = features.get('onset_strength', features['rms_energy'])
     dynamic_range = features['dynamic_range']
 
-    # Punch and softness
+    # Punch tag only; softness is derived from hardness-related fields.
     if features['is_one_shot'] and onset_strength > 0.1:
         tags.append('punchy')
-    elif onset_strength < 0.05:
-        tags.append('soft')
-
-    # Overall energy
-    if loudness > -10:
-        tags.append('aggressive')
-    elif loudness < -30:
-        tags.append('ambient')
 
     # Dynamics
     if dynamic_range > 30:
@@ -2191,40 +2257,13 @@ def generate_tags(features):
     elif dynamic_range < 10:
         tags.append('compressed')
 
-    # Texture tags (based on zero crossing rate)
-    zcr = features['zero_crossing_rate']
-    if zcr > 0.12:
-        tags.append('noisy')
-    elif zcr < 0.05:
-        tags.append('smooth')
-
     # Instrument tags (high confidence only)
     for pred in features.get('instrument_predictions', []):
         if pred['confidence'] > 0.55:
             tags.append(pred['name'])
 
-    # Perceptual tags (Phase 1 - advanced level only)
-    if features.get('brightness') is not None:
-        brightness = features['brightness']
-        if brightness > 0.7:
-            tags.append('bright')
-        elif brightness < 0.3:
-            tags.append('dull')
-
-    if features.get('warmth') is not None:
-        warmth = features['warmth']
-        if warmth > 0.7:
-            tags.append('warm')
-        elif warmth < 0.3:
-            tags.append('cold')
-
-    if features.get('hardness') is not None:
-        hardness = features['hardness']
-        if hardness > 0.7:
-            tags.append('hard')
-        elif hardness < 0.3:
-            tags.append('soft-timbre')
-
+    # Perceptual tags are intentionally omitted for brightness/noisiness/warmth/hardness
+    # because these dimensions are already available as numeric fields.
     if features.get('roughness') is not None:
         roughness = features['roughness']
         if roughness > 0.6:
@@ -2326,28 +2365,7 @@ def generate_tags(features):
             if mood['confidence'] >= 0.6:  # 60% threshold
                 tags.append(mood['mood'].lower())
 
-    # EBU R128 Loudness tags (Phase 5)
-    if features.get('loudness_integrated') is not None:
-        loudness_integrated = features['loudness_integrated']
-        # LUFS ranges: -23 is broadcast standard, -14 is streaming standard
-        if loudness_integrated > -10:
-            tags.append('very-loud')
-        elif loudness_integrated > -14:
-            tags.append('loud')
-        elif loudness_integrated > -23:
-            tags.append('moderate-loudness')
-        else:
-            tags.append('quiet')
-
-    if features.get('loudness_range') is not None:
-        loudness_range = features['loudness_range']
-        # Loudness Range in LU: >20 = very dynamic, <5 = very compressed
-        if loudness_range > 20:
-            tags.append('very-dynamic')
-        elif loudness_range > 10:
-            tags.append('dynamic-loudness')
-        elif loudness_range < 5:
-            tags.append('compressed-loudness')
+    # Loudness tags are intentionally omitted because loudness is stored as numeric fields.
 
     # Event Detection tags (Phase 5)
     if features.get('event_density') is not None:
@@ -2370,8 +2388,8 @@ def main():
 
     parser = argparse.ArgumentParser(description='Analyze audio file features')
     parser.add_argument('audio_file', help='Path to audio file')
-    parser.add_argument('--level', choices=['quick', 'standard', 'advanced'],
-                        default='standard', help='Analysis level (default: standard)')
+    parser.add_argument('--level', choices=['advanced'],
+                        default='advanced', help='Analysis level (default: advanced)')
     parser.add_argument('--filename', default=None,
                         help='Original filename (used for sample type detection hints)')
 

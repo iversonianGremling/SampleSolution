@@ -8,6 +8,18 @@ import { processTrack } from '../services/processor.js'
 
 const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
+const RESOLVED_DATA_DIR = path.resolve(DATA_DIR)
+
+function isManagedDataPath(filePath: string): boolean {
+  const resolved = path.resolve(filePath)
+  return resolved === RESOLVED_DATA_DIR || resolved.startsWith(`${RESOLVED_DATA_DIR}${path.sep}`)
+}
+
+async function unlinkManagedPath(filePath: string | null | undefined): Promise<void> {
+  if (!filePath) return
+  if (!isManagedDataPath(filePath)) return
+  await fs.unlink(filePath).catch(() => {})
+}
 
 // Types for source tree
 interface YouTubeSourceNode {
@@ -30,40 +42,242 @@ interface SourceTree {
   folders: FolderNode[]
 }
 
-// Helper function to build folder tree from flat list of paths
-function buildFolderTree(
-  folderCounts: Map<string, number>
-): FolderNode[] {
-  const rootFolders: FolderNode[] = []
-  const folderMap = new Map<string, FolderNode>()
+interface FolderCountEntry {
+  folderPath: string
+  rootPath: string
+  sampleCount: number
+}
 
-  // Sort paths by length to process parents before children
-  const sortedPaths = Array.from(folderCounts.keys()).sort((a, b) => a.length - b.length)
+function normalizeSourcePathValue(value: string): string {
+  return value
+    .replace(/\\+/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/\/+$/, '')
+}
 
-  for (const folderPath of sortedPaths) {
-    const count = folderCounts.get(folderPath) || 0
-    const node: FolderNode = {
-      path: folderPath,
-      name: path.basename(folderPath) || folderPath,
-      children: [],
-      sampleCount: count,
-    }
-    folderMap.set(folderPath, node)
+function normalizeSourcePathIdentity(value: string): string {
+  return normalizeSourcePathValue(value).toLowerCase()
+}
 
-    // Find parent folder
-    const parentPath = path.dirname(folderPath)
-    const parent = folderMap.get(parentPath)
+function isPathInFolderScope(candidatePath: string | null, scopePath: string): boolean {
+  if (!candidatePath) return false
+  const normalizedCandidate = normalizeSourcePathIdentity(candidatePath)
+  const normalizedScope = normalizeSourcePathIdentity(scopePath)
+  if (!normalizedCandidate || !normalizedScope) return false
+  return (
+    normalizedCandidate === normalizedScope ||
+    normalizedCandidate.startsWith(`${normalizedScope}/`)
+  )
+}
 
-    if (parent) {
-      parent.children.push(node)
-      // Add this folder's count to parent's total
-      parent.sampleCount += count
-    } else {
-      rootFolders.push(node)
+function deriveImportedFolderScope(rootPath: string, relativePath: string | null): string {
+  const normalizedRoot = normalizeSourcePathValue(rootPath)
+  if (!relativePath || !relativePath.trim()) {
+    return normalizedRoot
+  }
+
+  const normalizedRelative = normalizeSourcePathValue(relativePath)
+  if (!normalizedRelative) return normalizedRoot
+
+  const relativeDir = path.posix.dirname(normalizedRelative)
+  if (!relativeDir || relativeDir === '.') {
+    return normalizedRoot
+  }
+
+  return normalizeSourcePathValue(path.posix.join(normalizedRoot, relativeDir))
+}
+
+function getImportedTrackFolderScopePath(
+  folderPath: string | null,
+  relativePath: string | null,
+  originalPath: string | null
+): string | null {
+  if (!folderPath || !folderPath.trim()) return null
+  const normalizedFolderPath = normalizeSourcePathValue(folderPath)
+  if (!normalizedFolderPath) return null
+
+  if (relativePath && relativePath.trim()) {
+    const normalizedRelativePath = normalizeSourcePathValue(relativePath)
+    if (normalizedRelativePath) {
+      const relativeDir = path.posix.dirname(normalizedRelativePath)
+      if (!relativeDir || relativeDir === '.') return normalizedFolderPath
+      return normalizeSourcePathValue(path.posix.join(normalizedFolderPath, relativeDir))
     }
   }
 
-  return rootFolders
+  if (originalPath && originalPath.trim()) {
+    const normalizedOriginal = normalizeSourcePathValue(originalPath)
+    if (isPathInFolderScope(normalizedOriginal, normalizedFolderPath)) {
+      const relativeToRoot = path.posix.relative(normalizedFolderPath, normalizedOriginal)
+      if (relativeToRoot && relativeToRoot !== '.' && !relativeToRoot.startsWith('..')) {
+        const relativeDir = path.posix.dirname(relativeToRoot)
+        if (relativeDir && relativeDir !== '.') {
+          return normalizeSourcePathValue(path.posix.join(normalizedFolderPath, relativeDir))
+        }
+      }
+    }
+  }
+
+  return normalizedFolderPath
+}
+
+async function collectDirectoriesRecursively(rootPath: string): Promise<string[]> {
+  const normalizedRoot = normalizeSourcePathValue(rootPath)
+  if (!normalizedRoot) return []
+
+  const collected = new Set<string>([normalizedRoot])
+
+  async function walk(currentDir: string) {
+    let entries: import('fs').Dirent[]
+    try {
+      entries = await fs.readdir(currentDir, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const nextDir = path.join(currentDir, entry.name)
+      const normalized = normalizeSourcePathValue(nextDir)
+      if (!normalized || collected.has(normalized)) continue
+      collected.add(normalized)
+      await walk(nextDir)
+    }
+  }
+
+  await walk(rootPath)
+  return Array.from(collected)
+}
+
+// Helper function to build folder tree from imported folder roots + relative paths.
+function buildFolderTree(folderEntries: FolderCountEntry[]): FolderNode[] {
+  if (folderEntries.length === 0) return []
+
+  const directCounts = new Map<string, number>()
+  const allPaths = new Set<string>()
+  const parentByPath = new Map<string, string | null>()
+
+  const setParent = (childPath: string, parentPath: string | null) => {
+    const existingParent = parentByPath.get(childPath)
+    if (existingParent === undefined || (existingParent === null && parentPath !== null)) {
+      parentByPath.set(childPath, parentPath)
+    }
+  }
+
+  const registerChain = (folderPath: string, rootPath: string) => {
+    let currentPath = folderPath
+    const normalizedRoot = normalizeSourcePathValue(rootPath)
+
+    while (true) {
+      allPaths.add(currentPath)
+
+      if (currentPath === normalizedRoot) {
+        setParent(currentPath, null)
+        break
+      }
+
+      const parentPath = normalizeSourcePathValue(path.posix.dirname(currentPath))
+      if (!parentPath || parentPath === '.' || parentPath === currentPath) {
+        setParent(currentPath, null)
+        break
+      }
+
+      setParent(currentPath, parentPath)
+      currentPath = parentPath
+    }
+  }
+
+  for (const entry of folderEntries) {
+    const normalizedFolderPath = normalizeSourcePathValue(entry.folderPath)
+    const normalizedRootPath = normalizeSourcePathValue(entry.rootPath)
+
+    if (!normalizedFolderPath || !normalizedRootPath) continue
+
+    directCounts.set(
+      normalizedFolderPath,
+      (directCounts.get(normalizedFolderPath) || 0) + Number(entry.sampleCount || 0)
+    )
+    registerChain(normalizedFolderPath, normalizedRootPath)
+  }
+
+  const sortedPaths = Array.from(allPaths).sort((a, b) => {
+    const depthA = a.split('/').length
+    const depthB = b.split('/').length
+    if (depthA !== depthB) return depthA - depthB
+    return a.localeCompare(b)
+  })
+
+  const nodesByPath = new Map<string, FolderNode>()
+  for (const folderPath of sortedPaths) {
+    nodesByPath.set(folderPath, {
+      path: folderPath,
+      name: path.posix.basename(folderPath) || folderPath,
+      children: [],
+      sampleCount: directCounts.get(folderPath) || 0,
+    })
+  }
+
+  const rootNodes: FolderNode[] = []
+  for (const folderPath of sortedPaths) {
+    const node = nodesByPath.get(folderPath)
+    if (!node) continue
+
+    const parentPath = parentByPath.get(folderPath) ?? null
+    const parent = parentPath ? nodesByPath.get(parentPath) : undefined
+
+    if (parent) {
+      parent.children.push(node)
+    } else {
+      rootNodes.push(node)
+    }
+  }
+
+  const sortChildren = (nodes: FolderNode[]) => {
+    nodes.sort((a, b) => a.name.localeCompare(b.name))
+    for (const node of nodes) {
+      if (node.children.length > 0) sortChildren(node.children)
+    }
+  }
+
+  const aggregateCounts = (node: FolderNode): number => {
+    let total = node.sampleCount
+    for (const child of node.children) {
+      total += aggregateCounts(child)
+    }
+    node.sampleCount = total
+    return total
+  }
+
+  sortChildren(rootNodes)
+  for (const root of rootNodes) {
+    aggregateCounts(root)
+  }
+
+  return rootNodes
+}
+
+type TrackRow = typeof schema.tracks.$inferSelect
+
+async function deleteTrackWithManagedAssets(track: TrackRow): Promise<void> {
+  if (track.audioPath) {
+    await unlinkManagedPath(track.audioPath)
+  }
+  if (track.peaksPath) {
+    await unlinkManagedPath(track.peaksPath)
+  }
+
+  const trackSlices = await db
+    .select()
+    .from(schema.slices)
+    .where(eq(schema.slices.trackId, track.id))
+
+  for (const slice of trackSlices) {
+    if (slice.filePath) {
+      await unlinkManagedPath(slice.filePath)
+    }
+  }
+
+  await db.delete(schema.tracks).where(eq(schema.tracks.id, track.id))
 }
 
 // GET /api/sources/tree - Returns hierarchical source tree
@@ -114,10 +328,12 @@ router.get('/sources/tree', async (_req, res) => {
 
     const localCount = Number(localCountResult[0]?.count || 0)
 
-    // Get folder paths with sample counts
+    // Get imported folder paths with sample counts.
+    // Group by both root folder path and relative path so nested folder structure is preserved.
     const folderResults = await db
       .select({
         folderPath: schema.tracks.folderPath,
+        relativePath: schema.tracks.relativePath,
         count: sql<number>`count(*)`.as('count'),
       })
       .from(schema.slices)
@@ -126,16 +342,39 @@ router.get('/sources/tree', async (_req, res) => {
         eq(schema.tracks.source, 'local'),
         isNotNull(schema.tracks.folderPath)
       ))
-      .groupBy(schema.tracks.folderPath)
+      .groupBy(schema.tracks.folderPath, schema.tracks.relativePath)
 
-    const folderCounts = new Map<string, number>()
+    const folderEntries: FolderCountEntry[] = []
+    const importedRootPaths = new Set<string>()
     for (const row of folderResults) {
       if (row.folderPath) {
-        folderCounts.set(row.folderPath, Number(row.count))
+        const rootPath = normalizeSourcePathValue(row.folderPath)
+        if (!rootPath) continue
+        importedRootPaths.add(rootPath)
+        const folderPath = deriveImportedFolderScope(rootPath, row.relativePath ?? null)
+        folderEntries.push({
+          folderPath,
+          rootPath,
+          sampleCount: Number(row.count),
+        })
       }
     }
 
-    const folders = buildFolderTree(folderCounts)
+    // Include on-disk directory structure under imported roots so empty folders
+    // are visible in Sources and newly-created folders appear immediately.
+    for (const rootPath of importedRootPaths) {
+      if (!path.isAbsolute(rootPath)) continue
+      const directories = await collectDirectoriesRecursively(rootPath)
+      for (const directoryPath of directories) {
+        folderEntries.push({
+          folderPath: directoryPath,
+          rootPath,
+          sampleCount: 0,
+        })
+      }
+    }
+
+    const folders = buildFolderTree(folderEntries)
 
     const tree: SourceTree = {
       youtube,
@@ -147,6 +386,92 @@ router.get('/sources/tree', async (_req, res) => {
   } catch (error) {
     console.error('Error fetching sources tree:', error)
     res.status(500).json({ error: 'Failed to fetch sources tree' })
+  }
+})
+
+// DELETE /api/sources - Delete tracks/slices for a source scope
+router.delete('/sources', async (req, res) => {
+  const scopeRaw = req.body?.scope ?? req.query?.scope
+  const scope = typeof scopeRaw === 'string' ? scopeRaw.trim() : ''
+
+  if (!scope) {
+    return res.status(400).json({ error: 'scope required' })
+  }
+
+  try {
+    let tracksToDelete: TrackRow[] = []
+
+    if (scope === 'youtube') {
+      tracksToDelete = await db
+        .select()
+        .from(schema.tracks)
+        .where(eq(schema.tracks.source, 'youtube'))
+    } else if (scope.startsWith('youtube:')) {
+      const youtubeScopeValue = scope.slice('youtube:'.length).trim()
+      if (!youtubeScopeValue) {
+        return res.status(400).json({ error: 'Invalid youtube scope' })
+      }
+
+      const parsedTrackId = Number.parseInt(youtubeScopeValue, 10)
+      if (Number.isInteger(parsedTrackId) && String(parsedTrackId) === youtubeScopeValue) {
+        tracksToDelete = await db
+          .select()
+          .from(schema.tracks)
+          .where(eq(schema.tracks.id, parsedTrackId))
+          .limit(1)
+      } else {
+        tracksToDelete = await db
+          .select()
+          .from(schema.tracks)
+          .where(eq(schema.tracks.youtubeId, youtubeScopeValue))
+          .limit(1)
+      }
+    } else if (scope === 'local') {
+      tracksToDelete = await db
+        .select()
+        .from(schema.tracks)
+        .where(and(
+          eq(schema.tracks.source, 'local'),
+          isNull(schema.tracks.folderPath)
+        ))
+    } else if (scope.startsWith('folder:')) {
+      const folderScopeValue = normalizeSourcePathValue(scope.slice('folder:'.length).trim())
+      if (!folderScopeValue) {
+        return res.status(400).json({ error: 'Invalid folder scope' })
+      }
+
+      const importedFolderTracks = await db
+        .select()
+        .from(schema.tracks)
+        .where(and(
+          eq(schema.tracks.source, 'local'),
+          isNotNull(schema.tracks.folderPath)
+        ))
+
+      tracksToDelete = importedFolderTracks.filter((track) => {
+        const trackFolderScopePath = getImportedTrackFolderScopePath(
+          track.folderPath,
+          track.relativePath,
+          track.originalPath
+        )
+        return isPathInFolderScope(trackFolderScopePath, folderScopeValue)
+      })
+    } else {
+      return res.status(400).json({ error: `Unsupported source scope: ${scope}` })
+    }
+
+    for (const track of tracksToDelete) {
+      await deleteTrackWithManagedAssets(track)
+    }
+
+    res.json({
+      success: true,
+      scope,
+      deletedTracks: tracksToDelete.length,
+    })
+  } catch (error) {
+    console.error('Error deleting source scope:', error)
+    res.status(500).json({ error: 'Failed to delete source' })
   }
 })
 
@@ -249,7 +574,37 @@ router.post('/', async (req, res) => {
 // Update track
 router.put('/:id', async (req, res) => {
   const id = parseInt(req.params.id)
-  const { title, artist, album, year } = req.body as { title?: string; artist?: string; album?: string; year?: number | null }
+  const {
+    title,
+    artist,
+    album,
+    year,
+    albumArtist,
+    genre,
+    composer,
+    trackNumber,
+    discNumber,
+    trackComment,
+    musicalKey,
+    tagBpm,
+    isrc,
+    metadataRaw,
+  } = req.body as {
+    title?: string
+    artist?: string | null
+    album?: string | null
+    year?: number | null
+    albumArtist?: string | null
+    genre?: string | null
+    composer?: string | null
+    trackNumber?: number | null
+    discNumber?: number | null
+    trackComment?: string | null
+    musicalKey?: string | null
+    tagBpm?: number | null
+    isrc?: string | null
+    metadataRaw?: string | null
+  }
 
   try {
     const track = await db
@@ -267,6 +622,16 @@ router.put('/:id', async (req, res) => {
     if (artist !== undefined) updates.artist = artist
     if (album !== undefined) updates.album = album
     if (year !== undefined) updates.year = year
+    if (albumArtist !== undefined) updates.albumArtist = albumArtist
+    if (genre !== undefined) updates.genre = genre
+    if (composer !== undefined) updates.composer = composer
+    if (trackNumber !== undefined) updates.trackNumber = trackNumber
+    if (discNumber !== undefined) updates.discNumber = discNumber
+    if (trackComment !== undefined) updates.trackComment = trackComment
+    if (musicalKey !== undefined) updates.musicalKey = musicalKey
+    if (tagBpm !== undefined) updates.tagBpm = tagBpm
+    if (isrc !== undefined) updates.isrc = isrc
+    if (metadataRaw !== undefined) updates.metadataRaw = metadataRaw
 
     const [updated] = await db
       .update(schema.tracks)
@@ -296,27 +661,7 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Track not found' })
     }
 
-    // Delete audio files
-    if (track[0].audioPath) {
-      await fs.unlink(track[0].audioPath).catch(() => {})
-    }
-    if (track[0].peaksPath) {
-      await fs.unlink(track[0].peaksPath).catch(() => {})
-    }
-
-    // Delete slices and their files
-    const slices = await db
-      .select()
-      .from(schema.slices)
-      .where(eq(schema.slices.trackId, id))
-
-    for (const slice of slices) {
-      if (slice.filePath) {
-        await fs.unlink(slice.filePath).catch(() => {})
-      }
-    }
-
-    await db.delete(schema.tracks).where(eq(schema.tracks.id, id))
+    await deleteTrackWithManagedAssets(track[0])
 
     res.json({ success: true })
   } catch (error) {

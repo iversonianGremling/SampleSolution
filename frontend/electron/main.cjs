@@ -143,6 +143,7 @@ async function startBackend() {
     PORT: '4000',
     NODE_ENV: 'production',
     DATA_PATH: backendDataPath,
+    LOCAL_IMPORT_MODE: 'reference',
     UPLOAD_PATH: uploadsPath,
     PYTHON_PATH: pythonPath || 'python3',
     PYTHON_AVAILABLE: pythonPath ? 'true' : 'false',
@@ -269,6 +270,24 @@ ipcMain.handle('select-directory', async (_event, options = {}) => {
     properties: ['openDirectory', 'createDirectory'],
     defaultPath: options.defaultPath || undefined,
     title: options.title || 'Select folder',
+  });
+
+  if (result.canceled || !result.filePaths?.length) {
+    return null;
+  }
+
+  return result.filePaths[0];
+});
+
+ipcMain.handle('select-import-path', async (_event, options = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    properties: ['openFile', 'openDirectory'],
+    defaultPath: options.defaultPath || undefined,
+    title: options.title || 'Select backup folder or ZIP file',
+    filters: [
+      { name: 'Backup ZIP', extensions: ['zip'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
   });
 
   if (result.canceled || !result.filePaths?.length) {

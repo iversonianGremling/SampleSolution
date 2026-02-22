@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import * as api from '../api/client'
 
+const HIDDEN_TAG_CATEGORIES = new Set(['tempo', 'spectral'])
+
 export function useTracks() {
   return useQuery({
     queryKey: ['tracks'],
@@ -113,7 +115,7 @@ export function useUpdateSlice(trackId: number) {
 export function useDeleteSlice(trackId: number) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: api.deleteSlice,
+    mutationFn: (id: number) => api.deleteSlice(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
@@ -125,7 +127,7 @@ export function useDeleteSlice(trackId: number) {
 export function useDeleteSliceGlobal() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: api.deleteSlice,
+    mutationFn: (id: number) => api.deleteSlice(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
@@ -154,7 +156,10 @@ export function useUpdateSliceGlobal() {
 export function useTags() {
   return useQuery({
     queryKey: ['tags'],
-    queryFn: api.getTags,
+    queryFn: async () => {
+      const tags = await api.getTags()
+      return tags.filter((tag) => !HIDDEN_TAG_CATEGORIES.has((tag.category || '').toLowerCase()))
+    },
   })
 }
 
@@ -224,7 +229,7 @@ export function useBatchReanalyzeSlices() {
       includeFilenameTags,
     }: {
       sliceIds?: number[]
-      analysisLevel?: 'quick' | 'standard' | 'advanced'
+      analysisLevel?: 'advanced'
       concurrency?: number
       includeFilenameTags?: boolean
     }) => api.batchReanalyzeSamples(sliceIds, analysisLevel, concurrency, includeFilenameTags),
@@ -614,10 +619,118 @@ export function useImportFolder() {
   })
 }
 
+export function useCreateImportedFolder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ parentPath, name }: { parentPath: string; name: string }) =>
+      api.createImportedFolder(parentPath, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sourceTree'] })
+    },
+  })
+}
+
+export function useDeleteSource() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ scope }: { scope: string }) =>
+      api.deleteSource(scope),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tracks'] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      queryClient.invalidateQueries({ queryKey: ['sourceTree'] })
+      queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['folder-facets'] })
+      queryClient.invalidateQueries({ queryKey: ['collection-facets'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+    },
+  })
+}
+
 // Folder browsing
 export function useBrowseDirectory(path?: string) {
   return useQuery({
     queryKey: ['browse', path],
     queryFn: () => api.browseDirectory(path),
+  })
+}
+
+// Spotify
+export function useSpotifyStatus() {
+  return useQuery({
+    queryKey: ['spotify-status'],
+    queryFn: api.getSpotifyStatus,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useSpotifyPlaylists() {
+  return useQuery({
+    queryKey: ['spotify-playlists'],
+    queryFn: api.getSpotifyPlaylists,
+    enabled: false,
+  })
+}
+
+export function useDisconnectSpotify() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.disconnectSpotify,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['spotify-status'] })
+      queryClient.removeQueries({ queryKey: ['spotify-playlists'] })
+    },
+  })
+}
+
+export function useImportSpotify() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.importSpotify,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tracks'] })
+    },
+  })
+}
+
+// SoundCloud
+export function useImportSoundCloud() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.importSoundCloud,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tracks'] })
+    },
+  })
+}
+
+// Tools
+export function useToolVersions() {
+  return useQuery({
+    queryKey: ['tool-versions'],
+    queryFn: api.getToolVersions,
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
+  })
+}
+
+export function useUpdateYtdlp() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.streamYtdlpUpdate,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tool-versions'] })
+    },
+  })
+}
+
+export function useUpdateSpotdl() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.streamSpotdlUpdate,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tool-versions'] })
+    },
   })
 }

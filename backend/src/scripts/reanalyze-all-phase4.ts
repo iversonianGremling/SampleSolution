@@ -8,10 +8,9 @@
  * - 1024-dim embeddings for similarity matching
  *
  * Usage:
- *   npx tsx src/scripts/reanalyze-all-phase4.ts [--level advanced] [--limit N]
+ *   npx tsx src/scripts/reanalyze-all-phase4.ts [--limit N]
  *
  * Options:
- *   --level <quick|standard|advanced>  Analysis level (default: advanced)
  *   --limit <N>                        Only re-analyze first N slices (for testing)
  *   --skip-existing                    Skip slices that already have Phase 4 features
  */
@@ -36,9 +35,6 @@ function parseArgs(): Options {
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
-      case '--level':
-        options.level = args[++i] as AnalysisLevel
-        break
       case '--limit':
         options.limit = parseInt(args[++i])
         break
@@ -53,7 +49,6 @@ Usage:
   npx tsx src/scripts/reanalyze-all-phase4.ts [options]
 
 Options:
-  --level <quick|standard|advanced>  Analysis level (default: advanced)
   --limit <N>                        Only re-analyze first N slices
   --skip-existing                    Skip slices that already have Phase 4 features
   --help                             Show this help message

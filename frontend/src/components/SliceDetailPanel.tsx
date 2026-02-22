@@ -1,36 +1,27 @@
-import { Play, Square, Heart, Download } from 'lucide-react'
+import { Play, Square, Heart, Download, Wand2, Loader2 } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
-import type { SliceWithTrackExtended, Tag, Folder } from '../types'
-import { getSliceDownloadUrl } from '../api/client'
+import { useQueryClient } from '@tanstack/react-query'
+import type { SliceWithTrackExtended, SamplePoint } from '../types'
+import { getSliceDownloadUrl, batchReanalyzeSamples } from '../api/client'
 import { InstrumentIcon } from './InstrumentIcon'
 import { freqToNoteName } from '../utils/musicTheory'
+import { useToggleFavorite } from '../hooks/useTracks'
 
 interface SliceDetailPanelProps {
-  sample: SliceWithTrackExtended | null
-  allTags: Tag[]
-  folders: Folder[]
-  onToggleFavorite: (sliceId: number) => void
-  onAddTag: (sliceId: number, tagId: number) => void
-  onRemoveTag: (sliceId: number, tagId: number) => void
-  onAddToFolder: (folderId: number, sliceId: number) => void
-  onRemoveFromFolder: (folderId: number, sliceId: number) => void
-  onUpdateName: (sliceId: number, name: string) => void
-  onTagClick?: (tagId: number) => void
+  selectedPoint: SamplePoint
+  sliceData: SliceWithTrackExtended
+  onClose: () => void
 }
 
 export function SliceDetailPanel({
-  sample,
-  allTags,
-  folders,
-  onToggleFavorite,
-  onAddTag,
-  onRemoveTag,
-  onAddToFolder,
-  onRemoveFromFolder,
-  onUpdateName,
-  onTagClick,
+  selectedPoint: _selectedPoint,
+  sliceData: sample,
+  onClose: _onClose,
 }: SliceDetailPanelProps) {
+  const toggleFavoriteMutation = useToggleFavorite()
+  const queryClient = useQueryClient()
   const [isPlaying, setIsPlaying] = useState(false)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   useEffect(() => {
@@ -77,6 +68,20 @@ export function SliceDetailPanel({
     link.click()
   }
 
+  const handleAnalyze = async () => {
+    if (!sample) return
+    try {
+      setIsAnalyzing(true)
+      await batchReanalyzeSamples([sample.id])
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['audioFeatures', sample.id] })
+    } catch (error) {
+      console.error('Failed to analyze sample:', error)
+    } finally {
+      setIsAnalyzing(false)
+    }
+  }
+
   if (!sample) {
     return (
       <div className="h-full flex items-center justify-center bg-surface-base">
@@ -88,7 +93,7 @@ export function SliceDetailPanel({
   }
 
   const duration = sample.endTime - sample.startTime
-  const fundamentalNote = sample.fundamentalFreq ? freqToNoteName(sample.fundamentalFreq) : null
+  const fundamentalNote = sample.fundamentalFrequency ? freqToNoteName(sample.fundamentalFrequency) : null
 
   return (
     <div className="h-full flex flex-col bg-surface-base overflow-y-auto">
@@ -108,15 +113,15 @@ export function SliceDetailPanel({
               {isPlaying ? <Square size={16} /> : <Play size={16} />}
             </button>
             <button
-              onClick={() => onToggleFavorite(sample.id)}
+              onClick={() => toggleFavoriteMutation.mutate(sample.id)}
               className={`p-2 rounded-lg transition-colors ${
-                sample.isFavorite
+                sample.favorite
                   ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
                   : 'bg-surface-overlay text-slate-400 hover:text-amber-400'
               }`}
-              title={sample.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+              title={sample.favorite ? 'Remove from favorites' : 'Add to favorites'}
             >
-              <Heart size={16} className={sample.isFavorite ? 'fill-current' : ''} />
+              <Heart size={16} className={sample.favorite ? 'fill-current' : ''} />
             </button>
             <button
               onClick={handleDownload}
@@ -124,6 +129,14 @@ export function SliceDetailPanel({
               title="Download"
             >
               <Download size={16} />
+            </button>
+            <button
+              onClick={handleAnalyze}
+              disabled={isAnalyzing}
+              className="p-2 rounded-lg bg-surface-overlay text-slate-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Analyze slice"
+            >
+              {isAnalyzing ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
             </button>
           </div>
         </div>
@@ -161,7 +174,7 @@ export function SliceDetailPanel({
               <div>
                 <div className="text-xs text-slate-500">Instrument</div>
                 <div className="flex items-center gap-1.5">
-                  <InstrumentIcon instrument={sample.instrumentPrimary} size={14} />
+                  <InstrumentIcon type={sample.instrumentPrimary} size={14} />
                   <div className="text-sm text-white">{sample.instrumentPrimary}</div>
                 </div>
               </div>
@@ -183,7 +196,7 @@ export function SliceDetailPanel({
               {sample.tags.map((tag) => (
                 <button
                   key={tag.id}
-                  onClick={() => onTagClick?.(tag.id)}
+                  onClick={() => {}}
                   className="px-2 py-1 rounded-md text-xs transition-colors"
                   style={{
                     backgroundColor: `${tag.color || '#64748b'}20`,
@@ -200,26 +213,26 @@ export function SliceDetailPanel({
         )}
 
         {/* Perceptual Features */}
-        {(sample.brightnessEstimate !== null || sample.warmthEstimate !== null || sample.hardnessEstimate !== null) && (
+        {(sample.brightness != null || sample.warmth != null || sample.hardness != null) && (
           <div>
             <h3 className="text-sm font-medium text-slate-400 mb-2">Perceptual Features</h3>
             <div className="grid grid-cols-3 gap-3">
-              {sample.brightnessEstimate !== null && (
+              {sample.brightness != null && (
                 <div>
                   <div className="text-xs text-slate-500">Brightness</div>
-                  <div className="text-sm text-white font-mono">{sample.brightnessEstimate.toFixed(2)}</div>
+                  <div className="text-sm text-white font-mono">{sample.brightness.toFixed(2)}</div>
                 </div>
               )}
-              {sample.warmthEstimate !== null && (
+              {sample.warmth != null && (
                 <div>
                   <div className="text-xs text-slate-500">Warmth</div>
-                  <div className="text-sm text-white font-mono">{sample.warmthEstimate.toFixed(2)}</div>
+                  <div className="text-sm text-white font-mono">{sample.warmth.toFixed(2)}</div>
                 </div>
               )}
-              {sample.hardnessEstimate !== null && (
+              {sample.hardness != null && (
                 <div>
                   <div className="text-xs text-slate-500">Hardness</div>
-                  <div className="text-sm text-white font-mono">{sample.hardnessEstimate.toFixed(2)}</div>
+                  <div className="text-sm text-white font-mono">{sample.hardness.toFixed(2)}</div>
                 </div>
               )}
             </div>

@@ -27,6 +27,7 @@ const api = axios.create({
 
 type HierarchyApiMode = 'modern' | 'legacy'
 let hierarchyApiModePromise: Promise<HierarchyApiMode> | null = null
+const DEFAULT_CREATE_COLOR = '#3b82f6'
 
 async function getHierarchyApiMode(): Promise<HierarchyApiMode> {
   if (hierarchyApiModePromise) return hierarchyApiModePromise
@@ -84,7 +85,22 @@ export const addTracks = (urls: string[]) =>
 
 export const deleteTrack = (id: number) => api.delete(`/tracks/${id}`)
 
-export const updateTrack = (id: number, data: { title?: string; artist?: string; album?: string; year?: number | null }) =>
+export const updateTrack = (id: number, data: {
+  title?: string
+  artist?: string | null
+  album?: string | null
+  year?: number | null
+  albumArtist?: string | null
+  genre?: string | null
+  composer?: string | null
+  trackNumber?: number | null
+  discNumber?: number | null
+  trackComment?: string | null
+  musicalKey?: string | null
+  tagBpm?: number | null
+  isrc?: string | null
+  metadataRaw?: string | null
+}) =>
   api.put<Track>(`/tracks/${id}`, data).then((r) => r.data)
 
 export const getTrackAudioUrl = (id: number) => `${getApiBaseUrl()}/tracks/${id}/audio`
@@ -95,6 +111,9 @@ export const getTrackPeaks = (id: number) =>
 // Slices
 export const getAllSlices = () =>
   api.get<SliceWithTrack[]>('/slices').then((r) => r.data)
+
+export const getSliceCount = () =>
+  api.get<{ total: number }>('/slices/count').then((r) => r.data.total)
 
 export const getSlices = (trackId: number) =>
   api.get<Slice[]>(`/tracks/${trackId}/slices`).then((r) => r.data)
@@ -163,6 +182,31 @@ export const downloadBatchSlicesZip = (sliceIds: number[]) =>
       blob: r.data,
       contentDisposition: r.headers['content-disposition'] as string | undefined,
     }))
+
+export type BatchConvertTargetFormat = 'mp3' | 'wav' | 'flac' | 'aiff' | 'ogg' | 'm4a'
+
+export interface BatchConvertResultEntry {
+  sliceId: number
+  success: boolean
+  skipped: boolean
+  outputPath?: string
+  format?: string | null
+  error?: string
+}
+
+export interface BatchConvertResponse {
+  targetFormat: BatchConvertTargetFormat
+  total: number
+  converted: number
+  skipped: number
+  failed: number
+  results: BatchConvertResultEntry[]
+}
+
+export const batchConvertSlices = (sliceIds: number[], targetFormat: BatchConvertTargetFormat) =>
+  api
+    .post<BatchConvertResponse>('/slices/batch-convert', { sliceIds, targetFormat })
+    .then((r) => r.data)
 
 // YouTube
 export const searchYouTube = (query: string) =>
@@ -292,17 +336,19 @@ export const getFolders = async (params?: { collectionId?: number; ungrouped?: b
 
 export const createFolder = (data: { name: string; color?: string; parentId?: number; collectionId?: number }) =>
   getHierarchyApiMode().then(async (mode) => {
+    const payload = { ...data, color: data.color ?? DEFAULT_CREATE_COLOR }
+
     if (mode === 'legacy') {
       const r = await api.post<any>('/collections', {
-        name: data.name,
-        color: data.color,
-        parentId: data.parentId,
-        perspectiveId: data.collectionId,
+        name: payload.name,
+        color: payload.color,
+        parentId: payload.parentId,
+        perspectiveId: payload.collectionId,
       })
       return mapLegacyCollectionToFolder(r.data)
     }
 
-    const r = await api.post<Folder>('/folders', data)
+    const r = await api.post<Folder>('/folders', payload)
     return r.data
   })
 
@@ -406,12 +452,14 @@ export const getCollections = async () => {
 
 export const createCollection = (data: { name: string; color?: string }) =>
   getHierarchyApiMode().then(async (mode) => {
+    const payload = { ...data, color: data.color ?? DEFAULT_CREATE_COLOR }
+
     if (mode === 'legacy') {
-      const r = await api.post<any>('/perspectives', data)
+      const r = await api.post<any>('/perspectives', payload)
       return mapLegacyPerspectiveToCollection(r.data)
     }
 
-    const r = await api.post<Collection>('/collections', data)
+    const r = await api.post<Collection>('/collections', payload)
     return r.data
   })
 
@@ -485,13 +533,23 @@ export interface FolderImportResult extends BatchImportResult {
   folderPath: string
 }
 
+type LocalFileWithPath = File & {
+  path?: string
+  webkitRelativePath?: string
+}
+
 export const importLocalFile = async (
   file: File,
   importType?: 'sample' | 'track',
-  analysisLevel?: 'quick' | 'standard' | 'advanced'
+  analysisLevel?: 'advanced'
 ): Promise<LocalImportResult> => {
   const formData = new FormData()
+  const localFile = file as LocalFileWithPath
   formData.append('file', file)
+  formData.append('relativePath', localFile.webkitRelativePath || '')
+  if (typeof localFile.path === 'string' && localFile.path.trim()) {
+    formData.append('absolutePath', localFile.path)
+  }
   const params = new URLSearchParams()
   if (importType) params.append('importType', importType)
   if (analysisLevel) params.append('analysisLevel', analysisLevel)
@@ -503,10 +561,15 @@ export const importLocalFile = async (
 export const importLocalFiles = async (
   files: File[],
   importType?: 'sample' | 'track',
-  analysisLevel?: 'quick' | 'standard' | 'advanced'
+  analysisLevel?: 'advanced'
 ): Promise<BatchImportResult> => {
   const formData = new FormData()
-  files.forEach((file) => formData.append('files', file))
+  files.forEach((file) => {
+    const localFile = file as LocalFileWithPath
+    formData.append('files', file)
+    formData.append('relativePaths', localFile.webkitRelativePath || '')
+    formData.append('absolutePaths', typeof localFile.path === 'string' ? localFile.path : '')
+  })
   const params = new URLSearchParams()
   if (importType) params.append('importType', importType)
   if (analysisLevel) params.append('analysisLevel', analysisLevel)
@@ -518,7 +581,7 @@ export const importLocalFiles = async (
 export const importFolder = (
   folderPath: string,
   importType?: 'sample' | 'track',
-  analysisLevel?: 'quick' | 'standard' | 'advanced'
+  analysisLevel?: 'advanced'
 ) =>
   api.post<FolderImportResult>('/import/folder', { folderPath, importType, analysisLevel }).then((r) => r.data)
 
@@ -532,6 +595,154 @@ export interface BrowseResult {
 
 export const browseDirectory = (path?: string) =>
   api.get<BrowseResult>('/import/browse', { params: { path } }).then((r) => r.data)
+
+export interface CreateImportedFolderResult {
+  success: boolean
+  path: string
+  parentPath: string
+  name: string
+}
+
+export const createImportedFolder = (parentPath: string, name: string) =>
+  api
+    .post<CreateImportedFolderResult>('/import/folders', { parentPath, name })
+    .then((r) => r.data)
+
+export interface DeleteSourceResult {
+  success: boolean
+  scope: string
+  deletedTracks: number
+}
+
+function normalizeSourcePathIdentity(value: string): string {
+  return value
+    .replace(/\\+/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase()
+}
+
+function getPosixDirname(value: string): string {
+  const normalized = value.replace(/\/+$/, '')
+  const idx = normalized.lastIndexOf('/')
+  if (idx < 0) return '.'
+  if (idx === 0) return '/'
+  return normalized.slice(0, idx)
+}
+
+function isPathInFolderScope(candidatePath: string | null, scopePath: string): boolean {
+  if (!candidatePath) return false
+  const normalizedCandidate = normalizeSourcePathIdentity(candidatePath)
+  const normalizedScope = normalizeSourcePathIdentity(scopePath)
+  if (!normalizedCandidate || !normalizedScope) return false
+  return normalizedCandidate === normalizedScope || normalizedCandidate.startsWith(`${normalizedScope}/`)
+}
+
+function getImportedTrackFolderScopePath(
+  folderPath: string | null | undefined,
+  relativePath: string | null | undefined,
+  originalPath: string | null | undefined
+): string | null {
+  if (!folderPath || !folderPath.trim()) return null
+  const normalizedFolderPath = normalizeSourcePathIdentity(folderPath)
+  if (!normalizedFolderPath) return null
+
+  if (relativePath && relativePath.trim()) {
+    const normalizedRelative = normalizeSourcePathIdentity(relativePath)
+    if (normalizedRelative) {
+      const relativeDir = getPosixDirname(normalizedRelative)
+      if (!relativeDir || relativeDir === '.') return normalizedFolderPath
+      return normalizeSourcePathIdentity(`${normalizedFolderPath}/${relativeDir}`)
+    }
+  }
+
+  if (originalPath && originalPath.trim()) {
+    const normalizedOriginal = normalizeSourcePathIdentity(originalPath)
+    if (isPathInFolderScope(normalizedOriginal, normalizedFolderPath)) {
+      const prefix = `${normalizedFolderPath}/`
+      const relativeToRoot = normalizedOriginal === normalizedFolderPath
+        ? ''
+        : normalizedOriginal.startsWith(prefix)
+          ? normalizedOriginal.slice(prefix.length)
+          : ''
+      if (relativeToRoot) {
+        const relativeDir = getPosixDirname(relativeToRoot)
+        if (relativeDir && relativeDir !== '.') {
+          return normalizeSourcePathIdentity(`${normalizedFolderPath}/${relativeDir}`)
+        }
+      }
+    }
+  }
+
+  return normalizedFolderPath
+}
+
+async function deleteSourceLegacyFallback(scope: string): Promise<DeleteSourceResult> {
+  const tracks = await getTracks()
+  let targetTracks = tracks
+
+  if (scope === 'youtube') {
+    targetTracks = tracks.filter((track) => track.source === 'youtube')
+  } else if (scope.startsWith('youtube:')) {
+    const youtubeScopeValue = scope.slice('youtube:'.length).trim()
+    const parsedTrackId = Number.parseInt(youtubeScopeValue, 10)
+    targetTracks = tracks.filter((track) => {
+      if (Number.isInteger(parsedTrackId) && String(parsedTrackId) === youtubeScopeValue) {
+        return track.id === parsedTrackId
+      }
+      return track.youtubeId === youtubeScopeValue
+    })
+  } else if (scope === 'local') {
+    targetTracks = tracks.filter((track) => track.source === 'local' && !track.folderPath)
+  } else if (scope.startsWith('folder:')) {
+    const folderScopeValue = normalizeSourcePathIdentity(scope.slice('folder:'.length).trim())
+    targetTracks = tracks.filter((track) => {
+      if (track.source !== 'local' || !track.folderPath) return false
+      const trackFolderScopePath = getImportedTrackFolderScopePath(
+        track.folderPath,
+        track.relativePath,
+        track.originalPath
+      )
+      return isPathInFolderScope(trackFolderScopePath, folderScopeValue)
+    })
+  } else {
+    throw new Error(`Unsupported source scope: ${scope}`)
+  }
+
+  for (const track of targetTracks) {
+    await deleteTrack(track.id)
+  }
+
+  return {
+    success: true,
+    scope,
+    deletedTracks: targetTracks.length,
+  }
+}
+
+export const deleteSource = async (scope: string): Promise<DeleteSourceResult> => {
+  const payload = { params: { scope }, data: { scope } }
+
+  try {
+    const response = await api.delete<DeleteSourceResult>('/sources', payload)
+    return response.data
+  } catch (error) {
+    if (!(axios.isAxiosError(error) && error.response?.status === 404)) {
+      throw error
+    }
+  }
+
+  try {
+    const response = await api.delete<DeleteSourceResult>('/tracks/sources', payload)
+    return response.data
+  } catch (error) {
+    if (!(axios.isAxiosError(error) && error.response?.status === 404)) {
+      throw error
+    }
+  }
+
+  return deleteSourceLegacyFallback(scope)
+}
 
 // Full library transfer
 export interface LibraryExportResult {
@@ -552,13 +763,36 @@ export interface LibraryImportResult {
   success: boolean
   importedFrom: string
   backupPath: string
+  resolvedLibraryPath?: string
+  extractedFromZip?: boolean
+  mode?: LibraryImportMode
+  sourceId?: string
+  sourceName?: string
+  importedCollections?: string[]
+}
+
+export type LibraryImportMode = 'replace' | 'source'
+
+export interface LibraryImportOptions {
+  mode?: LibraryImportMode
+  importCollections?: boolean
+  collectionNames?: string[]
+  collectionNameSuffix?: string
 }
 
 export const exportLibrary = (exportPath?: string) =>
   api.post<LibraryExportResult>('/library/export', { exportPath }).then((r) => r.data)
 
-export const importLibrary = (libraryPath: string) =>
-  api.post<LibraryImportResult>('/library/import', { libraryPath }).then((r) => r.data)
+export const importLibrary = (libraryPath: string, options?: LibraryImportOptions) => {
+  const payload: Record<string, unknown> = { libraryPath }
+
+  if (options?.mode) payload.mode = options.mode
+  if (options?.importCollections !== undefined) payload.importCollections = options.importCollections
+  if (options?.collectionNames) payload.collectionNames = options.collectionNames
+  if (options?.collectionNameSuffix !== undefined) payload.collectionNameSuffix = options.collectionNameSuffix
+
+  return api.post<LibraryImportResult>('/library/import', payload).then((r) => r.data)
+}
 
 // Sample Space - Audio Features
 export const getSliceFeatures = () =>
@@ -569,11 +803,29 @@ export const getSourceTree = () =>
   api.get<SourceTree>('/sources/tree').then((r) => r.data)
 
 export interface SourcesSamplesParams {
-  scope?: string  // 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'folder:{id}' | 'all'
+  scope?: string  // 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'folder:{id}' | 'library:{id}' | 'all'
   tags?: number[]
   search?: string
   favorites?: boolean
-  sortBy?: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt' | 'similarity'
+  sortBy?:
+    | 'artist'
+    | 'album'
+    | 'year'
+    | 'albumArtist'
+    | 'genre'
+    | 'composer'
+    | 'trackNumber'
+    | 'discNumber'
+    | 'tagBpm'
+    | 'musicalKey'
+    | 'isrc'
+    | 'bpm'
+    | 'key'
+    | 'note'
+    | 'name'
+    | 'duration'
+    | 'createdAt'
+    | 'similarity'
   sortOrder?: 'asc' | 'desc'
   minBpm?: number
   maxBpm?: number
@@ -583,8 +835,32 @@ export interface SourcesSamplesParams {
   dateAddedTo?: string
   dateCreatedFrom?: string
   dateCreatedTo?: string
+  dateUpdatedFrom?: string
+  dateUpdatedTo?: string
   similarTo?: number
   minSimilarity?: number
+  brightnessMin?: number
+  brightnessMax?: number
+  harmonicityMin?: number
+  harmonicityMax?: number
+  noisinessMin?: number
+  noisinessMax?: number
+  attackMin?: number
+  attackMax?: number
+  dynamicsMin?: number
+  dynamicsMax?: number
+  saturationMin?: number
+  saturationMax?: number
+  surfaceMin?: number
+  surfaceMax?: number
+  densityMin?: number
+  densityMax?: number
+  ambienceMin?: number
+  ambienceMax?: number
+  stereoWidthMin?: number
+  stereoWidthMax?: number
+  depthMin?: number
+  depthMax?: number
 }
 
 export const getSourcesSamples = (params: SourcesSamplesParams) => {
@@ -603,19 +879,51 @@ export const getSourcesSamples = (params: SourcesSamplesParams) => {
   if (params.dateAddedTo) queryParams.dateAddedTo = params.dateAddedTo
   if (params.dateCreatedFrom) queryParams.dateCreatedFrom = params.dateCreatedFrom
   if (params.dateCreatedTo) queryParams.dateCreatedTo = params.dateCreatedTo
+  if (params.dateUpdatedFrom) queryParams.dateUpdatedFrom = params.dateUpdatedFrom
+  if (params.dateUpdatedTo) queryParams.dateUpdatedTo = params.dateUpdatedTo
   if (params.similarTo !== undefined) queryParams.similarTo = params.similarTo.toString()
   if (params.minSimilarity !== undefined) queryParams.minSimilarity = params.minSimilarity.toString()
+  if (params.brightnessMin !== undefined) queryParams.brightnessMin = params.brightnessMin.toString()
+  if (params.brightnessMax !== undefined) queryParams.brightnessMax = params.brightnessMax.toString()
+  if (params.harmonicityMin !== undefined) queryParams.harmonicityMin = params.harmonicityMin.toString()
+  if (params.harmonicityMax !== undefined) queryParams.harmonicityMax = params.harmonicityMax.toString()
+  if (params.noisinessMin !== undefined) queryParams.noisinessMin = params.noisinessMin.toString()
+  if (params.noisinessMax !== undefined) queryParams.noisinessMax = params.noisinessMax.toString()
+  if (params.attackMin !== undefined) queryParams.attackMin = params.attackMin.toString()
+  if (params.attackMax !== undefined) queryParams.attackMax = params.attackMax.toString()
+  if (params.dynamicsMin !== undefined) queryParams.dynamicsMin = params.dynamicsMin.toString()
+  if (params.dynamicsMax !== undefined) queryParams.dynamicsMax = params.dynamicsMax.toString()
+  if (params.saturationMin !== undefined) queryParams.saturationMin = params.saturationMin.toString()
+  if (params.saturationMax !== undefined) queryParams.saturationMax = params.saturationMax.toString()
+  if (params.surfaceMin !== undefined) queryParams.surfaceMin = params.surfaceMin.toString()
+  if (params.surfaceMax !== undefined) queryParams.surfaceMax = params.surfaceMax.toString()
+  if (params.densityMin !== undefined) queryParams.densityMin = params.densityMin.toString()
+  if (params.densityMax !== undefined) queryParams.densityMax = params.densityMax.toString()
+  if (params.ambienceMin !== undefined) queryParams.ambienceMin = params.ambienceMin.toString()
+  if (params.ambienceMax !== undefined) queryParams.ambienceMax = params.ambienceMax.toString()
+  if (params.stereoWidthMin !== undefined) queryParams.stereoWidthMin = params.stereoWidthMin.toString()
+  if (params.stereoWidthMax !== undefined) queryParams.stereoWidthMax = params.stereoWidthMax.toString()
+  if (params.depthMin !== undefined) queryParams.depthMin = params.depthMin.toString()
+  if (params.depthMax !== undefined) queryParams.depthMax = params.depthMax.toString()
 
   return api.get<SourcesSamplesResponse>('/sources/samples', { params: queryParams }).then((r) => r.data)
 }
 
 export interface DuplicateGroup {
-  matchType: 'exact' | 'file'
+  matchType: 'exact' | 'content' | 'file'
   hashSimilarity: number
   samples: Array<{
     id: number
     name: string
+    filePath?: string | null
     trackTitle: string
+    favorite?: boolean
+    createdAt?: string | null
+    sampleRate?: number | null
+    channels?: number | null
+    format?: string | null
+    tagsCount?: number
+    folderCount?: number
   }>
 }
 
@@ -645,11 +953,18 @@ export interface BatchReanalyzeResponse {
 
 export const batchReanalyzeSamples = (
   sliceIds?: number[],
-  analysisLevel?: 'quick' | 'standard' | 'advanced',
+  analysisLevel?: 'advanced',
   concurrency?: number,
-  includeFilenameTags?: boolean
+  includeFilenameTags?: boolean,
+  options?: { signal?: AbortSignal }
 ) =>
-  api.post<BatchReanalyzeResponse>('/slices/batch-reanalyze', { sliceIds, analysisLevel, concurrency, includeFilenameTags }).then((r) => r.data)
+  api
+    .post<BatchReanalyzeResponse>(
+      '/slices/batch-reanalyze',
+      { sliceIds, analysisLevel, concurrency, includeFilenameTags },
+      { signal: options?.signal },
+    )
+    .then((r) => r.data)
 
 // Sync configs
 export const getSyncConfigs = () =>
@@ -660,3 +975,307 @@ export const createSyncConfig = (data: { tagId: number; folderId: number; direct
 
 export const deleteSyncConfig = (id: number) =>
   api.delete(`/sync-configs/${id}`)
+
+// Spotify
+export interface SpotifyStatus {
+  configured: boolean
+  connected: boolean
+}
+
+export interface SpotifyPlaylist {
+  id: string
+  name: string
+  trackCount: number
+  thumbnailUrl: string | null
+}
+
+export const getSpotifyStatus = () =>
+  api.get<SpotifyStatus>('/spotify/status').then((r) => r.data)
+
+export const getSpotifyAuthUrl = () => `${getApiBaseUrl()}/api/spotify/auth`
+
+export const disconnectSpotify = () =>
+  api.post('/spotify/disconnect').then((r) => r.data)
+
+export const getSpotifyPlaylists = () =>
+  api.get<SpotifyPlaylist[]>('/spotify/playlists').then((r) => r.data)
+
+export const importSpotify = (text: string) =>
+  api.post<ImportResult>('/spotify/import', { text }).then((r) => r.data)
+
+// SoundCloud
+export const importSoundCloud = (text: string) =>
+  api.post<ImportResult>('/soundcloud/import', { text }).then((r) => r.data)
+
+// Tools
+export interface ToolVersions {
+  ytdlp: { current: string | null; latest: string | null }
+  spotdl: { current: string | null; latest: string | null }
+}
+
+export const getToolVersions = () =>
+  api.get<ToolVersions>('/tools/versions').then((r) => r.data)
+
+export interface RcloneShareStatus {
+  available: boolean
+  frontendDir: string | null
+  scriptPath: string | null
+  configPath: string | null
+  scriptExists: boolean
+  configExists: boolean
+  rcloneVersion: string | null
+  message?: string
+}
+
+export interface RcloneShareVersionInfo {
+  version: string
+  publishedAt: string
+  remotePath: string
+  fileCount: number
+  totalBytes: number
+  note?: string | null
+}
+
+export interface RcloneShareLibraryInfo {
+  latest: string | null
+  versions: RcloneShareVersionInfo[]
+}
+
+export type RcloneShareLibraries = Record<string, RcloneShareLibraryInfo>
+
+export interface RcloneShareCommandResult {
+  success: boolean
+  command: string
+  exitCode: number | null
+  stdout: string
+  stderr: string
+}
+
+export interface RcloneShareListResult extends RcloneShareCommandResult {
+  libraries: RcloneShareLibraries
+}
+
+export const getRcloneShareStatus = () =>
+  api.get<RcloneShareStatus>('/tools/rclone-share/status').then((r) => r.data)
+
+export const initRcloneShare = () =>
+  api.post<RcloneShareCommandResult>('/tools/rclone-share/init').then((r) => r.data)
+
+export const listRcloneShareLibraries = (name?: string) =>
+  api.get<RcloneShareListResult>('/tools/rclone-share/list', {
+    params: name ? { name } : undefined,
+  }).then((r) => r.data)
+
+export const publishRcloneShareLibrary = (payload: {
+  name: string
+  source: string
+  version?: string
+  note?: string
+}) => api.post<RcloneShareCommandResult>('/tools/rclone-share/publish', payload).then((r) => r.data)
+
+export const pullRcloneShareLibrary = (payload: {
+  name: string
+  version?: string
+  target?: string
+}) => api.post<RcloneShareCommandResult>('/tools/rclone-share/pull', payload).then((r) => r.data)
+
+export const syncRcloneShareLibraries = (payload?: { targetRoot?: string }) =>
+  api.post<RcloneShareCommandResult>('/tools/rclone-share/sync', payload ?? {}).then((r) => r.data)
+
+export interface ToolUpdateOptions {
+  onChunk?: (chunk: string) => void
+  signal?: AbortSignal
+}
+
+async function streamToolUpdate(
+  tool: 'ytdlp' | 'spotdl',
+  options: ToolUpdateOptions = {},
+): Promise<string> {
+  const response = await fetch(`${getApiBaseUrl()}/tools/update/${tool}`, {
+    method: 'POST',
+    credentials: 'include',
+    signal: options.signal,
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    throw new Error(errorText || `Failed to update ${tool}`)
+  }
+
+  if (!response.body) {
+    const text = await response.text()
+    if (text) options.onChunk?.(text)
+    return text
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let output = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    const chunk = decoder.decode(value, { stream: true })
+    if (!chunk) continue
+
+    output += chunk
+    options.onChunk?.(chunk)
+  }
+
+  const finalChunk = decoder.decode()
+  if (finalChunk) {
+    output += finalChunk
+    options.onChunk?.(finalChunk)
+  }
+
+  return output
+}
+
+export const streamYtdlpUpdate = (options: ToolUpdateOptions): Promise<string> =>
+  streamToolUpdate('ytdlp', options)
+
+export const streamSpotdlUpdate = (options: ToolUpdateOptions): Promise<string> =>
+  streamToolUpdate('spotdl', options)
+
+export const updateYtdlp = (): Promise<string> =>
+  streamToolUpdate('ytdlp')
+
+export const updateSpotdl = (): Promise<string> =>
+  streamToolUpdate('spotdl')
+
+export type DependencyUpdateTarget = 'web' | 'electron' | 'all'
+
+export interface FrontendOutdatedDependency {
+  name: string
+  current: string | null
+  wanted: string | null
+  latest: string | null
+  dependencyType: 'dependencies' | 'devDependencies' | 'unknown'
+  group: 'web' | 'electron'
+}
+
+export interface FrontendDependencyGroupStatus {
+  total: number
+  outdated: number
+  upToDate: boolean
+  packages: FrontendOutdatedDependency[]
+}
+
+export interface FrontendDependencyStatus {
+  available: boolean
+  frontendDir: string | null
+  checkedAt: string
+  message?: string
+  groups: {
+    web: FrontendDependencyGroupStatus
+    electron: FrontendDependencyGroupStatus
+    all: FrontendDependencyGroupStatus
+  }
+}
+
+export interface FrontendDependencyUpdateResult {
+  target: DependencyUpdateTarget
+  updatedPackages: FrontendOutdatedDependency[]
+  output: string
+  status: FrontendDependencyStatus
+}
+
+export const getFrontendDependencyStatus = () =>
+  api.get<FrontendDependencyStatus>('/tools/dependencies/status').then((r) => r.data)
+
+export const updateFrontendDependencies = (target: DependencyUpdateTarget) =>
+  api.post<FrontendDependencyUpdateResult>(`/tools/dependencies/update/${target}`).then((r) => r.data)
+
+// ── Backup ─────────────────────────────────────────────────────────────────
+
+export type BackupType = 'gdrive' | 'webdav' | 's3' | 'sftp' | 'local'
+export type BackupSchedule = 'manual' | 'hourly' | 'daily' | 'weekly'
+
+export interface BackupConfigSummary {
+  id: number
+  name: string
+  type: BackupType
+  enabled: number
+  remote_path: string
+  schedule: BackupSchedule
+  last_backup_at: string | null
+  last_backup_status: string | null
+  last_backup_error: string | null
+  params: Record<string, unknown>
+}
+
+export interface BackupLog {
+  id: number
+  config_id: number
+  started_at: string
+  completed_at: string | null
+  status: 'running' | 'success' | 'failed'
+  bytes_transferred: number
+  files_transferred: number
+  error_message: string | null
+  details_json: string | null
+  created_at: string
+}
+
+export interface BackupStatus {
+  configs: BackupConfigSummary[]
+  rcloneAvailable: boolean
+}
+
+export interface BackupResult {
+  success: boolean
+  bytesTransferred: number
+  filesTransferred: number
+  errorMessage?: string
+  details: Record<string, unknown>
+}
+
+export const getBackupStatus = () =>
+  api.get<BackupStatus>('/backup/status').then((r) => r.data)
+
+export const getBackupConfigs = () =>
+  api.get<BackupConfigSummary[]>('/backup/configs').then((r) => r.data)
+
+export const createBackupConfig = (payload: {
+  name: string
+  type: BackupType
+  params: Record<string, unknown>
+  remote_path?: string
+  schedule?: BackupSchedule
+}) => api.post<BackupConfigSummary>('/backup/configs', payload).then((r) => r.data)
+
+export const updateBackupConfig = (
+  id: number,
+  payload: Partial<{ name: string; params: Record<string, unknown>; remote_path: string; schedule: BackupSchedule; enabled: boolean }>,
+) => api.put<BackupConfigSummary>(`/backup/configs/${id}`, payload).then((r) => r.data)
+
+export const deleteBackupConfig = (id: number) =>
+  api.delete(`/backup/configs/${id}`).then((r) => r.data)
+
+export const runBackup = (id: number) =>
+  api.post<BackupResult>(`/backup/run/${id}`).then((r) => r.data)
+
+export const runAllBackups = () =>
+  api.post<{ message: string }>('/backup/run').then((r) => r.data)
+
+export const getBackupLogs = (configId?: number, limit = 50) =>
+  api.get<BackupLog[]>('/backup/logs', { params: { configId, limit } }).then((r) => r.data)
+
+export const getGdriveAuthUrl = (configId?: number) =>
+  api.get<{ authUrl: string }>('/backup/gdrive/auth', { params: { configId } }).then((r) => r.data)
+
+export const getBackupDownloadUrl = (includeAudio = false) =>
+  `${api.defaults.baseURL}/backup/download?includeAudio=${includeAudio}`
+
+export interface RecoveryKey {
+  name: string
+  repoPassword: string
+  repoUrl: string
+  restoreCommand: string
+  listCommand: string
+  warning: string
+}
+
+export const getRecoveryKey = (id: number) =>
+  api.get<RecoveryKey>(`/backup/configs/${id}/recovery-key`).then((r) => r.data)

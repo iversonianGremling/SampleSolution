@@ -1261,9 +1261,9 @@ export function DrumRackView() {
       {/* Main Content */}
       {activeTab === 'drumrack' ? (
         <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6">
-          <div className="flex flex-col gap-4 max-w-[1200px] mx-auto lg:mx-0">
+          <div className="flex flex-col gap-4 max-w-[1200px] mx-auto lg:mx-0 min-w-0">
             <div className="flex justify-center lg:justify-start">
-              <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
+              <div className="grid w-full max-w-[26rem] grid-cols-4 gap-1.5 sm:gap-2">
                 {PAD_KEYS.map((row, rowIdx) =>
                   row.map((key, colIdx) => {
                     const padIndex = getPadIndex(rowIdx, colIdx)
@@ -1310,7 +1310,7 @@ export function DrumRackView() {
                         }}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => handleDrop(padIndex, e)}
-                        className={`relative w-16 h-16 sm:w-20 sm:h-20 lg:w-24 lg:h-24 rounded-lg sm:rounded-xl border transition-all duration-75 flex flex-col items-center justify-center gap-0.5 group ${
+                        className={`relative w-full aspect-square rounded-lg sm:rounded-xl border transition-all duration-75 flex flex-col items-center justify-center gap-0.5 group ${
                           isActive
                             ? `bg-gradient-to-br ${PAD_COLORS[padIndex]} border-white/30 scale-95 shadow-lg`
                             : pad.slice
@@ -1374,20 +1374,24 @@ export function DrumRackView() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-x-auto overflow-y-auto p-3 sm:p-4 lg:p-6 lg:pl-2">
-          <div className="min-w-fit">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6">
+          <div className="mx-auto w-full max-w-[960px] min-w-0">
             {/* Step numbers */}
-            <div className="flex items-center mb-2 ml-[80px] sm:ml-[100px]">
-              {Array.from({ length: STEPS }, (_, i) => (
-                <div
-                  key={i}
-                  className={`w-7 sm:w-8 h-5 flex items-center justify-center text-[9px] sm:text-[10px] font-mono ${
-                    sequencer.currentStep === i ? 'text-accent-primary font-bold' : i % 4 === 0 ? 'text-slate-400' : 'text-slate-600'
-                  }`}
-                >
-                  {i + 1}
-                </div>
-              ))}
+            <div className="mb-2 grid grid-cols-[72px_minmax(0,1fr)] items-center gap-1 sm:grid-cols-[96px_minmax(0,1fr)_4rem]">
+              <div />
+              <div className="grid grid-cols-[repeat(16,minmax(0,1fr))] gap-[2px]">
+                {Array.from({ length: STEPS }, (_, i) => (
+                  <div
+                    key={i}
+                    className={`h-5 flex items-center justify-center text-[9px] sm:text-[10px] font-mono ${
+                      sequencer.currentStep === i ? 'text-accent-primary font-bold' : i % 4 === 0 ? 'text-slate-400' : 'text-slate-600'
+                    }`}
+                  >
+                    {i + 1}
+                  </div>
+                ))}
+              </div>
+              <div className="hidden sm:block" />
             </div>
 
             {/* Sequencer rows */}
@@ -1400,8 +1404,8 @@ export function DrumRackView() {
                   const padSliceName = typeof pad.slice.name === 'string' ? pad.slice.name : 'unnamed'
 
                   return (
-                    <div key={padIndex} className="flex items-center gap-1 mb-1 group/row">
-                      <div className="w-[80px] sm:w-[96px] flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
+                    <div key={padIndex} className="mb-1 grid grid-cols-[72px_minmax(0,1fr)] items-center gap-1 group/row sm:grid-cols-[96px_minmax(0,1fr)_4rem]">
+                      <div className="flex min-w-0 items-center gap-1 sm:gap-1.5">
                         <button
                           onClick={() => toggleMute(padIndex)}
                           className={`p-0.5 sm:p-1 rounded transition-colors ${
@@ -1410,12 +1414,12 @@ export function DrumRackView() {
                         >
                           {pad.muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
                         </button>
-                        <span className={`text-[10px] sm:text-[11px] truncate ${pad.muted ? 'text-slate-600 line-through' : 'text-slate-300'}`}>
+                        <span className={`min-w-0 text-[10px] sm:text-[11px] truncate ${pad.muted ? 'text-slate-600 line-through' : 'text-slate-300'}`}>
                           {padSliceName.length > 8 ? padSliceName.slice(0, 8) + '…' : padSliceName}
                         </span>
                       </div>
 
-                      <div className="flex gap-[2px]">
+                      <div className="grid min-w-0 grid-cols-[repeat(16,minmax(0,1fr))] gap-[2px]">
                         {Array.from({ length: STEPS }, (_, stepIdx) => {
                           const vel = sequencer.steps[padIndex][stepIdx]
                           const isActive = vel > 0
@@ -1427,7 +1431,7 @@ export function DrumRackView() {
                               key={stepIdx}
                               onMouseDown={(e) => { e.preventDefault(); handleStepMouseDown(padIndex, stepIdx) }}
                               onMouseEnter={() => handleStepMouseEnter(padIndex, stepIdx)}
-                              className={`w-7 sm:w-8 h-6 sm:h-7 rounded transition-all select-none ${
+                              className={`h-6 sm:h-7 w-full rounded transition-all select-none ${
                                 isActive
                                   ? `${STEP_COLORS[padIndex]} ${isCurrent ? 'brightness-150 scale-105' : 'opacity-80 hover:opacity-100'}`
                                   : isCurrent
@@ -1441,7 +1445,7 @@ export function DrumRackView() {
                         })}
                       </div>
 
-                      <div className="w-16 ml-2 opacity-0 group-hover/row:opacity-100 transition-opacity hidden sm:block">
+                      <div className="hidden sm:block opacity-0 group-hover/row:opacity-100 transition-opacity">
                         <input
                           type="range"
                           min={0}
@@ -1465,8 +1469,8 @@ export function DrumRackView() {
                   const padSliceName = typeof pad.slice.name === 'string' ? pad.slice.name : 'unnamed'
 
                   return (
-                    <div key={padIndex} className="flex items-end gap-1 mb-1 group/row">
-                      <div className="w-[80px] sm:w-[96px] flex items-center gap-1 sm:gap-1.5 flex-shrink-0 pb-1">
+                    <div key={padIndex} className="mb-1 grid grid-cols-[72px_minmax(0,1fr)] items-end gap-1 group/row sm:grid-cols-[96px_minmax(0,1fr)_4rem]">
+                      <div className="flex min-w-0 items-center gap-1 sm:gap-1.5 pb-1">
                         <button
                           onClick={() => toggleMute(padIndex)}
                           className={`p-0.5 sm:p-1 rounded transition-colors ${
@@ -1475,12 +1479,12 @@ export function DrumRackView() {
                         >
                           {pad.muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
                         </button>
-                        <span className={`text-[10px] sm:text-[11px] truncate ${pad.muted ? 'text-slate-600 line-through' : 'text-slate-300'}`}>
+                        <span className={`min-w-0 text-[10px] sm:text-[11px] truncate ${pad.muted ? 'text-slate-600 line-through' : 'text-slate-300'}`}>
                           {padSliceName.length > 8 ? padSliceName.slice(0, 8) + '…' : padSliceName}
                         </span>
                       </div>
 
-                      <div className="flex gap-[2px] items-end">
+                      <div className="grid min-w-0 grid-cols-[repeat(16,minmax(0,1fr))] gap-[2px] items-end">
                         {Array.from({ length: STEPS }, (_, stepIdx) => {
                           const vel = sequencer.steps[padIndex][stepIdx]
                           const isActive = vel > 0
@@ -1492,25 +1496,25 @@ export function DrumRackView() {
                             <div
                               key={stepIdx}
                               onMouseDown={(e) => { e.preventDefault(); handleVelocityMouseDown(padIndex, stepIdx, e) }}
-                              className={`w-7 sm:w-8 h-10 rounded flex items-end justify-center cursor-pointer select-none relative ${
+                              className={`h-10 w-full rounded flex items-end justify-center cursor-pointer select-none relative ${
                                 isCurrent ? 'bg-white/5' : isDownbeat ? 'bg-surface-overlay/50' : 'bg-surface-raised/50'
                               }`}
                               title={isActive ? `Velocity: ${Math.round(vel * 100)}%` : 'Click to add'}
                             >
                               {isActive ? (
                                 <div
-                                  className={`w-5 sm:w-6 rounded-t transition-all ${STEP_COLORS[padIndex]} ${isCurrent ? 'brightness-150' : 'opacity-80 hover:opacity-100'}`}
+                                  className={`w-[70%] max-w-6 min-w-[2px] rounded-t transition-all ${STEP_COLORS[padIndex]} ${isCurrent ? 'brightness-150' : 'opacity-80 hover:opacity-100'}`}
                                   style={{ height: `${barHeight}px` }}
                                 />
                               ) : (
-                                <div className={`w-5 sm:w-6 h-1 rounded-full ${isDownbeat ? 'bg-surface-border' : 'bg-surface-border/50'}`} />
+                                <div className={`w-[70%] max-w-6 h-1 rounded-full ${isDownbeat ? 'bg-surface-border' : 'bg-surface-border/50'}`} />
                               )}
                             </div>
                           )
                         })}
                       </div>
 
-                      <div className="w-16 ml-2 opacity-0 group-hover/row:opacity-100 transition-opacity hidden sm:block pb-1">
+                      <div className="hidden sm:block pb-1 opacity-0 group-hover/row:opacity-100 transition-opacity">
                         <input
                           type="range"
                           min={0}
@@ -1544,7 +1548,7 @@ export function DrumRackView() {
       {/* Sample Browser Modal */}
       {showBrowser !== null && (
         <div
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 bg-surface-base/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
           onClick={() => { setShowBrowser(null); setBrowserSearch(''); stopPreview() }}
         >
           <div

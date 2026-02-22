@@ -7,16 +7,21 @@ export default {
   theme: {
     extend: {
       colors: {
-        'surface-base': '#0a0b0e',
-        'surface-raised': '#12141a',
-        'surface-overlay': '#1a1d24',
-        'surface-border': '#262a33',
-        'accent-primary': '#3b82f6',
+        'surface-base': '#0f1216',
+        'surface-raised': '#151920',
+        'surface-overlay': '#1b2028',
+        'surface-border': '#272d38',
+        'accent-primary': '#5b8def',
         'accent-secondary': '#22d3ee',
-        'accent-muted': '#64748b',
+        'accent-muted': '#6b6578',
+        'accent-warm': '#e8a23a',
+        'accent-warm-dim': '#c47e22',
+        'text-primary': '#f0eef4',
+        'text-secondary': '#9b96a8',
+        'text-muted': '#6b6578',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+        sans: ['Outfit', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
         mono: ['JetBrains Mono', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
       },
       backdropBlur: {

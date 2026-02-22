@@ -235,7 +235,7 @@ export function CustomOrderModal({ onClose, activeCollectionId }: Props) {
   return (
     <>
       <div
-        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-300 ${
+        className={`fixed inset-0 bg-surface-base/50 z-40 transition-opacity duration-300 ${
           isClosing || isEntering ? 'opacity-0' : 'opacity-100'
         }`}
         onClick={requestClose}
@@ -340,7 +340,7 @@ export function CustomOrderModal({ onClose, activeCollectionId }: Props) {
       </div>
 
       {showDiscardWarning && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-surface-base/65">
           <div className="w-full max-w-lg rounded-xl border border-surface-border bg-surface-raised p-5 shadow-2xl">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-base font-semibold text-white">Discard unconfirmed changes?</h3>

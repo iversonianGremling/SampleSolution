@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import type { SliceWithTrackExtended } from '../types'
 import { getSliceDownloadUrl, persistLabRender } from '../api/client'
+// import { batchReanalyzeSamples } from '../api/client'
 import { useScopedSamples, useInvalidateScopedSamples } from '../hooks/useScopedSamples'
 import {
   DEFAULT_LAB_SETTINGS,
@@ -23,6 +24,7 @@ import { VstKnob } from './lab/VstKnob'
 import { Led } from './lab/Led'
 import { FxModule } from './lab/FxModule'
 import { clamp, formatDb } from './lab/helpers'
+import { useAppDialog } from '../hooks/useAppDialog'
 
 const buildWaveformOverview = (buffer: AudioBuffer, targetPoints = 400) => {
   const points = Math.max(32, targetPoints)
@@ -259,12 +261,14 @@ interface LabViewProps {
 }
 
 export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
+  const { confirm, alert: showAlert, dialogNode } = useAppDialog()
   const [selectedSampleId, setSelectedSampleId] = useState<number | null>(null)
   const [settings, setSettings] = useState<LabSettings>(DEFAULT_LAB_SETTINGS)
   const [isPreviewing, setIsPreviewing] = useState(false)
   const [isPreparingPreview, setIsPreparingPreview] = useState(false)
   const [isExportingCopy, setIsExportingCopy] = useState(false)
   const [isOverwriting, setIsOverwriting] = useState(false)
+  // const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [waveformOverview, setWaveformOverview] = useState<Float32Array>(new Float32Array(0))
   const [isWaveformLoading, setIsWaveformLoading] = useState(false)
@@ -658,7 +662,10 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
         audioBlob: render.blob,
       })
       invalidateScopedSamples()
-      window.alert('Exported as a new sample copy.')
+      await showAlert({
+        title: 'Export Complete',
+        message: 'Exported as a new sample copy.',
+      })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to export sample copy')
     } finally {
@@ -672,9 +679,13 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
       return
     }
 
-    const confirmed = window.confirm(
-      `Overwrite the original file for "${selectedSample.name}"? This marks the sample as modified.`,
-    )
+    const confirmed = await confirm({
+      title: 'Overwrite Original',
+      message: `Overwrite the original file for "${selectedSample.name}"? This marks the sample as modified.`,
+      confirmText: 'Overwrite',
+      cancelText: 'Cancel',
+      isDestructive: true,
+    })
 
     if (!confirmed) return
 
@@ -690,13 +701,29 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
         audioBlob: render.blob,
       })
       invalidateScopedSamples()
-      window.alert('Original sample overwritten successfully.')
+      await showAlert({
+        title: 'Overwrite Complete',
+        message: 'Original sample overwritten successfully.',
+      })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to overwrite sample')
     } finally {
       setIsOverwriting(false)
     }
   }
+
+  // const handleAnalyze = async () => {
+  //   if (!selectedSample) return
+  //   try {
+  //     setIsAnalyzing(true)
+  //     await batchReanalyzeSamples([selectedSample.id])
+  //     invalidateScopedSamples()
+  //   } catch (error) {
+  //     setErrorMessage(error instanceof Error ? error.message : 'Failed to analyze sample')
+  //   } finally {
+  //     setIsAnalyzing(false)
+  //   }
+  // }
 
   // FX drag reordering — only the grip handle initiates drag
   const handleFxDragStart = (slotId: FxSlotId) => (e: React.DragEvent) => {
@@ -1101,7 +1128,7 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
             <div className="w-full max-w-md rounded-xl border border-dashed border-slate-700 bg-surface-overlay/50 p-6 text-center">
               <div className="text-sm text-slate-300">Drop a sample here to start Lab processing</div>
               <div className="text-xs text-slate-500 mt-2">
-                Open the Sources panel using the left hover handle, then drag and drop a sample into this area.
+                Open the Sources panel using the left sidebar button, then drag and drop a sample into this area.
               </div>
               {isSamplesLoading ? (
                 <div className="mt-3 inline-flex items-center gap-2 text-xs text-slate-500">
@@ -1270,102 +1297,111 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
             {/* ─── Module Rack ──────────────────────── */}
             <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
               <div className="flex flex-wrap gap-2">
-                {/* CORE (always first, not reorderable) */}
-                <FxModule title="Core" color="#06b6d4">
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-start gap-3">
-                      <VstKnob
-                        label="Pitch"
-                        value={settings.pitchSemitones}
-                        min={-24}
-                        max={24}
-                        step={0.1}
-                        defaultValue={DEFAULT_LAB_SETTINGS.pitchSemitones}
-                        onChange={(v) => updateSettings('pitchSemitones', v)}
-                        format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}st`}
-                        color="#06b6d4"
-                        size={56}
-                      />
-                      <div className="flex flex-col gap-1 pt-1">
-                        {pitchModes.map((mode) => {
-                          const active = settings.pitchMode === mode
-                          return (
-                            <button
-                              key={mode}
-                              onClick={() => updateSettings('pitchMode', mode)}
-                              className="px-2 py-0.5 rounded text-[10px] tracking-wider uppercase transition-all"
-                              style={{
-                                background: active ? '#06b6d422' : '#1a1c22',
-                                color: active ? '#06b6d4' : '#4a4e58',
-                                border: `1px solid ${active ? '#06b6d4' : '#1e2028'}`,
-                              }}
-                            >
-                              {getPitchModeLabel(mode)}
-                            </button>
-                          )
-                        })}
+                {/* CORE + ENV row */}
+                <div className="flex gap-2 w-full">
+                  {/* CORE (always first, not reorderable) */}
+                  <div className="flex-shrink-0">
+                    <FxModule title="Core" color="#06b6d4">
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-start gap-2">
+                          <VstKnob
+                            label="Pitch"
+                            value={settings.pitchSemitones}
+                            min={-24}
+                            max={24}
+                            step={0.1}
+                            defaultValue={DEFAULT_LAB_SETTINGS.pitchSemitones}
+                            onChange={(v) => updateSettings('pitchSemitones', v)}
+                            format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}st`}
+                            color="#06b6d4"
+                            size={42}
+                          />
+                          <div className="flex flex-col gap-1 pt-1">
+                            {pitchModes.map((mode) => {
+                              const active = settings.pitchMode === mode
+                              return (
+                                <button
+                                  key={mode}
+                                  onClick={() => updateSettings('pitchMode', mode)}
+                                  className="px-1.5 py-0.5 rounded text-[9px] tracking-wider uppercase transition-all"
+                                  style={{
+                                    background: active ? '#06b6d422' : '#1a1c22',
+                                    color: active ? '#06b6d4' : '#4a4e58',
+                                    border: `1px solid ${active ? '#06b6d4' : '#1e2028'}`,
+                                  }}
+                                >
+                                  {getPitchModeLabel(mode)}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <VstKnob
+                            label="Tempo"
+                            value={settings.tempo}
+                            min={0.25}
+                            max={4}
+                            step={0.01}
+                            defaultValue={DEFAULT_LAB_SETTINGS.tempo}
+                            onChange={(v) => updateSettings('tempo', v)}
+                            format={(v) => `${v.toFixed(2)}x`}
+                            color="#06b6d4"
+                            size={42}
+                            disabled={settings.pitchMode === 'tape'}
+                          />
+                          <VstKnob
+                            label="Gain"
+                            value={settings.outputGain}
+                            min={0}
+                            max={2}
+                            step={0.01}
+                            defaultValue={DEFAULT_LAB_SETTINGS.outputGain}
+                            onChange={(v) => updateSettings('outputGain', v)}
+                            format={formatDb}
+                            color="#06b6d4"
+                            size={42}
+                          />
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2">
+                    </FxModule>
+                  </div>
+
+                  {/* ENVELOPE (fills remaining space) */}
+                  <div
+                    className="flex-1 flex flex-col items-center justify-center gap-3 rounded-lg px-3 py-2"
+                    style={{ background: '#0d0f14', border: '1px solid #a78bfa44' }}
+                  >
+                    <span className="font-vst text-[11px] tracking-[0.2em] uppercase font-semibold" style={{ color: '#a78bfa' }}>
+                      Env
+                    </span>
+                    <div className="flex items-center gap-3">
                       <VstKnob
-                        label="Tempo"
-                        value={settings.tempo}
-                        min={0.25}
-                        max={4}
+                        label="Fade In"
+                        value={settings.fadeIn}
+                        min={0}
+                        max={5}
                         step={0.01}
-                        defaultValue={DEFAULT_LAB_SETTINGS.tempo}
-                        onChange={(v) => updateSettings('tempo', v)}
-                        format={(v) => `${v.toFixed(2)}x`}
-                        color="#06b6d4"
-                        disabled={settings.pitchMode === 'tape'}
+                        defaultValue={DEFAULT_LAB_SETTINGS.fadeIn}
+                        onChange={(v) => updateSettings('fadeIn', v)}
+                        format={(v) => `${v.toFixed(2)}s`}
+                        color="#a78bfa"
+                        size={42}
                       />
                       <VstKnob
-                        label="Gain"
-                        value={settings.outputGain}
+                        label="Fade Out"
+                        value={settings.fadeOut}
                         min={0}
-                        max={2}
+                        max={5}
                         step={0.01}
-                        defaultValue={DEFAULT_LAB_SETTINGS.outputGain}
-                        onChange={(v) => updateSettings('outputGain', v)}
-                        format={formatDb}
-                        color="#06b6d4"
+                        defaultValue={DEFAULT_LAB_SETTINGS.fadeOut}
+                        onChange={(v) => updateSettings('fadeOut', v)}
+                        format={(v) => `${v.toFixed(2)}s`}
+                        color="#a78bfa"
+                        size={42}
                       />
                     </div>
                   </div>
-                </FxModule>
-
-                {/* ENVELOPE (compact single row) */}
-                <div
-                  className="flex items-center gap-3 rounded-lg px-3 py-2"
-                  style={{ background: '#0d0f14', border: '1px solid #a78bfa44' }}
-                >
-                  <span className="font-vst text-[11px] tracking-[0.2em] uppercase font-semibold" style={{ color: '#a78bfa' }}>
-                    Env
-                  </span>
-                  <VstKnob
-                    label="Fade In"
-                    value={settings.fadeIn}
-                    min={0}
-                    max={5}
-                    step={0.01}
-                    defaultValue={DEFAULT_LAB_SETTINGS.fadeIn}
-                    onChange={(v) => updateSettings('fadeIn', v)}
-                    format={(v) => `${v.toFixed(2)}s`}
-                    color="#a78bfa"
-                    size={42}
-                  />
-                  <VstKnob
-                    label="Fade Out"
-                    value={settings.fadeOut}
-                    min={0}
-                    max={5}
-                    step={0.01}
-                    defaultValue={DEFAULT_LAB_SETTINGS.fadeOut}
-                    onChange={(v) => updateSettings('fadeOut', v)}
-                    format={(v) => `${v.toFixed(2)}s`}
-                    color="#a78bfa"
-                    size={42}
-                  />
                 </div>
 
                 {/* FX Modules (drag to reorder) */}
@@ -1394,6 +1430,7 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
           </>
         )}
       </section>
+      {dialogNode}
     </div>
   )
 }

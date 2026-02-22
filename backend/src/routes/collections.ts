@@ -548,10 +548,12 @@ async function buildFacets(sliceIds: number[]) {
   }
 
   // Group tags by category
+  const DEPRECATED_TAG_CATEGORIES = new Set(['tempo', 'spectral'])
   const tags: Record<string, { tagId: number; name: string; count: number }[]> = {}
   const tagCountMap = new Map<string, Map<number, { name: string; count: number }>>()
 
   for (const row of tagResults) {
+    if (DEPRECATED_TAG_CATEGORIES.has(row.tagCategory)) continue
     if (!tagCountMap.has(row.tagCategory)) {
       tagCountMap.set(row.tagCategory, new Map())
     }
@@ -590,7 +592,7 @@ async function buildFacets(sliceIds: number[]) {
   return { tags, metadata }
 }
 
-type TagCategory = 'general' | 'type' | 'tempo' | 'spectral' | 'energy' | 'instrument' | 'filename'
+type TagCategory = 'general' | 'type' | 'energy' | 'instrument' | 'filename'
 
 async function groupSlicesByTagCategory(sliceIds: number[], category: TagCategory): Promise<Map<string, number[]>> {
   const groups = new Map<string, number[]>()

@@ -156,7 +156,7 @@ export function CustomSplitModal({ onClose }: Props) {
   return (
     <>
       <div
-        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-300 ${
+        className={`fixed inset-0 bg-surface-base/50 z-40 transition-opacity duration-300 ${
           isClosing || isEntering ? 'opacity-0' : 'opacity-100'
         }`}
         onClick={handleClose}

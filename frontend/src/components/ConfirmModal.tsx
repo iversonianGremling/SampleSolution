@@ -6,6 +6,7 @@ interface ConfirmModalProps {
   message: string
   confirmText?: string
   cancelText?: string
+  hideCancel?: boolean
   onConfirm: () => void | Promise<void>
   onCancel: () => void
   isDestructive?: boolean
@@ -19,6 +20,7 @@ export function ConfirmModal({
   message,
   confirmText = 'Confirm',
   cancelText = 'Cancel',
+  hideCancel = false,
   onConfirm,
   onCancel,
   isDestructive = false,
@@ -67,7 +69,7 @@ export function ConfirmModal({
     <>
       {/* Backdrop */}
       <div
-        className={`fixed inset-0 bg-black/40 z-40 transition-opacity duration-300 ${
+        className={`fixed inset-0 bg-surface-base/40 z-40 transition-opacity duration-300 ${
           isClosing || isEntering ? 'opacity-0' : 'opacity-100'
         }`}
         onClick={handleClose}
@@ -122,17 +124,19 @@ export function ConfirmModal({
 
           {/* Actions */}
           <div className="flex items-center gap-3 px-6 py-4 border-t border-surface-border bg-surface-base">
-            <button
-              onClick={handleClose}
-              disabled={isProcessing}
-              className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-surface-overlay hover:bg-surface-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {cancelText}
-            </button>
+            {!hideCancel && (
+              <button
+                onClick={handleClose}
+                disabled={isProcessing}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-surface-overlay hover:bg-surface-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {cancelText}
+              </button>
+            )}
             <button
               onClick={handleConfirm}
               disabled={isProcessing}
-              className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              className={`${hideCancel ? 'w-full' : 'flex-1'} px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                 isDestructive
                   ? 'bg-red-600 hover:bg-red-700'
                   : 'bg-accent-primary hover:bg-accent-primary/80'

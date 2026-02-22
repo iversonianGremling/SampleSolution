@@ -6,6 +6,8 @@ export interface UseResizablePanelOptions {
   minSize: number
   maxSize: number
   storageKey?: string
+  dragMultiplier?: 1 | -1
+  clampOnBoundsChange?: boolean
 }
 
 export interface UseResizablePanelReturn {
@@ -22,24 +24,31 @@ export interface UseResizablePanelReturn {
   restore: () => void
 }
 
+function clampPanelSize(size: number, minSize: number, maxSize: number): number {
+  if (maxSize < minSize) return minSize
+  return Math.max(minSize, Math.min(maxSize, size))
+}
+
 export function useResizablePanel({
   direction,
   initialSize,
   minSize,
   maxSize,
   storageKey,
+  dragMultiplier = 1,
+  clampOnBoundsChange = true,
 }: UseResizablePanelOptions): UseResizablePanelReturn {
   const [size, setSize] = useState(() => {
     if (storageKey) {
       const stored = localStorage.getItem(storageKey)
       if (stored) {
         const parsed = Number(stored)
-        if (Number.isFinite(parsed) && parsed >= minSize && parsed <= maxSize) {
-          return parsed
+        if (Number.isFinite(parsed)) {
+          return clampPanelSize(parsed, minSize, maxSize)
         }
       }
     }
-    return initialSize
+    return clampPanelSize(initialSize, minSize, maxSize)
   })
 
   const [isDragging, setIsDragging] = useState(false)
@@ -50,6 +59,13 @@ export function useResizablePanel({
   const startPosRef = useRef(0)
   const startSizeRef = useRef(0)
   const rafRef = useRef<number | null>(null)
+
+  // Keep panel size valid when responsive limits change.
+  useEffect(() => {
+    if (!clampOnBoundsChange) return
+    setSize((previousSize) => clampPanelSize(previousSize, minSize, maxSize))
+    prevSizeRef.current = clampPanelSize(prevSizeRef.current, minSize, maxSize)
+  }, [minSize, maxSize, clampOnBoundsChange])
 
   // Persist to localStorage
   useEffect(() => {
@@ -74,7 +90,7 @@ export function useResizablePanel({
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null
         const pos = direction === 'horizontal' ? moveEvent.clientX : moveEvent.clientY
-        const delta = pos - startPosRef.current
+        const delta = (pos - startPosRef.current) * dragMultiplier
         const newSize = Math.max(minSize, Math.min(maxSize, startSizeRef.current + delta))
         setSize(newSize)
         setIsCollapsed(false)
@@ -96,7 +112,7 @@ export function useResizablePanel({
 
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
-  }, [direction, size, minSize, maxSize])
+  }, [direction, size, minSize, maxSize, dragMultiplier])
 
   const handleDoubleClick = useCallback(() => {
     if (isExpanded) {
@@ -127,10 +143,10 @@ export function useResizablePanel({
   }, [size, maxSize])
 
   const restore = useCallback(() => {
-    setSize(prevSizeRef.current)
+    setSize(clampPanelSize(prevSizeRef.current, minSize, maxSize))
     setIsCollapsed(false)
     setIsExpanded(false)
-  }, [])
+  }, [minSize, maxSize])
 
   return {
     size,

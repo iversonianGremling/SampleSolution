@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import {
   FolderOpen,
   Plus,
@@ -18,15 +18,24 @@ import {
   Eye,
   Search,
   Heart,
+  Square,
+  MinusSquare,
+  CheckSquare,
 } from 'lucide-react'
 import { SourcesSampleGrid } from './SourcesSampleGrid'
 import { SourcesSampleList } from './SourcesSampleList'
 import { SourcesDetailModal } from './SourcesDetailModal'
 import { SourcesTagFilter } from './SourcesTagFilter'
+import { SourcesRuleFilterBuilder } from './SourcesRuleFilterBuilder'
 import { CustomOrderModal } from './CustomOrderModal'
+import { ResizableDivider } from './ResizableDivider'
 import { SourcesBatchActions } from './SourcesBatchActions'
 import { SourcesAudioFilter, AudioFilterState } from './SourcesAudioFilter'
+import { SampleSearchScopeMenu } from './SampleSearchScopeMenu'
+import { SampleSortMenu } from './SampleSortMenu'
 import { useScopedSamples } from '../hooks/useScopedSamples'
+import { useResizablePanel } from '../hooks/useResizablePanel'
+import { useAppDialog } from '../hooks/useAppDialog'
 import {
   useCollections,
   useCreateCollection,
@@ -53,6 +62,22 @@ import {
 } from '../hooks/useTracks'
 import { getRelatedKeys, getRelatedNotes } from '../utils/musicTheory'
 import { getSliceDownloadUrl } from '../api/client'
+import {
+  buildFilterRuleEvaluationContext,
+  matchesFilterRuleQuery,
+  type FilterRule,
+  type FilterRuleSuggestionMap,
+} from '../utils/filterRuleQuery'
+import {
+  buildFolderCollectionNameMap,
+  DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS,
+  getSampleSearchScopeDescriptor,
+  getSampleSearchScopeHint,
+  matchesSampleSearchTerm,
+  normalizeSampleSearchTerm,
+  type SampleSearchCustomField,
+  type SampleSearchScope,
+} from '../utils/sampleSearch'
 import type { SourceScope, Folder } from '../types'
 
 const FOLDER_COLORS = [
@@ -66,9 +91,7 @@ const FACET_LABELS: Record<string, string> = {
   general: 'General Tags',
   type: 'Type Tags',
   instrument: 'Instrument Tags',
-  tempo: 'Tempo Tags',
   energy: 'Energy Tags',
-  spectral: 'Spectral Tags',
   filename: 'Filename Tags',
   // Metadata fields
   instrumentType: 'Instrument Type',
@@ -76,12 +99,15 @@ const FACET_LABELS: Record<string, string> = {
   keyEstimate: 'Key',
   envelopeType: 'Envelope Type',
 }
+const HIDDEN_TAG_CATEGORIES = new Set(['tempo', 'spectral'])
 
 interface FolderNode extends Folder {
   children: FolderNode[]
 }
 
 export function FoldersView() {
+  const { confirm, alert: showAlert, dialogNode } = useAppDialog()
+
   // Collection state
   const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null)
   const [showCollectionDropdown, setShowCollectionDropdown] = useState(false)
@@ -114,11 +140,26 @@ export function FoldersView() {
 
   // Filtering state (same as SourcesView)
   const [selectedTags, setSelectedTags] = useState<number[]>([])
+  const [queryRules, setQueryRules] = useState<FilterRule[]>([])
+  const [showRuleBuilder, setShowRuleBuilder] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [searchScope, setSearchScope] = useState<SampleSearchScope>('all')
+  const [customSearchFields, setCustomSearchFields] = useState<SampleSearchCustomField[]>(
+    DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS,
+  )
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [minDuration, setMinDuration] = useState<number>(0)
   const [maxDuration, setMaxDuration] = useState<number>(300)
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 900
+  const advancedFilterPanel = useResizablePanel({
+    direction: 'vertical',
+    initialSize: Math.max(220, Math.floor(viewportHeight * 0.44)),
+    minSize: 120,
+    maxSize: Math.max(260, Math.floor(viewportHeight * 0.62)),
+    storageKey: 'collections-advanced-filter-height',
+    clampOnBoundsChange: false,
+  })
   const [audioFilter, setAudioFilter] = useState<AudioFilterState>({
     sortBy: null,
     sortOrder: 'asc',
@@ -128,6 +169,8 @@ export function FoldersView() {
     dateAddedTo: '',
     dateCreatedFrom: '',
     dateCreatedTo: '',
+    dateUpdatedFrom: '',
+    dateUpdatedTo: '',
     pitchFilterMode: 'fundamental',
     selectedNotes: [],
     relatedNotesLevels: [],
@@ -199,10 +242,15 @@ export function FoldersView() {
       ? { type: 'collection', collectionId: activeCollectionId }
       : { type: 'all' }
 
+  const activeCollection = useMemo(
+    () => collections.find((collection) => collection.id === activeCollectionId),
+    [collections, activeCollectionId],
+  )
+
   const { data: samplesData } = useScopedSamples(
     currentScope,
     selectedTags,
-    searchQuery,
+    '',
     showFavoritesOnly,
     {
       sortBy: audioFilter.sortBy || undefined,
@@ -215,19 +263,76 @@ export function FoldersView() {
       dateAddedTo: audioFilter.dateAddedTo || undefined,
       dateCreatedFrom: audioFilter.dateCreatedFrom || undefined,
       dateCreatedTo: audioFilter.dateCreatedTo || undefined,
+      dateUpdatedFrom: audioFilter.dateUpdatedFrom || undefined,
+      dateUpdatedTo: audioFilter.dateUpdatedTo || undefined,
     }
   )
 
   const allSamples = samplesData?.samples || []
   const totalCount = samplesData?.total || 0
 
+  const ruleEvaluationContext = useMemo(
+    () => buildFilterRuleEvaluationContext(folders, collections),
+    [folders, collections],
+  )
+
+  const ruleSuggestions = useMemo<FilterRuleSuggestionMap>(() => {
+    const toSortedUnique = (values: Array<string | null | undefined>, limit = 120) => {
+      const unique = Array.from(
+        new Set(
+          values
+            .map((value) => (value || '').trim())
+            .filter((value) => value.length > 0)
+        )
+      )
+      unique.sort((a, b) => a.localeCompare(b))
+      return unique.slice(0, limit)
+    }
+
+    const sourceSuggestions = toSortedUnique(allSamples.map((sample) => sample.track.source || ''))
+
+    return {
+      artist: toSortedUnique(allSamples.map((sample) => sample.track.artist || '')),
+      sample_name: toSortedUnique(allSamples.map((sample) => sample.name || '')),
+      track_title: toSortedUnique(allSamples.map((sample) => sample.track.title || '')),
+      instrument: toSortedUnique(allSamples.map((sample) => sample.instrumentType || sample.instrumentPrimary || '')),
+      genre: toSortedUnique(allSamples.map((sample) => sample.genrePrimary || '')),
+      key: toSortedUnique(allSamples.map((sample) => sample.keyEstimate || '')),
+      source: sourceSuggestions.length > 0 ? sourceSuggestions : ['local', 'youtube'],
+      tag: toSortedUnique(allTags.map((tag) => tag.name)),
+      folder: toSortedUnique(folders.map((folder) => folder.name)),
+      collection: toSortedUnique(collections.map((collection) => collection.name)),
+    }
+  }, [allSamples, allTags, folders, collections])
+
+  const folderCollectionNameById = useMemo(
+    () => buildFolderCollectionNameMap(folders, collections),
+    [folders, collections],
+  )
+
+  const normalizedSearchTerm = useMemo(
+    () => normalizeSampleSearchTerm(searchQuery),
+    [searchQuery],
+  )
+
   // Filter samples by duration and advanced features (same as SourcesView)
   const samples = useMemo(() => {
     return allSamples.filter(sample => {
+      if (
+        !matchesSampleSearchTerm(sample, normalizedSearchTerm, searchScope, {
+          folderCollectionNameById,
+          fallbackCollectionName: activeCollection?.name,
+          customFields: customSearchFields,
+        })
+      ) {
+        return false
+      }
+
       const duration = sample.endTime - sample.startTime
       if (duration < minDuration || (maxDuration < 600 && duration > maxDuration)) {
         return false
       }
+
       if (audioFilter.selectedEnvelopeTypes.length > 0) {
         if (!sample.envelopeType || !audioFilter.selectedEnvelopeTypes.includes(sample.envelopeType)) {
           return false
@@ -244,9 +349,58 @@ export function FoldersView() {
           return false
         }
       }
+
+      const matchesDateRange = (
+        value: string | null | undefined,
+        from: string,
+        to: string,
+      ) => {
+        if (!from && !to) return true
+        if (!value) return false
+        if (from && value < from) return false
+        if (to && value > `${to}T23:59:59`) return false
+        return true
+      }
+
+      if (!matchesDateRange(sample.dateAdded, audioFilter.dateAddedFrom, audioFilter.dateAddedTo)) {
+        return false
+      }
+      if (!matchesDateRange(sample.dateCreated, audioFilter.dateCreatedFrom, audioFilter.dateCreatedTo)) {
+        return false
+      }
+      if (!matchesDateRange(sample.dateModified, audioFilter.dateUpdatedFrom, audioFilter.dateUpdatedTo)) {
+        return false
+      }
+
+      if (!matchesFilterRuleQuery(sample, queryRules, ruleEvaluationContext)) {
+        return false
+      }
       return true
     })
-  }, [allSamples, minDuration, maxDuration, audioFilter])
+  }, [
+    allSamples,
+    normalizedSearchTerm,
+    searchScope,
+    folderCollectionNameById,
+    activeCollection?.name,
+    customSearchFields,
+    minDuration,
+    maxDuration,
+    audioFilter,
+    queryRules,
+    ruleEvaluationContext,
+  ])
+
+  const currentViewSampleIds = useMemo(
+    () => new Set(samples.map((sample) => sample.id)),
+    [samples],
+  )
+  const selectedSampleIdsInCurrentView = useMemo(() => {
+    if (selectedSampleIds.size === 0) return new Set<number>()
+    return new Set(
+      Array.from(selectedSampleIds).filter((id) => currentViewSampleIds.has(id)),
+    )
+  }, [selectedSampleIds, currentViewSampleIds])
 
   const selectedSample = samples.find(s => s.id === selectedSampleId) || null
   const selectedSampleIndex = selectedSample ? samples.indexOf(selectedSample) : -1
@@ -296,6 +450,7 @@ export function FoldersView() {
     const dims: { type: 'tag-category' | 'metadata'; key: string; label: string; count: number }[] = []
 
     for (const [category, items] of Object.entries(facets.tags)) {
+      if (HIDDEN_TAG_CATEGORIES.has(category)) continue
       if (items.length > 0) {
         dims.push({ type: 'tag-category', key: category, label: FACET_LABELS[category] || category, count: items.length })
       }
@@ -312,6 +467,7 @@ export function FoldersView() {
   const currentFacetItems = useMemo(() => {
     if (!facets || !selectedFacetKey) return []
     if (selectedFacetType === 'tag-category') {
+      if (HIDDEN_TAG_CATEGORIES.has(selectedFacetKey)) return []
       return (facets.tags[selectedFacetKey] || []).map(t => ({ value: t.name, count: t.count }))
     } else {
       return facets.metadata[selectedFacetKey] || []
@@ -416,19 +572,35 @@ export function FoldersView() {
   }
 
   const handleToggleSelectAll = () => {
-    if (selectedSampleIds.size === samples.length && samples.length > 0) {
-      setSelectedSampleIds(new Set())
-    } else {
-      setSelectedSampleIds(new Set(samples.map(s => s.id)))
-    }
+    if (samples.length === 0) return
+
+    const allCurrentViewSelected = selectedSampleIdsInCurrentView.size === samples.length
+    setSelectedSampleIds((prev) => {
+      const next = new Set(prev)
+      if (allCurrentViewSelected) {
+        currentViewSampleIds.forEach((id) => next.delete(id))
+      } else {
+        currentViewSampleIds.forEach((id) => next.add(id))
+      }
+      return next
+    })
   }
 
   const handleBatchDelete = (ids: number[]) => {
-    if (confirm(`Delete ${ids.length} selected samples?`)) {
-      batchDeleteSlices.mutate(ids, {
-        onSuccess: () => setSelectedSampleIds(new Set())
+    void (async () => {
+      const confirmed = await confirm({
+        title: 'Delete Samples',
+        message: `Delete ${ids.length} selected samples?`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        isDestructive: true,
       })
-    }
+      if (!confirmed) return
+
+      batchDeleteSlices.mutate(ids, {
+        onSuccess: () => setSelectedSampleIds(new Set()),
+      })
+    })()
   }
 
   const handleBatchDownload = (ids: number[]) => {
@@ -450,53 +622,59 @@ export function FoldersView() {
 
     const modifiedCount = samples.filter(sample => ids.includes(sample.id) && sample.sampleModified).length
 
-    const confirmed = confirm(
-      modifiedCount > 0
-        ? `Analyze ${ids.length} selected samples? (${modifiedCount} modified)`
-        : `Analyze ${ids.length} selected samples?`
-    )
-    if (!confirmed) return
+    void (async () => {
+      const confirmed = await confirm({
+        title: 'Analyze Samples',
+        message: modifiedCount > 0
+          ? `Analyze ${ids.length} selected samples? (${modifiedCount} modified)`
+          : `Analyze ${ids.length} selected samples?`,
+        confirmText: 'Analyze',
+        cancelText: 'Cancel',
+      })
+      if (!confirmed) return
 
-    batchReanalyzeSlices.mutate(
-      {
-        sliceIds: ids,
-        analysisLevel: 'standard',
-        concurrency: 2,
-        includeFilenameTags: true,
-      },
-      {
-        onSuccess: (result) => {
-          if (result.warnings && result.warnings.totalWithWarnings > 0) {
-            const preview = result.warnings.messages.slice(0, 3)
-            const extra = Math.max(0, result.warnings.messages.length - preview.length)
-            const details = preview.map((m) => `• ${m}`).join('\n')
-            window.alert(
-              [
-                `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before re-analysis.`,
-                details,
-                extra > 0 ? `...and ${extra} more warning(s).` : '',
-              ]
-                .filter(Boolean)
-                .join('\n')
-            )
-          }
-          setSelectedSampleIds(new Set())
+      batchReanalyzeSlices.mutate(
+        {
+          sliceIds: ids,
+          analysisLevel: 'advanced',
+          concurrency: 2,
+          includeFilenameTags: true,
         },
-      }
-    )
+        {
+          onSuccess: async (result) => {
+            if (result.warnings && result.warnings.totalWithWarnings > 0) {
+              const preview = result.warnings.messages.slice(0, 3)
+              const extra = Math.max(0, result.warnings.messages.length - preview.length)
+              const details = preview.map((m) => `• ${m}`).join('\n')
+              await showAlert({
+                title: 'Analysis Warning',
+                message: [
+                  `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before re-analysis.`,
+                  details,
+                  extra > 0 ? `...and ${extra} more warning(s).` : '',
+                ]
+                  .filter(Boolean)
+                  .join('\n'),
+              })
+            }
+            setSelectedSampleIds(new Set())
+          },
+        }
+      )
+    })()
   }
 
   const modifiedSelectedCount = useMemo(() => {
-    if (selectedSampleIds.size === 0) return 0
-    return samples.filter(sample => selectedSampleIds.has(sample.id) && sample.sampleModified).length
-  }, [samples, selectedSampleIds])
+    if (selectedSampleIdsInCurrentView.size === 0) return 0
+    return samples.filter((sample) => selectedSampleIdsInCurrentView.has(sample.id) && sample.sampleModified).length
+  }, [samples, selectedSampleIdsInCurrentView])
 
   const handleCreateTag = (name: string, color: string) => {
     createTag.mutate({ name, color })
   }
 
   const handleCreateFolderFromSelection = useCallback(() => {
-    if (!folderFromSelectionName.trim() || !activeCollectionId || selectedSampleIds.size === 0) return
+    if (!folderFromSelectionName.trim() || !activeCollectionId || selectedSampleIdsInCurrentView.size === 0) return
     createFolder.mutate({
       name: folderFromSelectionName.trim(),
       collectionId: activeCollectionId,
@@ -505,7 +683,7 @@ export function FoldersView() {
       onSuccess: (newCol) => {
         batchAddSlices.mutate({
           folderId: newCol.id,
-          sliceIds: Array.from(selectedSampleIds),
+          sliceIds: Array.from(selectedSampleIdsInCurrentView),
         }, {
           onSuccess: () => {
             setSelectedSampleIds(new Set())
@@ -515,7 +693,14 @@ export function FoldersView() {
         })
       },
     })
-  }, [folderFromSelectionName, activeCollectionId, selectedFolderId, selectedSampleIds, createFolder, batchAddSlices])
+  }, [
+    folderFromSelectionName,
+    activeCollectionId,
+    selectedFolderId,
+    selectedSampleIdsInCurrentView,
+    createFolder,
+    batchAddSlices,
+  ])
 
   // Render folder tree node
   const renderFolderNode = (node: FolderNode, depth: number = 0): React.ReactNode => {
@@ -710,7 +895,64 @@ export function FoldersView() {
     )
   }
 
-  const activeCollection = collections.find(p => p.id === activeCollectionId)
+  const searchScopeDescriptor = getSampleSearchScopeDescriptor(searchScope, customSearchFields)
+  const searchScopeHint = getSampleSearchScopeHint(searchScope, customSearchFields)
+  const selectAllChecked = selectedSampleIdsInCurrentView.size === samples.length && samples.length > 0
+  const selectAllIndeterminate =
+    selectedSampleIdsInCurrentView.size > 0 && selectedSampleIdsInCurrentView.size < samples.length
+  const searchContextLabel =
+    selectedFolderId
+      ? folders.find((folder) => folder.id === selectedFolderId)?.name || 'folder'
+      : activeCollection?.name || 'collection'
+
+  const toggleCustomSearchField = (field: SampleSearchCustomField) => {
+    setCustomSearchFields((currentFields) =>
+      currentFields.includes(field)
+        ? currentFields.filter((value) => value !== field)
+        : [...currentFields, field],
+    )
+  }
+
+  const handleSortByChange = (sortBy: AudioFilterState['sortBy']) => {
+    setAudioFilter((current) => ({
+      ...current,
+      sortBy,
+      sortOrder: sortBy ? (current.sortBy === sortBy ? current.sortOrder : 'asc') : 'asc',
+    }))
+  }
+
+  const handleSortOrderChange = (sortOrder: AudioFilterState['sortOrder']) => {
+    setAudioFilter((current) => {
+      if (!current.sortBy) return current
+      return {
+        ...current,
+        sortOrder,
+      }
+    })
+  }
+
+  useEffect(() => {
+    if (selectedSampleId !== null) return
+    setAudioFilter((current) => {
+      if (current.sortBy !== 'similarity') return current
+      return {
+        ...current,
+        sortBy: null,
+        sortOrder: 'asc',
+      }
+    })
+  }, [selectedSampleId])
+
+  const filterScope = useMemo(() => {
+    if (selectedFolderId) {
+      const folder = folders.find(c => c.id === selectedFolderId)
+      return { label: folder?.name || 'Folder', typeLabel: 'folder' }
+    }
+    if (activeCollection?.name) {
+      return { label: activeCollection.name, typeLabel: 'collection' }
+    }
+    return null
+  }, [selectedFolderId, folders, activeCollection])
 
   return (
     <div className="h-full flex overflow-hidden bg-surface-base">
@@ -907,20 +1149,64 @@ export function FoldersView() {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {/* Search & Filter bar */}
-        <div className="p-4 border-b border-surface-border bg-surface-raised">
+        <div className="sticky top-0 z-20 flex-shrink-0 px-4 py-0 border-b border-surface-border bg-surface-raised">
           <div className="flex items-center gap-4">
-            {/* Search input */}
-            <div className="relative flex-1 max-w-md">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={`Search in ${selectedFolderId ? folders.find(c => c.id === selectedFolderId)?.name || 'folder' : 'collection'}...`}
-                className="w-full pl-10 pr-4 py-2 bg-surface-base border border-surface-border rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary transition-colors"
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              {viewMode !== 'list' && (
+                <button
+                  type="button"
+                  onClick={handleToggleSelectAll}
+                  disabled={samples.length === 0}
+                  className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors ${
+                    samples.length === 0
+                      ? 'cursor-not-allowed border-surface-border text-slate-500/50'
+                      : selectAllChecked
+                        ? 'border-accent-primary/50 bg-accent-primary/15 text-accent-primary'
+                        : 'border-surface-border bg-surface-base text-slate-300 hover:text-white'
+                  }`}
+                  title={selectAllChecked ? 'Clear selection' : 'Select all samples'}
+                >
+                  {selectAllChecked ? (
+                    <CheckSquare size={13} className="shrink-0" />
+                  ) : selectAllIndeterminate ? (
+                    <MinusSquare size={13} className="shrink-0" />
+                  ) : (
+                    <Square size={13} className="shrink-0" />
+                  )}
+                  <span>{selectAllChecked ? 'Clear all' : 'Select all'}</span>
+                </button>
+              )}
+              <SampleSortMenu
+                sortBy={audioFilter.sortBy}
+                sortOrder={audioFilter.sortOrder}
+                onSortByChange={handleSortByChange}
+                onSortOrderChange={handleSortOrderChange}
+                similarityEnabled={selectedSampleId !== null}
               />
+            </div>
+
+            {/* Search input */}
+            <div className="flex-1 min-w-0 max-w-3xl">
+              <div className="relative min-w-0">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={`Search ${searchScopeDescriptor} in ${searchContextLabel}...`}
+                  className="w-full pl-10 pr-44 py-1.5 bg-surface-base border border-surface-border rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary transition-colors"
+                />
+                <SampleSearchScopeMenu
+                  searchScope={searchScope}
+                  searchScopeHint={searchScopeHint}
+                  customSearchFields={customSearchFields}
+                  onScopeChange={setSearchScope}
+                  onToggleCustomField={toggleCustomSearchField}
+                  onResetCustomFields={() => setCustomSearchFields(DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS)}
+                />
+              </div>
             </div>
 
             {/* View mode toggle */}
@@ -986,13 +1272,13 @@ export function FoldersView() {
             </button>
 
             {/* Create Folder from Selection */}
-            {selectedSampleIds.size > 0 && !isCreatingFromSelection && (
+            {selectedSampleIdsInCurrentView.size > 0 && !isCreatingFromSelection && (
               <button
                 className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg transition-colors bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/30"
                 onClick={() => setIsCreatingFromSelection(true)}
               >
                 <FolderPlus size={14} />
-                Create Folder ({selectedSampleIds.size})
+                Create Folder ({selectedSampleIdsInCurrentView.size})
               </button>
             )}
 
@@ -1039,137 +1325,178 @@ export function FoldersView() {
               onCreateTag={handleCreateTag}
               totalCount={totalCount}
               filteredCount={samples.length}
+              scopeLabel={filterScope?.label}
+              scopeTypeLabel={filterScope?.typeLabel}
+              compactMode
             />
           </div>
 
           {/* Advanced filters section */}
           <div className="mt-3">
-            <button
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-300 transition-colors"
-            >
-              <ChevronDown size={14} className={`transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
-              <span>Advanced</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-300 transition-colors"
+              >
+                <ChevronDown size={14} className={`transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
+                <span>Advanced</span>
+              </button>
+            </div>
 
             {showAdvanced && (
-              <div className="mt-3 p-3 bg-surface-base border border-surface-border rounded-lg space-y-3">
-                {/* Audio feature filters */}
-                <SourcesAudioFilter
-                  filterState={audioFilter}
-                  onChange={setAudioFilter}
-                  availableKeys={[...new Set(samples.map(s => s.keyEstimate).filter(Boolean) as string[])]}
-                  availableEnvelopeTypes={[...new Set(samples.map(s => s.envelopeType).filter(Boolean) as string[])]}
-                  availableInstruments={[...new Set(samples.map(s => s.instrumentType || s.instrumentPrimary).filter(Boolean) as string[])]}
-                  availableGenres={[...new Set(samples.map(s => s.genrePrimary).filter(Boolean) as string[])]}
-                />
+              <div className="mt-3 bg-surface-base border border-surface-border rounded-lg overflow-hidden">
+                <div
+                  className={advancedFilterPanel.isDragging ? 'panel-animate dragging overflow-hidden' : 'panel-animate overflow-hidden'}
+                  style={{ height: advancedFilterPanel.size }}
+                >
+                  <div className="h-full overflow-y-auto p-3 pr-2 space-y-3">
+                  {/* Audio feature filters */}
+                  <SourcesAudioFilter
+                    filterState={audioFilter}
+                    onChange={setAudioFilter}
+                    availableKeys={[...new Set(samples.map(s => s.keyEstimate).filter(Boolean) as string[])]}
+                    availableEnvelopeTypes={[...new Set(samples.map(s => s.envelopeType).filter(Boolean) as string[])]}
+                    availableInstruments={[...new Set(samples.map(s => s.instrumentType || s.instrumentPrimary).filter(Boolean) as string[])]}
+                    availableGenres={[...new Set(samples.map(s => s.genrePrimary).filter(Boolean) as string[])]}
+                    showSortControls={false}
+                  />
 
-                {/* Separator */}
-                <div className="h-px bg-surface-border" />
+                  {/* Separator */}
+                  <div className="h-px bg-surface-border" />
 
-                <div className="flex items-center gap-4">
-                  {/* Duration controls */}
-                  <div className="flex items-center gap-3 flex-1 max-w-md">
-                    <span className="text-xs text-slate-400 whitespace-nowrap">Duration:</span>
-                    <div className="flex-1 flex items-center gap-2">
-                      {(() => {
-                        const MAX_DURATION = 600
-                        const EXPONENT = 5.5
+                  <div className="flex items-center gap-4">
+                    {/* Duration controls */}
+                    <div className="flex items-center gap-3 flex-1 max-w-md">
+                      <span className="text-xs text-slate-400 whitespace-nowrap">Duration:</span>
+                      <div className="flex-1 flex items-center gap-2">
+                        {(() => {
+                          const MAX_DURATION = 600
+                          const EXPONENT = 5.5
 
-                        const sliderToDuration = (sliderValue: number) => {
-                          return MAX_DURATION * Math.pow(sliderValue / 100, EXPONENT)
-                        }
+                          const sliderToDuration = (sliderValue: number) => {
+                            return MAX_DURATION * Math.pow(sliderValue / 100, EXPONENT)
+                          }
 
-                        const durationToSlider = (duration: number) => {
-                          return 100 * Math.pow(Math.min(duration, MAX_DURATION) / MAX_DURATION, 1 / EXPONENT)
-                        }
+                          const durationToSlider = (duration: number) => {
+                            return 100 * Math.pow(Math.min(duration, MAX_DURATION) / MAX_DURATION, 1 / EXPONENT)
+                          }
 
-                        const minSlider = durationToSlider(minDuration)
-                        const maxSlider = durationToSlider(maxDuration)
+                          const minSlider = durationToSlider(minDuration)
+                          const maxSlider = durationToSlider(maxDuration)
 
-                        const isMaxInfinity = maxDuration >= MAX_DURATION
+                          const isMaxInfinity = maxDuration >= MAX_DURATION
 
-                        return (
-                          <>
-                            <input
-                              type="number"
-                              value={minDuration.toFixed(1)}
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value) || 0
-                                setMinDuration(Math.max(0, Math.min(val, maxDuration)))
-                              }}
-                              placeholder="Min"
-                              className="w-16 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary no-spinner"
-                              step="0.1"
-                              min="0"
-                              max={maxDuration}
-                            />
-
-                            <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
-                              <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
-                              <div
-                                className="absolute h-0.5 bg-accent-primary rounded-full pointer-events-none"
-                                style={{
-                                  left: `${minSlider}%`,
-                                  right: `${100 - maxSlider}%`,
-                                }}
-                              />
-                              <input
-                                type="range"
-                                min={0}
-                                max={100}
-                                step={0.1}
-                                value={minSlider}
-                                onChange={(e) => {
-                                  const newSliderMin = parseFloat(e.target.value)
-                                  const newDuration = sliderToDuration(newSliderMin)
-                                  setMinDuration(Math.min(newDuration, maxDuration))
-                                }}
-                                className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
-                                style={{ zIndex: minSlider > maxSlider - 2 ? 5 : 3 }}
-                              />
-                              <input
-                                type="range"
-                                min={0}
-                                max={100}
-                                step={0.1}
-                                value={maxSlider}
-                                onChange={(e) => {
-                                  const newSliderMax = parseFloat(e.target.value)
-                                  const newDuration = sliderToDuration(newSliderMax)
-                                  setMaxDuration(Math.max(newDuration, minDuration))
-                                }}
-                                className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
-                                style={{ zIndex: maxSlider < minSlider + 2 ? 5 : 4 }}
-                              />
-                            </div>
-
-                            {isMaxInfinity ? (
-                              <div className="w-16 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-center text-white flex items-center justify-center">
-                                ∞
-                              </div>
-                            ) : (
+                          return (
+                            <>
                               <input
                                 type="number"
-                                value={maxDuration.toFixed(1)}
+                                value={minDuration.toFixed(1)}
                                 onChange={(e) => {
                                   const val = parseFloat(e.target.value) || 0
-                                  setMaxDuration(Math.max(minDuration, Math.min(val, MAX_DURATION)))
+                                  setMinDuration(Math.max(0, Math.min(val, maxDuration)))
                                 }}
-                                placeholder="Max"
+                                placeholder="Min"
                                 className="w-16 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary no-spinner"
                                 step="0.1"
-                                min={minDuration}
-                                max={MAX_DURATION}
+                                min="0"
+                                max={maxDuration}
                               />
-                            )}
-                            <span className="text-xs text-slate-500 whitespace-nowrap">sec</span>
-                          </>
-                        )
-                      })()}
+
+                              <div className="flex-1 relative h-6 flex items-center min-w-[120px]">
+                                <div className="absolute left-0 right-0 h-0.5 bg-surface-raised rounded-full" />
+                                <div
+                                  className="absolute h-0.5 bg-accent-primary rounded-full pointer-events-none"
+                                  style={{
+                                    left: `${minSlider}%`,
+                                    right: `${100 - maxSlider}%`,
+                                  }}
+                                />
+                                <input
+                                  type="range"
+                                  min={0}
+                                  max={100}
+                                  step={0.1}
+                                  value={minSlider}
+                                  onChange={(e) => {
+                                    const newSliderMin = parseFloat(e.target.value)
+                                    const newDuration = sliderToDuration(newSliderMin)
+                                    setMinDuration(Math.min(newDuration, maxDuration))
+                                  }}
+                                  className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                                  style={{ zIndex: minSlider > maxSlider - 2 ? 5 : 3 }}
+                                />
+                                <input
+                                  type="range"
+                                  min={0}
+                                  max={100}
+                                  step={0.1}
+                                  value={maxSlider}
+                                  onChange={(e) => {
+                                    const newSliderMax = parseFloat(e.target.value)
+                                    const newDuration = sliderToDuration(newSliderMax)
+                                    setMaxDuration(Math.max(newDuration, minDuration))
+                                  }}
+                                  className="absolute w-full h-6 appearance-none bg-transparent cursor-pointer slider-thumb"
+                                  style={{ zIndex: maxSlider < minSlider + 2 ? 5 : 4 }}
+                                />
+                              </div>
+
+                              {isMaxInfinity ? (
+                                <div className="w-16 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-center text-white flex items-center justify-center">
+                                  ∞
+                                </div>
+                              ) : (
+                                <input
+                                  type="number"
+                                  value={maxDuration.toFixed(1)}
+                                  onChange={(e) => {
+                                    const val = parseFloat(e.target.value) || 0
+                                    setMaxDuration(Math.max(minDuration, Math.min(val, MAX_DURATION)))
+                                  }}
+                                  placeholder="Max"
+                                  className="w-16 px-1.5 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary no-spinner"
+                                  step="0.1"
+                                  min={minDuration}
+                                  max={MAX_DURATION}
+                                />
+                              )}
+                              <span className="text-xs text-slate-500 whitespace-nowrap">sec</span>
+                            </>
+                          )
+                        })()}
+                      </div>
                     </div>
+
+                  </div>
+
+                  <div className="h-px bg-surface-border" />
+
+                  <div className="space-y-2">
+                    <button
+                      onClick={() => setShowRuleBuilder((value) => !value)}
+                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded text-xs font-medium border border-surface-border bg-surface-raised text-slate-300 hover:text-white hover:bg-surface-base transition-colors"
+                    >
+                      {showRuleBuilder ? 'Hide query conditions' : 'Add query conditions'}
+                    </button>
+
+                    {showRuleBuilder && (
+                      <SourcesRuleFilterBuilder
+                        rules={queryRules}
+                        onChange={setQueryRules}
+                        suggestions={ruleSuggestions}
+                      />
+                    )}
                   </div>
                 </div>
+                </div>
+                <ResizableDivider
+                  direction="vertical"
+                  isDragging={advancedFilterPanel.isDragging}
+                  isCollapsed={advancedFilterPanel.isCollapsed}
+                  onMouseDown={advancedFilterPanel.dividerProps.onMouseDown}
+                  onDoubleClick={advancedFilterPanel.dividerProps.onDoubleClick}
+                  onExpand={advancedFilterPanel.restore}
+                />
               </div>
             )}
           </div>
@@ -1242,10 +1569,10 @@ export function FoldersView() {
         )}
 
         {/* Batch actions bar */}
-        {selectedSampleIds.size > 0 && (
+        {selectedSampleIdsInCurrentView.size > 0 && (
           <SourcesBatchActions
-            selectedCount={selectedSampleIds.size}
-            selectedIds={selectedSampleIds}
+            selectedCount={selectedSampleIdsInCurrentView.size}
+            selectedIds={selectedSampleIdsInCurrentView}
             modifiedSelectedCount={modifiedSelectedCount}
             onBatchDelete={handleBatchDelete}
             onBatchDownload={handleBatchDownload}
@@ -1257,15 +1584,17 @@ export function FoldersView() {
         )}
 
         {/* Sample content */}
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 min-h-0 overflow-auto">
           {viewMode === 'grid' ? (
             <SourcesSampleGrid
               samples={samples}
               selectedId={selectedSampleId}
-              selectedIds={selectedSampleIds}
+              selectedIds={selectedSampleIdsInCurrentView}
               onSelect={(id) => setSelectedSampleId(id)}
               onToggleSelect={handleToggleSelect}
               onToggleSelectAll={handleToggleSelectAll}
+              showSelectAllControl={false}
+              showSortControls={false}
               onToggleFavorite={(id) => toggleFavorite.mutate(id)}
               playMode="normal"
               loopEnabled={false}
@@ -1274,7 +1603,7 @@ export function FoldersView() {
             <SourcesSampleList
               samples={samples}
               selectedId={selectedSampleId}
-              selectedIds={selectedSampleIds}
+              selectedIds={selectedSampleIdsInCurrentView}
               onSelect={(id) => setSelectedSampleId(id)}
               onToggleSelect={handleToggleSelect}
               onToggleSelectAll={handleToggleSelectAll}
@@ -1314,7 +1643,7 @@ export function FoldersView() {
           activeCollectionId={activeCollectionId}
         />
       )}
-
+      {dialogNode}
     </div>
   )
 }

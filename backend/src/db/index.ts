@@ -27,6 +27,24 @@ function initDatabase() {
       audio_path TEXT,
       peaks_path TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
+      artist TEXT,
+      album TEXT,
+      year INTEGER,
+      album_artist TEXT,
+      genre TEXT,
+      composer TEXT,
+      track_number INTEGER,
+      disc_number INTEGER,
+      track_comment TEXT,
+      musical_key TEXT,
+      tag_bpm REAL,
+      isrc TEXT,
+      metadata_raw TEXT,
+      source TEXT NOT NULL DEFAULT 'youtube',
+      original_path TEXT,
+      folder_path TEXT,
+      relative_path TEXT,
+      full_path_hint TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -110,6 +128,24 @@ function initDatabase() {
   if (!hasCategory) {
     console.log('[DB] Migrating: Adding category column to tags table')
     sqlite.exec("ALTER TABLE tags ADD COLUMN category TEXT NOT NULL DEFAULT 'general'")
+  }
+
+  // Migration: Remove deprecated tempo/spectral tags and all links.
+  const deprecatedTagCount = sqlite
+    .prepare("SELECT COUNT(*) as count FROM tags WHERE category IN ('tempo', 'spectral')")
+    .get() as { count: number }
+  if ((deprecatedTagCount?.count || 0) > 0) {
+    console.log('[DB] Migrating: Removing deprecated tempo/spectral tags')
+    sqlite.exec(`
+      DELETE FROM slice_tags
+      WHERE tag_id IN (SELECT id FROM tags WHERE category IN ('tempo', 'spectral'));
+
+      DELETE FROM track_tags
+      WHERE tag_id IN (SELECT id FROM tags WHERE category IN ('tempo', 'spectral'));
+
+      DELETE FROM tags
+      WHERE category IN ('tempo', 'spectral');
+    `)
   }
 
   // Migration: Add favorite column to slices if it doesn't exist
@@ -198,9 +234,21 @@ function initDatabase() {
       ALTER TABLE audio_features ADD COLUMN mel_bands_std TEXT;
 
       -- Analysis level tracking
-      ALTER TABLE audio_features ADD COLUMN analysis_level TEXT DEFAULT 'standard';
+      ALTER TABLE audio_features ADD COLUMN analysis_level TEXT DEFAULT 'advanced';
     `)
   }
+
+  const audioFeaturesWithLevel = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasAnalysisLevel = audioFeaturesWithLevel.some(col => col.name === 'analysis_level')
+  if (!hasAnalysisLevel) {
+    console.log('[DB] Migrating: Adding analysis_level column to audio_features')
+    sqlite.exec(`ALTER TABLE audio_features ADD COLUMN analysis_level TEXT DEFAULT 'advanced';`)
+  }
+  sqlite.exec(`
+    UPDATE audio_features
+    SET analysis_level = 'advanced'
+    WHERE analysis_level IS NULL OR analysis_level <> 'advanced';
+  `)
 
   // Migration: Add Phase 2 features (stereo analysis, HPSS)
   const audioFeaturesPhase2 = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
@@ -278,13 +326,17 @@ function initDatabase() {
   // Migration: Add Phase 6 features (Audio fingerprinting & similarity detection)
   const audioFeaturesPhase6 = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
   const hasChromaprintFingerprint = audioFeaturesPhase6.some(col => col.name === 'chromaprint_fingerprint')
-  if (!hasChromaprintFingerprint) {
+  const hasSimilarityHash = audioFeaturesPhase6.some(col => col.name === 'similarity_hash')
+  if (!hasChromaprintFingerprint || !hasSimilarityHash) {
     console.log('[DB] Migrating: Adding Phase 6 audio features (fingerprinting & similarity detection)')
-    sqlite.exec(`
-      -- Fingerprinting features
-      ALTER TABLE audio_features ADD COLUMN chromaprint_fingerprint TEXT;
-      ALTER TABLE audio_features ADD COLUMN similarity_hash TEXT;
-    `)
+    const statements: string[] = []
+    if (!hasChromaprintFingerprint) {
+      statements.push('ALTER TABLE audio_features ADD COLUMN chromaprint_fingerprint TEXT;')
+    }
+    if (!hasSimilarityHash) {
+      statements.push('ALTER TABLE audio_features ADD COLUMN similarity_hash TEXT;')
+    }
+    sqlite.exec(statements.join('\n'))
   }
 
   // Migration: Add new analysis features (temporal centroid, crest factor, etc.)
@@ -309,23 +361,82 @@ function initDatabase() {
     sqlite.exec(`ALTER TABLE audio_features ADD COLUMN instrument_type TEXT;`)
   }
 
-  // Migration: Add artist and album to tracks
-  const tracksArtist = sqlite.prepare("PRAGMA table_info(tracks)").all() as { name: string }[]
-  const hasArtist = tracksArtist.some(col => col.name === 'artist')
-  if (!hasArtist) {
-    console.log('[DB] Migrating: Adding artist and album columns to tracks')
-    sqlite.exec(`
-      ALTER TABLE tracks ADD COLUMN artist TEXT;
-      ALTER TABLE tracks ADD COLUMN album TEXT;
-    `)
-  }
-
-  // Migration: Add year and path identity columns to tracks
+  // Migration: Add metadata and path identity columns to tracks
   const tracksMetadataColumns = sqlite.prepare("PRAGMA table_info(tracks)").all() as { name: string }[]
+  const hasArtist = tracksMetadataColumns.some(col => col.name === 'artist')
+  if (!hasArtist) {
+    console.log('[DB] Migrating: Adding artist column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN artist TEXT;`)
+  }
+  const hasAlbum = tracksMetadataColumns.some(col => col.name === 'album')
+  if (!hasAlbum) {
+    console.log('[DB] Migrating: Adding album column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN album TEXT;`)
+  }
   const hasYear = tracksMetadataColumns.some(col => col.name === 'year')
   if (!hasYear) {
     console.log('[DB] Migrating: Adding year column to tracks')
     sqlite.exec(`ALTER TABLE tracks ADD COLUMN year INTEGER;`)
+  }
+  const hasAlbumArtist = tracksMetadataColumns.some(col => col.name === 'album_artist')
+  if (!hasAlbumArtist) {
+    console.log('[DB] Migrating: Adding album_artist column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN album_artist TEXT;`)
+  }
+  const hasGenre = tracksMetadataColumns.some(col => col.name === 'genre')
+  if (!hasGenre) {
+    console.log('[DB] Migrating: Adding genre column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN genre TEXT;`)
+  }
+  const hasComposer = tracksMetadataColumns.some(col => col.name === 'composer')
+  if (!hasComposer) {
+    console.log('[DB] Migrating: Adding composer column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN composer TEXT;`)
+  }
+  const hasTrackNumber = tracksMetadataColumns.some(col => col.name === 'track_number')
+  if (!hasTrackNumber) {
+    console.log('[DB] Migrating: Adding track_number column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN track_number INTEGER;`)
+  }
+  const hasDiscNumber = tracksMetadataColumns.some(col => col.name === 'disc_number')
+  if (!hasDiscNumber) {
+    console.log('[DB] Migrating: Adding disc_number column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN disc_number INTEGER;`)
+  }
+  const hasTrackComment = tracksMetadataColumns.some(col => col.name === 'track_comment')
+  if (!hasTrackComment) {
+    console.log('[DB] Migrating: Adding track_comment column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN track_comment TEXT;`)
+  }
+  const hasMusicalKey = tracksMetadataColumns.some(col => col.name === 'musical_key')
+  if (!hasMusicalKey) {
+    console.log('[DB] Migrating: Adding musical_key column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN musical_key TEXT;`)
+  }
+  const hasTagBpm = tracksMetadataColumns.some(col => col.name === 'tag_bpm')
+  if (!hasTagBpm) {
+    console.log('[DB] Migrating: Adding tag_bpm column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN tag_bpm REAL;`)
+  }
+  const hasIsrc = tracksMetadataColumns.some(col => col.name === 'isrc')
+  if (!hasIsrc) {
+    console.log('[DB] Migrating: Adding isrc column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN isrc TEXT;`)
+  }
+  const hasMetadataRaw = tracksMetadataColumns.some(col => col.name === 'metadata_raw')
+  if (!hasMetadataRaw) {
+    console.log('[DB] Migrating: Adding metadata_raw column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN metadata_raw TEXT;`)
+  }
+  const hasOriginalPathMetadata = tracksMetadataColumns.some(col => col.name === 'original_path')
+  if (!hasOriginalPathMetadata) {
+    console.log('[DB] Migrating: Adding original_path column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN original_path TEXT;`)
+  }
+  const hasFolderPathMetadata = tracksMetadataColumns.some(col => col.name === 'folder_path')
+  if (!hasFolderPathMetadata) {
+    console.log('[DB] Migrating: Adding folder_path column to tracks')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN folder_path TEXT;`)
   }
   const hasRelativePath = tracksMetadataColumns.some(col => col.name === 'relative_path')
   if (!hasRelativePath) {
@@ -444,6 +555,38 @@ function initDatabase() {
     );
     CREATE INDEX IF NOT EXISTS idx_reanalysis_logs_slice_id ON reanalysis_logs(slice_id);
     CREATE INDEX IF NOT EXISTS idx_reanalysis_logs_created_at ON reanalysis_logs(created_at);
+  `)
+
+  // Migration: Create backup_configs table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS backup_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      remote_path TEXT NOT NULL DEFAULT 'sample_solution',
+      schedule TEXT NOT NULL DEFAULT 'manual',
+      last_backup_at TEXT,
+      last_backup_status TEXT,
+      last_backup_error TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS backup_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      config_id INTEGER REFERENCES backup_configs(id) ON DELETE CASCADE,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      status TEXT NOT NULL DEFAULT 'running',
+      bytes_transferred INTEGER DEFAULT 0,
+      files_transferred INTEGER DEFAULT 0,
+      error_message TEXT,
+      details_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_backup_logs_config_id ON backup_logs(config_id);
+    CREATE INDEX IF NOT EXISTS idx_backup_logs_created_at ON backup_logs(created_at);
   `)
 
   return drizzleDb

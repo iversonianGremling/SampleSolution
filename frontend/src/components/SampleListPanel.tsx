@@ -29,6 +29,7 @@ import {
   useUpdateSliceGlobal,
   useUpdateTrack,
 } from '../hooks/useTracks'
+import { useAppDialog } from '../hooks/useAppDialog'
 import { getSliceDownloadUrl } from '../api/client'
 import { TagSearchInput } from './TagSearchInput'
 import { CompactSliceRow } from './CompactSliceRow'
@@ -51,6 +52,7 @@ export function SampleListPanel({
   onSliceSelect,
   onToggleEditMode,
 }: SampleListPanelProps) {
+  const { confirm, alert: showAlert, dialogNode } = useAppDialog()
   // Audio playback
   const [playingSliceId, setPlayingSliceId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -275,15 +277,16 @@ export function SampleListPanel({
                     const preview = result.warnings.messages.slice(0, 3)
                     const extra = Math.max(0, result.warnings.messages.length - preview.length)
                     const details = preview.map((m) => `• ${m}`).join('\n')
-                    window.alert(
-                      [
+                    void showAlert({
+                      title: 'Analysis Warning',
+                      message: [
                         `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before analysis.`,
                         details,
                         extra > 0 ? `...and ${extra} more warning(s).` : '',
                       ]
                         .filter(Boolean)
-                        .join('\n')
-                    )
+                        .join('\n'),
+                    })
                   }
                   setSelectedSliceIds(new Set())
                 },
@@ -318,11 +321,20 @@ export function SampleListPanel({
           </button>
           <button
             onClick={() => {
-              if (confirm(`Delete ${selectedSliceIds.size} selected samples?`)) {
+              void (async () => {
+                const confirmed = await confirm({
+                  title: 'Delete Samples',
+                  message: `Delete ${selectedSliceIds.size} selected samples?`,
+                  confirmText: 'Delete',
+                  cancelText: 'Cancel',
+                  isDestructive: true,
+                })
+                if (!confirmed) return
+
                 batchDeleteSlices.mutate(Array.from(selectedSliceIds), {
                   onSuccess: () => setSelectedSliceIds(new Set()),
                 })
-              }
+              })()
             }}
             disabled={batchDeleteSlices.isPending}
             className="flex items-center gap-1 px-2 py-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-700 text-white text-xs rounded transition-colors"
@@ -397,13 +409,24 @@ export function SampleListPanel({
                       removeSliceFromFolder.mutate({ folderId, sliceId: slice.id })
                     }}
                     onDelete={() => {
-                      if (confirm(`Delete "${slice.name}"?`)) {
+                      void (async () => {
+                        const confirmed = await confirm({
+                          title: 'Delete Sample',
+                          message: `Delete "${slice.name}"?`,
+                          confirmText: 'Delete',
+                          cancelText: 'Cancel',
+                          isDestructive: true,
+                        })
+                        if (!confirmed) return
                         deleteSlice.mutate(slice.id)
-                      }
+                      })()
                     }}
                     isDeleting={deleteSlice.isPending}
                     onUpdateSliceName={(name) => updateSlice.mutate({ id: slice.id, data: { name } })}
                     onUpdateTrackTitle={(title) => updateTrack.mutate({ id: slice.trackId, data: { title } })}
+                    onShowAlert={(title, message) => {
+                      void showAlert({ title, message })
+                    }}
                   />
                 ) : (
                   <CompactSliceRow
@@ -459,6 +482,7 @@ export function SampleListPanel({
           </button>
         </div>
       )}
+      {dialogNode}
     </div>
   )
 }
@@ -486,6 +510,7 @@ interface EditableSliceRowProps {
   isDeleting: boolean
   onUpdateSliceName: (name: string) => void
   onUpdateTrackTitle: (title: string) => void
+  onShowAlert: (title: string, message: string) => void
 }
 
 function EditableSliceRow({
@@ -510,6 +535,7 @@ function EditableSliceRow({
   isDeleting,
   onUpdateSliceName,
   onUpdateTrackTitle,
+  onShowAlert,
 }: EditableSliceRowProps) {
   const generateAiTags = useGenerateAiTagsForSlice(slice.trackId)
   const duration = slice.endTime - slice.startTime
@@ -660,7 +686,8 @@ function EditableSliceRow({
               generateAiTags.mutate(slice.id, {
                 onSuccess: (result) => {
                   if (result.warning?.hadPotentialCustomState && result.warning.message) {
-                    window.alert(
+                    onShowAlert(
+                      'Analysis Warning',
                       [
                         'Warning: Potential custom state detected before analysis.',
                         result.warning.message,
@@ -718,7 +745,7 @@ function EditableSliceRow({
             {col.name}
             <button
               onClick={() => onRemoveFromFolder(col.id)}
-              className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/20 rounded"
+              className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface-base/20 rounded"
             >
               <X size={10} />
             </button>
@@ -735,7 +762,7 @@ function EditableSliceRow({
             {tag.name}
             <button
               onClick={() => onRemoveTag(tag.id)}
-              className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/20 rounded"
+              className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface-base/20 rounded"
             >
               <X size={10} />
             </button>

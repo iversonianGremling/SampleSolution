@@ -1,94 +1,192 @@
-import { useState, useEffect } from 'react'
-import { ChevronLeft } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { ChevronLeft, FlaskConical, Info, Layers3 } from 'lucide-react'
 import { useResizablePanel } from '../hooks/useResizablePanel'
 import { ResizableDivider } from './ResizableDivider'
 import { SourcesView } from './SourcesView'
+import { BulkRenamePanel } from './BulkRenamePanel'
 import { LabView } from './LabView'
 import { DrumRackView } from './DrumRackView'
 import { SampleDetailsView } from './SampleDetailsView'
-import type { SliceWithTrackExtended, Tag, Folder } from '../types'
+import {
+  DEFAULT_BULK_RENAME_RULES,
+  type BulkRenameRules,
+} from '../utils/bulkRename'
+import type { SliceWithTrackExtended } from '../types'
+import type { WorkspaceState, WorkspaceTab } from '../types/workspace'
+import type { PlayMode } from './SourcesView'
+import { useToast } from '../contexts/ToastContext'
 
-type RightPanelTab = 'details' | 'rack' | 'lab'
+const DEFAULT_VIEWPORT_WIDTH = 1366
 
-interface WorkspaceState {
-  selectedSample: SliceWithTrackExtended | null
-  allTags: Tag[]
-  folders: Folder[]
-  onToggleFavorite: (sliceId: number) => void
-  onAddTag: (sliceId: number, tagId: number) => void
-  onRemoveTag: (sliceId: number, tagId: number) => void
-  onAddToFolder: (folderId: number, sliceId: number) => void
-  onRemoveFromFolder: (folderId: number, sliceId: number) => void
-  onUpdateName: (sliceId: number, name: string) => void
-  onTagClick: (tagId: number) => void
-  onSelectSample: (sampleId: number) => void
-  onFilterBySimilarity: (sampleId: number, sampleName: string) => void
-  onSampleDeleted: (sampleId: number) => void
+function getViewportWidth(): number {
+  if (typeof window === 'undefined') return DEFAULT_VIEWPORT_WIDTH
+  return window.innerWidth
 }
 
-export function WorkspaceLayout() {
-  const [activeTab, setActiveTab] = useState<RightPanelTab>('details')
+interface WorkspaceLayoutProps {
+  mode: 'workspace' | 'bulk-rename'
+  tuneTargetNote: string | null
+  onTuneToNote: (note: string | null) => void
+  samplePlayMode: PlayMode
+  sampleLoopEnabled: boolean
+  onOpenAddSource?: () => void
+}
+
+export function WorkspaceLayout({
+  mode,
+  tuneTargetNote,
+  onTuneToNote,
+  samplePlayMode,
+  sampleLoopEnabled,
+  onOpenAddSource,
+}: WorkspaceLayoutProps) {
+  const { showToast } = useToast()
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('details')
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState | null>(null)
-  const [isPanelHidden, setIsPanelHidden] = useState(false)
+  const [showIconOnlyTabs, setShowIconOnlyTabs] = useState(false)
+  const [isPanelHidden, setIsPanelHidden] = useState(true)
   const [showNotification, setShowNotification] = useState(false)
+  const [visibleSamples, setVisibleSamples] = useState<SliceWithTrackExtended[]>([])
+  const [isSourcesLoading, setIsSourcesLoading] = useState(false)
+  const [viewportWidth, setViewportWidth] = useState(() => getViewportWidth())
+  const lastNotifiedSampleIdRef = useRef<number | null>(null)
+  const [bulkRenameRules, setBulkRenameRules] = useState<BulkRenameRules>(() => ({
+    ...DEFAULT_BULK_RENAME_RULES,
+    filterText: '',
+  }))
+
+  const dividerWidth = 2
+  const panelToggleWidth = 14
+  const splitAvailableWidth = Math.max(viewportWidth - dividerWidth, 0)
+  const sourcesPanelMinWidth = Math.max(120, Math.min(320, Math.floor(splitAvailableWidth * 0.52)))
+  const sidePanelMinWidth = Math.max(120, Math.min(340, Math.floor(splitAvailableWidth * 0.48)))
+  const sourcesPanelMaxWidth = Math.max(sourcesPanelMinWidth, splitAvailableWidth - sidePanelMinWidth)
+  const sourcesPanelInitialWidth = Math.max(
+    sourcesPanelMinWidth,
+    Math.min(sourcesPanelMaxWidth, Math.floor(splitAvailableWidth * 0.55)),
+  )
 
   const horizontal = useResizablePanel({
     direction: 'horizontal',
-    initialSize: Math.floor(window.innerWidth * 0.55),
-    minSize: 320,
-    maxSize: Math.floor(window.innerWidth * 0.82),
+    initialSize: sourcesPanelInitialWidth,
+    minSize: sourcesPanelMinWidth,
+    maxSize: sourcesPanelMaxWidth,
     storageKey: 'workspace-h-size',
+    clampOnBoundsChange: false,
   })
 
+  const isBulkRenameMode = mode === 'bulk-rename'
   const shouldAnimate = !horizontal.isDragging
-  const shouldShowPanel = activeTab !== 'details' || (activeTab === 'details' && workspaceState?.selectedSample !== null)
-  const showRightPanel = shouldShowPanel && !isPanelHidden
+  const hasSelectedSample = workspaceState?.selectedSample !== null
+  const shouldShowPanel = isBulkRenameMode || activeTab !== 'details' || hasSelectedSample
+  const showRightPanel = isBulkRenameMode ? true : shouldShowPanel && !isPanelHidden
+  const shouldReserveToggleGutter = !isBulkRenameMode && shouldShowPanel
+
+  useEffect(() => {
+    const handleResize = () => setViewportWidth(getViewportWidth())
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  useEffect(() => {
+    // Keep room for panel controls by collapsing labels on narrower viewports.
+    setShowIconOnlyTabs(viewportWidth < 1280)
+  }, [viewportWidth])
 
   // Notify when content changes while panel is closed
   useEffect(() => {
+    if (isBulkRenameMode) {
+      setShowNotification(false)
+      return
+    }
     if (isPanelHidden && shouldShowPanel) {
       setShowNotification(true)
       const timer = setTimeout(() => setShowNotification(false), 1200) // 600ms * 2 cycles
       return () => clearTimeout(timer)
     }
-  }, [workspaceState?.selectedSample?.id, activeTab, isPanelHidden, shouldShowPanel])
+  }, [workspaceState?.selectedSample?.id, activeTab, isPanelHidden, shouldShowPanel, isBulkRenameMode])
+
+  useEffect(() => {
+    if (isBulkRenameMode) return
+
+    const selectedSampleId = workspaceState?.selectedSample?.id ?? null
+    if (selectedSampleId === null) {
+      lastNotifiedSampleIdRef.current = null
+      return
+    }
+
+    const isNewSelection = lastNotifiedSampleIdRef.current !== selectedSampleId
+    if (!isNewSelection) return
+
+    lastNotifiedSampleIdRef.current = selectedSampleId
+    if (!showRightPanel && shouldShowPanel) {
+      showToast({
+        kind: 'info',
+        message: 'Sample loaded. Open the right panel with the arrow button to view details.',
+        actionLabel: 'Open Panel',
+        onAction: () => {
+          setActiveTab('details')
+          setIsPanelHidden(false)
+          setShowNotification(false)
+        },
+      })
+    }
+  }, [
+    workspaceState?.selectedSample?.id,
+    isBulkRenameMode,
+    showRightPanel,
+    shouldShowPanel,
+    showToast,
+  ])
 
   const handleClosePanel = () => {
+    if (isBulkRenameMode) return
     setIsPanelHidden(true)
   }
 
-  const handleShowPanel = () => {
+  const handleShowPanel = useCallback(() => {
     setIsPanelHidden(false)
     setShowNotification(false)
-  }
+  }, [])
 
   return (
     <div className="h-full flex overflow-hidden bg-surface-base">
       <div
         className={shouldAnimate ? 'panel-animate' : ''}
         style={{
-          width: showRightPanel ? horizontal.size : window.innerWidth,
-          minWidth: 320,
+          width: showRightPanel ? horizontal.size : '100%',
+          minWidth: showRightPanel ? sourcesPanelMinWidth : 0,
           flexShrink: 0,
           overflow: 'hidden',
           position: 'relative',
+          paddingRight: shouldReserveToggleGutter ? panelToggleWidth : 0,
         }}
       >
         <SourcesView
           workspaceTab={activeTab}
-          onWorkspaceTabChange={setActiveTab}
+          tuneTargetNote={tuneTargetNote}
+          onTuneToNote={onTuneToNote}
+          playMode={samplePlayMode}
+          loopEnabled={sampleLoopEnabled}
+          bulkRenameMode={isBulkRenameMode}
+          bulkRenameRules={bulkRenameRules}
+          onBulkRenameRulesChange={setBulkRenameRules}
+          onOpenAddSource={onOpenAddSource}
           onWorkspaceStateChange={setWorkspaceState}
+          onVisibleSamplesChange={setVisibleSamples}
+          onSamplesLoadingChange={setIsSourcesLoading}
         />
 
         {/* Toggle panel button */}
-        {shouldShowPanel && (
+        {!isBulkRenameMode && shouldShowPanel && (
           <button
             onClick={showRightPanel ? handleClosePanel : handleShowPanel}
-            className={`absolute top-1/2 right-0 -translate-y-1/2 bg-surface-raised border border-surface-border rounded-l-lg p-2 hover:bg-surface-overlay transition-colors shadow-lg z-10 ${showNotification ? 'chevron-notify' : ''}`}
+            className={`absolute inset-y-0 right-0 border-l border-surface-border bg-surface-overlay flex items-center justify-center transition-colors hover:bg-surface-border/80 z-10 ${showNotification ? 'chevron-notify' : ''}`}
+            style={{ width: panelToggleWidth }}
             title={showRightPanel ? "Close panel" : "Show panel"}
           >
             <ChevronLeft
-              size={20}
+              size={12}
               className={`text-slate-400 transition-transform duration-300 ${showRightPanel ? 'rotate-180' : ''}`}
             />
           </button>
@@ -107,28 +205,104 @@ export function WorkspaceLayout() {
           />
 
           {/* Main right-side workspace */}
-          <div className="flex-1 min-w-[380px] flex flex-col overflow-hidden">
-              {activeTab === 'rack' ? (
-                <DrumRackView />
-              ) : activeTab === 'lab' ? (
-                <LabView selectedSample={workspaceState?.selectedSample ?? null} />
-              ) : activeTab === 'details' && workspaceState ? (
-                <SampleDetailsView
-                  sample={workspaceState.selectedSample}
-                  allTags={workspaceState.allTags}
-                  folders={workspaceState.folders}
-                  onToggleFavorite={workspaceState.onToggleFavorite}
-                  onAddTag={workspaceState.onAddTag}
-                  onRemoveTag={workspaceState.onRemoveTag}
-                  onAddToFolder={workspaceState.onAddToFolder}
-                  onRemoveFromFolder={workspaceState.onRemoveFromFolder}
-                  onUpdateName={workspaceState.onUpdateName}
-                  onTagClick={workspaceState.onTagClick}
-                  onSelectSample={workspaceState.onSelectSample}
-                  onFilterBySimilarity={workspaceState.onFilterBySimilarity}
-                  onSampleDeleted={workspaceState.onSampleDeleted}
-                />
-              ) : null}
+          <div
+            className="relative flex-1 min-w-0 flex flex-col overflow-hidden"
+            style={{ minWidth: sidePanelMinWidth }}
+          >
+            {isBulkRenameMode ? (
+              <BulkRenamePanel
+                samples={visibleSamples}
+                isSamplesLoading={isSourcesLoading}
+                rules={bulkRenameRules}
+                onRulesChange={setBulkRenameRules}
+              />
+            ) : (
+              <>
+                <div className="border-b border-surface-border bg-surface-raised px-2 flex items-center justify-end">
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      onClick={() => setActiveTab('details')}
+                      className={`relative inline-flex items-center gap-1.5 px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
+                        activeTab === 'details'
+                          ? 'text-text-primary'
+                          : 'text-text-muted hover:text-text-secondary'
+                      }`}
+                      title="Details"
+                    >
+                      <Info size={12} />
+                      {!showIconOnlyTabs && <span>Details</span>}
+                      {activeTab === 'details' && (
+                        <span className="absolute bottom-0 left-2 right-2 h-[2px] bg-text-secondary/50 rounded-t-full" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('rack')}
+                      className={`relative inline-flex items-center gap-1.5 px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
+                        activeTab === 'rack'
+                          ? 'text-accent-primary'
+                          : 'text-text-muted hover:text-text-secondary'
+                      }`}
+                      title="Rack"
+                    >
+                      <Layers3 size={12} />
+                      {!showIconOnlyTabs && <span>Rack</span>}
+                      {activeTab === 'rack' && (
+                        <span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent-primary/60 rounded-t-full" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('lab')}
+                      className={`relative inline-flex items-center gap-1.5 px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
+                        activeTab === 'lab'
+                          ? 'text-cyan-300'
+                          : 'text-text-muted hover:text-text-secondary'
+                      }`}
+                      title="Lab"
+                    >
+                      <FlaskConical size={12} />
+                      {!showIconOnlyTabs && <span>Lab</span>}
+                      {activeTab === 'lab' && (
+                        <span className="absolute bottom-0 left-2 right-2 h-[2px] bg-cyan-400/50 rounded-t-full" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1 min-h-0">
+                  {activeTab === 'rack' ? (
+                    <DrumRackView />
+                  ) : activeTab === 'lab' ? (
+                    <LabView selectedSample={workspaceState?.selectedSample ?? null} />
+                  ) : activeTab === 'details' && workspaceState?.selectedSample ? (
+                    <SampleDetailsView
+                      sample={workspaceState.selectedSample}
+                      allTags={workspaceState.allTags}
+                      folders={workspaceState.folders}
+                      pitchSemitones={workspaceState.pitchSemitones}
+                      tuneTargetNote={tuneTargetNote}
+                      onToggleFavorite={workspaceState.onToggleFavorite}
+                      onAddTag={workspaceState.onAddTag}
+                      onRemoveTag={workspaceState.onRemoveTag}
+                      onAddToFolder={workspaceState.onAddToFolder}
+                      onRemoveFromFolder={workspaceState.onRemoveFromFolder}
+                      onUpdateName={workspaceState.onUpdateName}
+                      onTagClick={workspaceState.onTagClick}
+                      onSelectSample={workspaceState.onSelectSample}
+                      onFilterBySimilarity={workspaceState.onFilterBySimilarity}
+                      onSampleDeleted={workspaceState.onSampleDeleted}
+                      onTuneToNote={onTuneToNote}
+                    />
+                  ) : activeTab === 'details' ? (
+                    <div className="h-full flex items-center justify-center px-6">
+                      <div className="w-full max-w-md rounded-xl border border-dashed border-surface-border bg-surface-overlay/30 p-8 text-center">
+                        <div className="text-sm text-text-secondary font-medium">Select a sample to view details</div>
+                        <div className="mt-2 text-xs text-text-muted leading-relaxed">Pick a sample from the Sources panel on the left.</div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </>
+            )}
           </div>
         </>
       )}

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
-import { Play, Download, Trash2, X, Pencil, Check, Pause, ZapIcon, Hand } from 'lucide-react'
-import { getSliceDownloadUrl } from '../api/client'
+import { Play, Download, Trash2, X, Pencil, Check, Pause, ZapIcon, Hand, Wand2, Loader2 } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { getSliceDownloadUrl, batchReanalyzeSamples } from '../api/client'
 import { useTags, useAddTagToSlice, useRemoveTagFromSlice, useCreateTag, useUpdateSlice } from '../hooks/useTracks'
 import { TagSearchInput } from './TagSearchInput'
 import type { Slice } from '../types'
@@ -22,7 +23,9 @@ export function SliceList({ slices, trackId, playingSliceId, onTogglePlay, onOne
   const [editingName, setEditingName] = useState('')
   const [playMode, setPlayMode] = useState<PlayMode>('toggle')
   const [holdingSliceId, setHoldingSliceId] = useState<number | null>(null)
+  const [analyzingSliceId, setAnalyzingSliceId] = useState<number | null>(null)
   const editInputRef = useRef<HTMLInputElement>(null)
+  const queryClient = useQueryClient()
   const updateSlice = useUpdateSlice(trackId)
   const { data: allTags } = useTags()
   const addTagToSlice = useAddTagToSlice()
@@ -98,6 +101,18 @@ export function SliceList({ slices, trackId, playingSliceId, onTogglePlay, onOne
         return <ZapIcon size={8} />
       case 'hold':
         return <Hand size={8} />
+    }
+  }
+
+  const handleAnalyze = async (sliceId: number) => {
+    try {
+      setAnalyzingSliceId(sliceId)
+      await batchReanalyzeSamples([sliceId])
+      queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
+    } catch (error) {
+      console.error('Failed to analyze slice:', error)
+    } finally {
+      setAnalyzingSliceId(null)
     }
   }
 
@@ -205,7 +220,7 @@ export function SliceList({ slices, trackId, playingSliceId, onTogglePlay, onOne
                       e.stopPropagation()
                       removeTagFromSlice.mutate({ sliceId: slice.id, tagId: tag.id })
                     }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/20 rounded ml-0.5"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface-base/20 rounded ml-0.5"
                     title="Remove tag"
                   >
                     <X size={10} />
@@ -270,6 +285,14 @@ export function SliceList({ slices, trackId, playingSliceId, onTogglePlay, onOne
                   <Download size={16} />
                 </a>
               )}
+              <button
+                onClick={() => handleAnalyze(slice.id)}
+                disabled={analyzingSliceId === slice.id}
+                className="p-2 text-gray-400 hover:text-purple-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Analyze slice"
+              >
+                {analyzingSliceId === slice.id ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
+              </button>
               <button
                 onClick={() => onDelete(slice)}
                 className="p-2 text-gray-400 hover:text-red-400 transition-colors"

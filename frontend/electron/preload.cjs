@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld('electron', {
   // Native directory picker
   selectDirectory: (options) => ipcRenderer.invoke('select-directory', options || {}),
 
+  // Native path picker for backup import (directory or .zip file)
+  selectImportPath: (options) => ipcRenderer.invoke('select-import-path', options || {}),
+
   // File system APIs (can be extended)
   // For example: dialog APIs, file reading, etc.
 });

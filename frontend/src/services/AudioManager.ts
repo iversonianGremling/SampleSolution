@@ -96,7 +96,7 @@ export class AudioManager {
   play(
     audioId: number | string,
     audioUrl: string,
-    options?: { volume?: number; onEnd?: () => void }
+    options?: { volume?: number; playbackRate?: number; onEnd?: () => void }
   ): boolean {
     // Prevent retriggering the same audio
     if (this.isPlayingId(audioId)) {
@@ -108,8 +108,26 @@ export class AudioManager {
 
     try {
       const audio = new Audio(audioUrl)
+      const media = audio as HTMLAudioElement & {
+        preservesPitch?: boolean
+        mozPreservesPitch?: boolean
+        webkitPreservesPitch?: boolean
+      }
+      if (typeof media.preservesPitch === 'boolean') {
+        media.preservesPitch = false
+      }
+      if (typeof media.mozPreservesPitch === 'boolean') {
+        media.mozPreservesPitch = false
+      }
+      if (typeof media.webkitPreservesPitch === 'boolean') {
+        media.webkitPreservesPitch = false
+      }
+
       if (options?.volume !== undefined) {
         audio.volume = Math.max(0, Math.min(1, options.volume))
+      }
+      if (options?.playbackRate !== undefined && Number.isFinite(options.playbackRate)) {
+        audio.playbackRate = Math.max(0.25, Math.min(4, options.playbackRate))
       }
 
       this.currentPlayback = {

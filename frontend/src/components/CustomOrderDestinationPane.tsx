@@ -1138,7 +1138,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
         </div>
       </div>
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-base/60">
           <div className="bg-surface-base border border-surface-border rounded-xl w-full max-w-md p-5">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-white">Delete {deleteTarget.kind.replace('-', ' ')}</h4>

@@ -15,6 +15,16 @@ export const tracks = sqliteTable('tracks', {
   artist: text('artist'),
   album: text('album'),
   year: integer('year'),
+  albumArtist: text('album_artist'),
+  genre: text('genre'),
+  composer: text('composer'),
+  trackNumber: integer('track_number'),
+  discNumber: integer('disc_number'),
+  trackComment: text('track_comment'),
+  musicalKey: text('musical_key'),
+  tagBpm: real('tag_bpm'),
+  isrc: text('isrc'),
+  metadataRaw: text('metadata_raw'),
   source: text('source', { enum: ['youtube', 'local'] })
     .notNull()
     .default('youtube'),
@@ -49,7 +59,7 @@ export const tags = sqliteTable('tags', {
   name: text('name').notNull().unique(),
   color: text('color').notNull(),
   category: text('category', {
-    enum: ['general', 'type', 'tempo', 'spectral', 'energy', 'instrument', 'filename'],
+    enum: ['general', 'type', 'energy', 'instrument', 'filename'],
   })
     .notNull()
     .default('general'),
@@ -166,6 +176,7 @@ export const audioFeatures = sqliteTable('audio_features', {
   eventDensity: real('event_density'),
   // Phase 6: Audio Fingerprinting & Similarity Detection
   chromaprintFingerprint: text('chromaprint_fingerprint'),
+  similarityHash: text('similarity_hash'),
   // Derived instrument type (canonical: kick, snare, hihat, clap, shaker, cymbal, tom, bass, pad, lead, vocal, fx, percussion, keys, guitar, strings, other)
   instrumentType: text('instrument_type'),
   // New analysis features
@@ -178,8 +189,8 @@ export const audioFeatures = sqliteTable('audio_features', {
   polyphony: integer('polyphony'),
   // Metadata
   analysisLevel: text('analysis_level', {
-    enum: ['quick', 'standard', 'advanced'],
-  }).default('standard'),
+    enum: ['advanced'],
+  }).default('advanced'),
   analysisVersion: text('analysis_version').notNull().default('1.0'),
   createdAt: text('created_at')
     .notNull()

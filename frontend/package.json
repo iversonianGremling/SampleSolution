@@ -16,7 +16,8 @@
     "build:electron": "npm run build && electron-builder",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "rclone:share": "node scripts/rclone-share.mjs"
   },
   "build": {
     "appId": "com.sample-extractor.app",

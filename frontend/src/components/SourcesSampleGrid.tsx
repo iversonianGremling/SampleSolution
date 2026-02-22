@@ -1,16 +1,64 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
-import { Play, Pause, Heart, GripVertical, ArrowUpDown, ArrowUp, ArrowDown, Disc3 } from 'lucide-react'
+import { useState, useRef, useEffect, useMemo, type ReactNode } from 'react'
+import { Play, Pause, Heart, GripVertical, ArrowUpDown, ArrowUp, ArrowDown, Disc3, Info } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
 import { InstrumentIcon, resolveInstrumentType } from './InstrumentIcon'
 import { DrumRackPadPicker } from './DrumRackPadPicker'
 import type { SliceWithTrackExtended } from '../types'
-import { getSliceDownloadUrl } from '../api/client'
 import { createManagedAudio, releaseManagedAudio } from '../services/globalAudioVolume'
+import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
+import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
+import { freqToNoteName } from '../utils/musicTheory'
 
-type SortField = 'name' | 'duration'
+type SortField =
+  | 'name'
+  | 'duration'
+  | 'bpm'
+  | 'key'
+  | 'dateAdded'
+  | 'tags'
+  | 'artist'
+  | 'album'
+  | 'year'
+  | 'albumArtist'
+  | 'genre'
+  | 'composer'
+  | 'trackNumber'
+  | 'discNumber'
+  | 'tagBpm'
+  | 'musicalKey'
+  | 'isrc'
+  | 'scale'
+  | 'envelope'
+  | 'brightness'
+  | 'noisiness'
+  | 'warmth'
+  | 'hardness'
+  | 'sharpness'
+  | 'loudness'
+  | 'sampleRate'
+  | 'channels'
+  | 'format'
+  | 'polyphony'
+  | 'dateCreated'
+  | 'dateModified'
+  | 'path'
 type SortOrder = 'asc' | 'desc'
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
+
+type DuplicatePairMatchType = 'exact' | 'content' | 'file'
+
+interface DuplicatePairCardMeta {
+  pairId: string
+  pairIndex: number
+  role: 'keep' | 'duplicate'
+  partnerSampleId: number
+  selectedForDelete: boolean
+  selectedDeleteSampleId: number | null
+  canDelete: boolean
+  matchType: DuplicatePairMatchType
+  similarityPercent: number
+}
 
 interface SourcesSampleGridProps {
   samples: SliceWithTrackExtended[]
@@ -19,12 +67,204 @@ interface SourcesSampleGridProps {
   onSelect: (id: number) => void
   onToggleSelect?: (id: number) => void
   onToggleSelectAll?: () => void
+  showSelectAllControl?: boolean
+  showSortControls?: boolean
   onToggleFavorite?: (id: number) => void
   onTagClick?: (tagId: number) => void
   isLoading?: boolean
   playMode?: PlayMode
   loopEnabled?: boolean
+  tuneTargetNote?: string | null
+  tunePlaybackMode?: TunePlaybackMode
   scaleDegreeGroups?: Map<string, SliceWithTrackExtended[]> | null
+  bulkRenamePreviewById?: Map<number, { nextName: string; hasChange: boolean }>
+  duplicatePairMetaBySampleId?: Map<number, DuplicatePairCardMeta>
+  onToggleDuplicateDeleteTarget?: (sampleId: number) => void
+}
+
+const GRID_GAP_PX = 10
+const GRID_HORIZONTAL_PADDING_PX = 32
+const GRID_VERTICAL_PADDING_PX = 16
+const CARD_ASPECT_RATIO = 9 / 16
+const CARD_META_HEIGHT_PX = 62
+const ROW_OVERSCAN = 1
+const MIN_RENDERED_ROWS = 5
+const SAMPLE_CARD_SELECTOR = '[data-sources-sample-card="true"]'
+
+const QUICK_SORT_OPTIONS: Array<{ field: SortField; label: string }> = [
+  { field: 'name', label: 'Name' },
+  { field: 'bpm', label: 'BPM' },
+  { field: 'key', label: 'Key' },
+  { field: 'duration', label: 'Duration' },
+  { field: 'dateAdded', label: 'Added' },
+]
+
+const MORE_SORT_OPTIONS: Array<{ field: SortField; label: string }> = [
+  { field: 'tags', label: 'Tags' },
+  { field: 'artist', label: 'Artist' },
+  { field: 'album', label: 'Album' },
+  { field: 'year', label: 'Year' },
+  { field: 'albumArtist', label: 'Album Artist' },
+  { field: 'genre', label: 'Genre' },
+  { field: 'composer', label: 'Composer' },
+  { field: 'trackNumber', label: 'Track #' },
+  { field: 'discNumber', label: 'Disc #' },
+  { field: 'tagBpm', label: 'Tag BPM' },
+  { field: 'musicalKey', label: 'Tag Key' },
+  { field: 'isrc', label: 'ISRC' },
+  { field: 'scale', label: 'Scale' },
+  { field: 'envelope', label: 'Envelope' },
+  { field: 'brightness', label: 'Brightness' },
+  { field: 'noisiness', label: 'Noisiness' },
+  { field: 'warmth', label: 'Warmth' },
+  { field: 'hardness', label: 'Hardness' },
+  { field: 'sharpness', label: 'Sharpness' },
+  { field: 'loudness', label: 'Loudness' },
+  { field: 'sampleRate', label: 'Sample Rate' },
+  { field: 'channels', label: 'Channels' },
+  { field: 'format', label: 'Format' },
+  { field: 'polyphony', label: 'Polyphony' },
+  { field: 'dateCreated', label: 'Date Created' },
+  { field: 'dateModified', label: 'Date Modified' },
+  { field: 'path', label: 'Path' },
+]
+
+const QUICK_SORT_FIELD_SET = new Set(QUICK_SORT_OPTIONS.map((option) => option.field))
+
+const getResponsiveColumnCount = (width: number, pairMode = false) => {
+  if (pairMode) {
+    if (width >= 1536) return 6
+    if (width >= 1024) return 4
+    if (width >= 640) return 2
+    return 1
+  }
+
+  if (width >= 1536) return 6
+  if (width >= 1280) return 5
+  if (width >= 1024) return 4
+  if (width >= 768) return 3
+  if (width >= 640) return 2
+  return 1
+}
+
+const findScrollParent = (node: HTMLElement | null): HTMLElement | null => {
+  if (!node) return null
+  let current: HTMLElement | null = node.parentElement
+  while (current) {
+    const style = window.getComputedStyle(current)
+    if (/(auto|scroll|overlay)/.test(style.overflowY)) {
+      return current
+    }
+    current = current.parentElement
+  }
+  return null
+}
+
+const getOffsetTopWithinParent = (element: HTMLElement, parent: HTMLElement) => {
+  const elementRect = element.getBoundingClientRect()
+  const parentRect = parent.getBoundingClientRect()
+  return elementRect.top - parentRect.top + parent.scrollTop
+}
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
+function parseDate(value: string | null | undefined): number | null {
+  if (!value) return null
+  const parsed = new Date(value).getTime()
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function getPathDisplay(sample: SliceWithTrackExtended): string | null {
+  return sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || null
+}
+
+function getKeyDisplay(sample: SliceWithTrackExtended): string | null {
+  return (sample.fundamentalFrequency ? freqToNoteName(sample.fundamentalFrequency) : null) || sample.keyEstimate || null
+}
+
+function getSortValue(sample: SliceWithTrackExtended, field: SortField): string | number | null {
+  switch (field) {
+    case 'name':
+      return sample.name.toLowerCase()
+    case 'duration':
+      return sample.endTime - sample.startTime
+    case 'bpm':
+      return sample.bpm ?? null
+    case 'key':
+      return getKeyDisplay(sample)?.toLowerCase() ?? null
+    case 'dateAdded':
+      return parseDate(sample.dateAdded || sample.createdAt)
+    case 'tags':
+      return sample.tags.map((tag) => tag.name.toLowerCase()).join(',')
+    case 'artist':
+      return sample.track.artist?.toLowerCase() ?? null
+    case 'album':
+      return sample.track.album?.toLowerCase() ?? null
+    case 'year':
+      return sample.track.year ?? null
+    case 'albumArtist':
+      return sample.track.albumArtist?.toLowerCase() ?? null
+    case 'genre':
+      return sample.track.genre?.toLowerCase() ?? null
+    case 'composer':
+      return sample.track.composer?.toLowerCase() ?? null
+    case 'trackNumber':
+      return sample.track.trackNumber ?? null
+    case 'discNumber':
+      return sample.track.discNumber ?? null
+    case 'tagBpm':
+      return sample.track.tagBpm ?? null
+    case 'musicalKey':
+      return sample.track.musicalKey?.toLowerCase() ?? null
+    case 'isrc':
+      return sample.track.isrc?.toLowerCase() ?? null
+    case 'scale':
+      return sample.scale?.toLowerCase() ?? null
+    case 'envelope':
+      return sample.envelopeType?.toLowerCase() ?? null
+    case 'brightness':
+      return sample.subjectiveNormalized?.brightness ?? sample.brightness ?? null
+    case 'noisiness':
+      return sample.subjectiveNormalized?.noisiness ?? sample.noisiness ?? sample.roughness ?? null
+    case 'warmth':
+      return sample.subjectiveNormalized?.warmth ?? sample.warmth ?? null
+    case 'hardness':
+      return sample.subjectiveNormalized?.hardness ?? sample.hardness ?? null
+    case 'sharpness':
+      return sample.subjectiveNormalized?.sharpness ?? sample.sharpness ?? null
+    case 'loudness':
+      return sample.loudness ?? null
+    case 'sampleRate':
+      return sample.sampleRate ?? null
+    case 'channels':
+      return sample.channels ?? null
+    case 'format':
+      return sample.format?.toLowerCase() ?? null
+    case 'polyphony':
+      return sample.polyphony ?? null
+    case 'dateCreated':
+      return parseDate(sample.dateCreated)
+    case 'dateModified':
+      return parseDate(sample.dateModified)
+    case 'path':
+      return getPathDisplay(sample)?.toLowerCase() ?? null
+    default:
+      return null
+  }
+}
+
+function FadeInOnMount({ children }: { children: ReactNode }) {
+  return (
+    <div className="animate-fade-in motion-reduce:animate-none">
+      {children}
+    </div>
+  )
+}
+
+function getDuplicateMatchLabel(matchType: DuplicatePairMatchType): string {
+  if (matchType === 'exact') return 'Fingerprint'
+  if (matchType === 'content') return 'Content'
+  return 'File'
 }
 
 export function SourcesSampleGrid({
@@ -34,24 +274,44 @@ export function SourcesSampleGrid({
   onSelect,
   onToggleSelect,
   onToggleSelectAll,
+  showSelectAllControl = true,
+  showSortControls = true,
   onToggleFavorite,
   onTagClick,
   isLoading = false,
   playMode = 'normal',
   loopEnabled = false,
+  tuneTargetNote = null,
+  tunePlaybackMode: _tunePlaybackMode = 'tape',
   scaleDegreeGroups = null,
+  bulkRenamePreviewById = new Map<number, { nextName: string; hasChange: boolean }>(),
+  duplicatePairMetaBySampleId = new Map<number, DuplicatePairCardMeta>(),
+  onToggleDuplicateDeleteTarget,
 }: SourcesSampleGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const flatGridContainerRef = useRef<HTMLDivElement | null>(null)
+  const groupedGridRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const scrollParentRef = useRef<HTMLElement | null>(null)
   const [draggedId, setDraggedId] = useState<number | null>(null)
   const [padPickerSample, setPadPickerSample] = useState<SliceWithTrackExtended | null>(null)
   const [sortField, setSortField] = useState<SortField | null>(null)
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
   const [tagPopupId, setTagPopupId] = useState<number | null>(null)
-  const [popupPosition, setPopupPosition] = useState<Record<number, { bottom: number; left: number }>>({})
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 0))
+  const [gridWidth, setGridWidth] = useState(0)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(0)
+  const [useWindowScroll, setUseWindowScroll] = useState(false)
+  const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null)
   const dragPreviewRef = useRef<HTMLElement | null>(null)
-  const tagTriggerRefs = useRef<Record<number, HTMLDivElement | null>>({})
   const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [infoOverlaySampleId, setInfoOverlaySampleId] = useState<number | null>(null)
+  const isDuplicatePairMode = duplicatePairMetaBySampleId.size > 0
+
+  const preparePlaybackForSample = (sample: SliceWithTrackExtended) =>
+    prepareSamplePreviewPlayback(sample, tuneTargetNote)
 
   // Stop audio when unmounting
   useEffect(() => {
@@ -61,8 +321,126 @@ export function SourcesSampleGrid({
         releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
+      if (closeTimeoutRef.current) {
+        clearTimeout(closeTimeoutRef.current)
+        closeTimeoutRef.current = null
+      }
     }
   }, [])
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const scrollParent = findScrollParent(root)
+    scrollParentRef.current = scrollParent ?? null
+    let rafId: number | null = null
+    let resizeObserver: ResizeObserver | null = null
+
+    const readScrollMetrics = () => {
+      const activeScrollParent = scrollParentRef.current
+      const hasScrollParent = Boolean(activeScrollParent && activeScrollParent.clientHeight > 0)
+      setViewportWidth(window.innerWidth)
+      if (hasScrollParent && activeScrollParent) {
+        setUseWindowScroll(false)
+        setScrollTop(activeScrollParent.scrollTop)
+        setViewportHeight(activeScrollParent.clientHeight)
+      } else {
+        setUseWindowScroll(true)
+        setScrollTop(window.scrollY || document.documentElement.scrollTop || 0)
+        setViewportHeight(window.innerHeight)
+      }
+    }
+
+    const updateScrollState = () => {
+      if (rafId !== null) return
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null
+        setTagPopupId(null)
+        setInfoOverlaySampleId(null)
+        readScrollMetrics()
+      })
+    }
+
+    readScrollMetrics()
+    if (scrollParent) {
+      scrollParent.addEventListener('scroll', updateScrollState, { passive: true })
+    }
+    window.addEventListener('scroll', updateScrollState, { passive: true })
+    window.addEventListener('resize', updateScrollState)
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(updateScrollState)
+      resizeObserver.observe(root)
+      if (scrollParent) {
+        resizeObserver.observe(scrollParent)
+      }
+    }
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId)
+      }
+      if (scrollParent) {
+        scrollParent.removeEventListener('scroll', updateScrollState)
+      }
+      window.removeEventListener('scroll', updateScrollState)
+      window.removeEventListener('resize', updateScrollState)
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+
+    const updateGridWidth = () => {
+      const flatGridWidth = flatGridContainerRef.current?.clientWidth ?? 0
+      setGridWidth(flatGridWidth || root.clientWidth)
+    }
+
+    updateGridWidth()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateGridWidth)
+      return () => {
+        window.removeEventListener('resize', updateGridWidth)
+      }
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateGridWidth()
+    })
+    observer.observe(root)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
+
+  useEffect(() => {
+    let frameId: number | null = null
+    frameId = window.requestAnimationFrame(() => {
+      const scrollParent = scrollParentRef.current
+      setViewportWidth(window.innerWidth)
+
+      if (scrollParent && scrollParent.clientHeight > 0) {
+        setUseWindowScroll(false)
+        setScrollTop(scrollParent.scrollTop)
+        setViewportHeight(scrollParent.clientHeight)
+        return
+      }
+
+      setUseWindowScroll(true)
+      setScrollTop(window.scrollY || document.documentElement.scrollTop || 0)
+      setViewportHeight(window.innerHeight)
+    })
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [samples, scaleDegreeGroups])
 
   const formatDuration = (startTime: number, endTime: number) => {
     const duration = endTime - startTime
@@ -74,87 +452,325 @@ export function SourcesSampleGrid({
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const clamp01 = (value: number) => Math.max(0, Math.min(1, value))
+  const formatSampleRate = (sampleRate: number | null | undefined) => {
+    if (!sampleRate || sampleRate <= 0) return 'n/a'
+    return `${(sampleRate / 1000).toFixed(1)}kHz`
+  }
+
+  const formatDate = (value: string | null | undefined) => {
+    if (!value) return 'n/a'
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return 'n/a'
+    return parsed.toLocaleDateString()
+  }
+
+  const clamp01 = (value: number, fallback = 0.5) => {
+    if (!Number.isFinite(value)) return fallback
+    return Math.max(0, Math.min(1, value))
+  }
 
   const normalizeLoudness = (loudness: number | null | undefined) => {
     if (loudness === null || loudness === undefined || Number.isNaN(loudness)) return 0.5
     // Typical sample loudness range in dB
-    return clamp01((loudness + 48) / 42)
+    return clamp01((loudness + 48) / 42, 0.5)
   }
 
   const normalizeHarmonicity = (sample: SliceWithTrackExtended) => {
     const ratio = (sample as SliceWithTrackExtended & { harmonicPercussiveRatio?: number | null }).harmonicPercussiveRatio
     if (ratio !== null && ratio !== undefined && Number.isFinite(ratio) && ratio >= 0) {
       // Squash to 0..1 where 0.5 means balanced, >0.5 means more harmonic
-      return clamp01(ratio / (1 + ratio))
+      return clamp01(ratio / (1 + ratio), 0.5)
     }
 
     // Fallback: roughness is usually inverse-correlated with harmonicity
-    const roughness = clamp01(sample.roughness ?? 0.5)
+    const roughness = clamp01(sample.roughness ?? 0.5, 0.5)
     return 1 - roughness
   }
 
   const getMetricGradient = (sample: SliceWithTrackExtended) => {
-    const brightness = clamp01(sample.brightness ?? 0.5)
+    const brightness = clamp01(sample.brightness ?? 0.5, 0.5)
     const loudness = normalizeLoudness(sample.loudness)
     const harmonicity = normalizeHarmonicity(sample)
     const noisiness = 1 - harmonicity
 
-    // Dark high-contrast base: still calm, but with much clearer value separation.
+    // Balanced dark base: keep contrast without crushing the lower half.
     const baseHue = 220 - brightness * 32
     const baseSaturation = 30 + loudness * 26
-    const baseLightTop = 10 + loudness * 12 + brightness * 5
-    const baseLightBottom = 2 + loudness * 5
+    const baseLightTop = 15 + loudness * 12 + brightness * 6
+    const baseLightBottom = 9 + loudness * 8 + brightness * 4
 
     // Semantic accents:
     // - harmonic (teal)
     // - noisy (amber)
-    // Stronger alpha for readability, capped to stay non-neon.
-    const brightnessColor = `hsla(${204 - brightness * 20}, ${52 + brightness * 14}%, ${54 + brightness * 8}%, ${0.18 + brightness * 0.28})`
-    const loudnessColor = `hsla(${246 - loudness * 14}, ${40 + loudness * 16}%, ${46 + loudness * 10}%, ${0.2 + loudness * 0.3})`
-    const harmonicColor = `hsla(166, 64%, 50%, ${0.14 + harmonicity * 0.34})`
-    const noisyColor = `hsla(30, 72%, 54%, ${0.12 + noisiness * 0.34})`
+    // Keep alpha controlled so detail remains visible across the whole card.
+    const brightnessColor = `hsla(${204 - brightness * 20}, ${52 + brightness * 14}%, ${54 + brightness * 8}%, ${0.16 + brightness * 0.24})`
+    const loudnessColor = `hsla(${246 - loudness * 14}, ${40 + loudness * 16}%, ${46 + loudness * 10}%, ${0.16 + loudness * 0.24})`
+    const harmonicColor = `hsla(166, 64%, 50%, ${0.14 + harmonicity * 0.24})`
+    const noisyColor = `hsla(30, 72%, 54%, ${0.12 + noisiness * 0.24})`
+    const baseTopColor = `hsl(${baseHue}, ${baseSaturation}%, ${baseLightTop}%)`
+    const baseBottomColor = `hsl(${baseHue - 10}, ${baseSaturation - 6}%, ${baseLightBottom}%)`
 
     return {
+      backgroundColor: baseTopColor,
       backgroundImage: `
         radial-gradient(105% 95% at 18% 20%, ${brightnessColor} 0%, transparent 54%),
         radial-gradient(105% 95% at 84% 18%, ${loudnessColor} 0%, transparent 54%),
         radial-gradient(115% 105% at 18% 90%, ${harmonicColor} 0%, transparent 56%),
         radial-gradient(115% 105% at 86% 92%, ${noisyColor} 0%, transparent 56%),
-        linear-gradient(145deg, hsl(${baseHue} ${baseSaturation}% ${baseLightTop}%) 0%, hsl(${baseHue - 10} ${baseSaturation - 6}% ${baseLightBottom}%) 100%)
+        linear-gradient(145deg, ${baseTopColor} 0%, ${baseBottomColor} 100%)
       `,
-      boxShadow: `inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 -24px 42px rgba(2, 6, 23, 0.62)`,
+      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)',
     }
   }
 
+  useEffect(() => {
+    if (!isDuplicatePairMode) return
+    setSortField(null)
+    setSortOrder('asc')
+  }, [isDuplicatePairMode])
+
   const handleSortClick = (field: SortField) => {
+    if (isDuplicatePairMode) return
     if (sortField === field) {
-      // Toggle order if same field
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))
     } else {
-      // Set new field with ascending order
       setSortField(field)
       setSortOrder('asc')
     }
   }
 
-  const sortedSamples = useMemo(() => {
-    if (!sortField) return samples
+  const handleMoreSortChange = (field: SortField) => {
+    if (isDuplicatePairMode) return
+    if (sortField === field) {
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setSortField(field)
+    setSortOrder('asc')
+  }
 
-    return [...samples].sort((a, b) => {
+  const toggleSortOrder = () => {
+    if (isDuplicatePairMode) return
+    setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+  }
+
+  const sortItems = (items: SliceWithTrackExtended[]) => {
+    if (!sortField || isDuplicatePairMode) return items
+
+    return [...items].sort((a, b) => {
+      const aValue = getSortValue(a, sortField)
+      const bValue = getSortValue(b, sortField)
+
+      const aMissing = aValue === null || aValue === undefined || aValue === ''
+      const bMissing = bValue === null || bValue === undefined || bValue === ''
+      if (aMissing && bMissing) return 0
+      if (aMissing) return 1
+      if (bMissing) return -1
+
       let compareValue = 0
-
-      if (sortField === 'name') {
-        compareValue = a.name.localeCompare(b.name)
-      } else if (sortField === 'duration') {
-        const durationA = a.endTime - a.startTime
-        const durationB = b.endTime - b.startTime
-        compareValue = durationA - durationB
+      if (typeof aValue === 'string' && typeof bValue === 'string') {
+        compareValue = aValue.localeCompare(bValue, undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        })
+      } else {
+        compareValue = Number(aValue) - Number(bValue)
       }
 
       return sortOrder === 'asc' ? compareValue : -compareValue
     })
-  }, [samples, sortField, sortOrder])
+  }
+
+  const sortedSamples = useMemo(() => {
+    return sortItems(samples)
+  }, [samples, sortField, sortOrder, isDuplicatePairMode])
+
+  const sortedScaleDegreeGroups = useMemo(() => {
+    if (!scaleDegreeGroups) return null
+    return Array.from(scaleDegreeGroups.entries()).map(([degree, groupSamples]) => [
+      degree,
+      sortItems(groupSamples),
+    ] as const)
+  }, [scaleDegreeGroups, sortField, sortOrder, isDuplicatePairMode])
+
+  const columnCount = useMemo(
+    () => getResponsiveColumnCount(viewportWidth, isDuplicatePairMode),
+    [viewportWidth, isDuplicatePairMode],
+  )
+
+  const cardMetaHeight = isDuplicatePairMode ? 92 : CARD_META_HEIGHT_PX
+
+  const estimatedRowHeight = useMemo(() => {
+    const usableWidth = Math.max(
+      0,
+      gridWidth - GRID_HORIZONTAL_PADDING_PX - GRID_GAP_PX * Math.max(0, columnCount - 1),
+    )
+    const cardWidth = columnCount > 0 ? usableWidth / columnCount : usableWidth
+    return cardWidth * CARD_ASPECT_RATIO + cardMetaHeight + GRID_GAP_PX
+  }, [gridWidth, columnCount, cardMetaHeight])
+
+  const rowHeight = measuredRowHeight ?? estimatedRowHeight
+
+  const getVirtualWindow = (itemCount: number, gridNode: HTMLElement | null) => {
+    const safeColumnCount = Math.max(1, columnCount)
+    const totalRows = Math.ceil(itemCount / safeColumnCount)
+    const minRowsToFillViewport = rowHeight > 0 && viewportHeight > 0
+      ? Math.ceil(viewportHeight / rowHeight) + ROW_OVERSCAN * 2
+      : 0
+    const maxRenderedRows = Math.max(MIN_RENDERED_ROWS, minRowsToFillViewport)
+    const buildRowWindow = (targetRow: number) => {
+      const maxStartRow = Math.max(0, totalRows - maxRenderedRows)
+      const startRow = clamp(targetRow, 0, maxStartRow)
+      const endRowExclusive = Math.min(totalRows, startRow + maxRenderedRows)
+      return {
+        startIndex: Math.min(itemCount, startRow * safeColumnCount),
+        endIndex: Math.min(itemCount, endRowExclusive * safeColumnCount),
+        topSpacer: startRow * rowHeight,
+        bottomSpacer: Math.max(0, totalRows - endRowExclusive) * rowHeight,
+      }
+    }
+
+    if (totalRows === 0) {
+      return {
+        startIndex: 0,
+        endIndex: itemCount,
+        topSpacer: 0,
+        bottomSpacer: 0,
+      }
+    }
+
+    if (!gridNode || viewportHeight <= 0 || rowHeight <= 0) {
+      const fallbackEndIndex = Math.min(itemCount, safeColumnCount * maxRenderedRows)
+      const fallbackRenderedRows = Math.ceil(fallbackEndIndex / safeColumnCount)
+      return {
+        startIndex: 0,
+        endIndex: fallbackEndIndex,
+        topSpacer: 0,
+        bottomSpacer: rowHeight > 0 ? Math.max(0, totalRows - fallbackRenderedRows) * rowHeight : 0,
+      }
+    }
+
+    const scrollParent = scrollParentRef.current
+    const gridOffsetTop = useWindowScroll
+      ? gridNode.getBoundingClientRect().top + (window.scrollY || document.documentElement.scrollTop || 0)
+      : scrollParent
+      ? getOffsetTopWithinParent(gridNode, scrollParent)
+      : gridNode.offsetTop
+    const visibleTop = scrollTop - gridOffsetTop - GRID_VERTICAL_PADDING_PX
+    const visibleBottom = visibleTop + viewportHeight
+
+    const rawStartRow = Math.floor(visibleTop / rowHeight) - ROW_OVERSCAN
+    const rawEndRowExclusive = Math.ceil(visibleBottom / rowHeight) + ROW_OVERSCAN
+    const startRow = clamp(rawStartRow, 0, totalRows)
+    const endRowExclusive = clamp(rawEndRowExclusive, 0, totalRows)
+
+    if (startRow >= endRowExclusive) {
+      if (rawEndRowExclusive <= 0) {
+        return buildRowWindow(0)
+      }
+
+      if (rawStartRow >= totalRows) {
+        return buildRowWindow(totalRows - maxRenderedRows)
+      }
+
+      return buildRowWindow(startRow)
+    }
+
+    let windowStartRow = startRow
+    let windowEndRowExclusive = endRowExclusive
+    if (windowEndRowExclusive - windowStartRow > maxRenderedRows) {
+      if (windowEndRowExclusive >= totalRows) {
+        windowEndRowExclusive = totalRows
+        windowStartRow = Math.max(0, windowEndRowExclusive - maxRenderedRows)
+      } else {
+        windowEndRowExclusive = windowStartRow + maxRenderedRows
+      }
+    }
+
+    const startIndex = Math.min(itemCount, windowStartRow * safeColumnCount)
+    const endIndex = Math.min(itemCount, windowEndRowExclusive * safeColumnCount)
+    const renderedRows = Math.max(0, windowEndRowExclusive - windowStartRow)
+
+    if (endIndex <= startIndex) {
+      return buildRowWindow(startRow)
+    }
+
+    return {
+      startIndex,
+      endIndex,
+      topSpacer: windowStartRow * rowHeight,
+      bottomSpacer: Math.max(0, totalRows - windowStartRow - renderedRows) * rowHeight,
+    }
+  }
+
+  const flatVirtualWindow = useMemo(() => {
+    if (scaleDegreeGroups) {
+      return {
+        startIndex: 0,
+        endIndex: sortedSamples.length,
+        topSpacer: 0,
+        bottomSpacer: 0,
+      }
+    }
+    return getVirtualWindow(sortedSamples.length, flatGridContainerRef.current)
+  }, [scaleDegreeGroups, sortedSamples, columnCount, rowHeight, scrollTop, viewportHeight, useWindowScroll])
+
+  const visibleFlatSamples = useMemo(() => {
+    if (scaleDegreeGroups) return []
+    return sortedSamples.slice(flatVirtualWindow.startIndex, flatVirtualWindow.endIndex)
+  }, [scaleDegreeGroups, sortedSamples, flatVirtualWindow.startIndex, flatVirtualWindow.endIndex])
+
+  useEffect(() => {
+    // Layout changes invalidate any previously measured row height.
+    setMeasuredRowHeight(null)
+  }, [columnCount, gridWidth, scaleDegreeGroups ? scaleDegreeGroups.size : 0])
+
+  useEffect(() => {
+    let frameId: number | null = null
+    frameId = window.requestAnimationFrame(() => {
+      const root = rootRef.current
+      if (!root) return
+      const cards = Array.from(root.querySelectorAll<HTMLElement>(SAMPLE_CARD_SELECTOR))
+      if (cards.length === 0) return
+
+      const uniqueRowTops = Array.from(new Set(cards.map((card) => card.offsetTop))).sort((a, b) => a - b)
+      let measuredHeight = cards[0].offsetHeight + GRID_GAP_PX
+
+      if (uniqueRowTops.length > 1) {
+        const rowSteps = uniqueRowTops
+          .slice(1)
+          .map((top, index) => top - uniqueRowTops[index])
+          .filter((step) => Number.isFinite(step) && step > 0)
+          .sort((a, b) => a - b)
+
+        if (rowSteps.length > 0) {
+          measuredHeight = rowSteps[Math.floor(rowSteps.length / 2)]
+        }
+      }
+
+      if (!Number.isFinite(measuredHeight) || measuredHeight <= 0) return
+      setMeasuredRowHeight((previous) => {
+        if (previous !== null && Math.abs(previous - measuredHeight) < 1) {
+          return previous
+        }
+        return measuredHeight
+      })
+    })
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [
+    columnCount,
+    gridWidth,
+    scrollTop,
+    sortedSamples.length,
+    sortedScaleDegreeGroups?.length,
+    flatVirtualWindow.startIndex,
+    flatVirtualWindow.endIndex,
+  ])
 
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -175,16 +791,31 @@ export function SourcesSampleGrid({
           audioRef.current.pause()
           releaseManagedAudio(audioRef.current)
         }
-        // Play new
-        const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: loopEnabled })
-        audio.onended = () => {
+        const sample = samples.find((s) => s.id === id)
+        if (!sample) return
+        try {
+          const { url, playbackRate } = preparePlaybackForSample(sample)
+          const audio = createManagedAudio(url, { loop: loopEnabled })
+          audio.playbackRate = playbackRate
+          audio.onended = () => {
+            setPlayingId(null)
+            releaseManagedAudio(audio)
+            audioRef.current = null
+          }
+          void audio.play().catch((error) => {
+            console.error('Failed to play sample preview:', error)
+            releaseManagedAudio(audio)
+            if (audioRef.current === audio) {
+              audioRef.current = null
+            }
+            setPlayingId(null)
+          })
+          audioRef.current = audio
+          setPlayingId(id)
+        } catch (error) {
+          console.error('Failed to play sample preview:', error)
           setPlayingId(null)
-          releaseManagedAudio(audio)
-          audioRef.current = null
         }
-        audio.play()
-        audioRef.current = audio
-        setPlayingId(id)
       }
     } else if (playMode === 'one-shot') {
       // One-shot mode: always play the whole sample, stop others (loop disabled)
@@ -194,16 +825,31 @@ export function SourcesSampleGrid({
         releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
-      // Play new
-      const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: false })
-      audio.onended = () => {
+      const sample = samples.find((s) => s.id === id)
+      if (!sample) return
+      try {
+        const { url, playbackRate } = preparePlaybackForSample(sample)
+        const audio = createManagedAudio(url, { loop: false })
+        audio.playbackRate = playbackRate
+        audio.onended = () => {
+          setPlayingId(null)
+          releaseManagedAudio(audio)
+          audioRef.current = null
+        }
+        void audio.play().catch((error) => {
+          console.error('Failed to play sample preview:', error)
+          releaseManagedAudio(audio)
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          setPlayingId(null)
+        })
+        audioRef.current = audio
+        setPlayingId(id)
+      } catch (error) {
+        console.error('Failed to play sample preview:', error)
         setPlayingId(null)
-        releaseManagedAudio(audio)
-        audioRef.current = null
       }
-      audio.play()
-      audioRef.current = audio
-      setPlayingId(id)
     }
   }
 
@@ -217,16 +863,31 @@ export function SourcesSampleGrid({
         releaseManagedAudio(audioRef.current)
         audioRef.current = null
       }
-      // Play from the beginning
-      const audio = createManagedAudio(getSliceDownloadUrl(id), { loop: loopEnabled })
-      audio.onended = () => {
+      const sample = samples.find((s) => s.id === id)
+      if (!sample) return
+      try {
+        const { url, playbackRate } = preparePlaybackForSample(sample)
+        const audio = createManagedAudio(url, { loop: loopEnabled })
+        audio.playbackRate = playbackRate
+        audio.onended = () => {
+          setPlayingId(null)
+          releaseManagedAudio(audio)
+          audioRef.current = null
+        }
+        void audio.play().catch((error) => {
+          console.error('Failed to play sample preview:', error)
+          releaseManagedAudio(audio)
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          setPlayingId(null)
+        })
+        audioRef.current = audio
+        setPlayingId(id)
+      } catch (error) {
+        console.error('Failed to play sample preview:', error)
         setPlayingId(null)
-        releaseManagedAudio(audio)
-        audioRef.current = null
       }
-      audio.play()
-      audioRef.current = audio
-      setPlayingId(id)
     }
   }
 
@@ -294,20 +955,6 @@ export function SourcesSampleGrid({
       clearTimeout(closeTimeoutRef.current)
       closeTimeoutRef.current = null
     }
-
-    // Calculate fixed position for the popup - always upward and to the left
-    const triggerElement = tagTriggerRefs.current[sampleId]
-    if (triggerElement) {
-      const rect = triggerElement.getBoundingClientRect()
-
-      setPopupPosition(prev => ({
-        ...prev,
-        [sampleId]: {
-          bottom: window.innerHeight - rect.top + 2,
-          left: rect.right
-        }
-      }))
-    }
     setTagPopupId(sampleId)
   }
 
@@ -351,6 +998,8 @@ export function SourcesSampleGrid({
     return sortOrder === 'asc' ? <ArrowUp size={14} className="ml-1" /> : <ArrowDown size={14} className="ml-1" />
   }
 
+  const activeMoreSortField = sortField && !QUICK_SORT_FIELD_SET.has(sortField) ? sortField : ''
+
   // Determine if select-all checkbox should be indeterminate
   const selectAllIndeterminate = selectedIds.size > 0 && selectedIds.size < sortedSamples.length
   const selectAllChecked = selectedIds.size === sortedSamples.length && sortedSamples.length > 0
@@ -360,6 +1009,38 @@ export function SourcesSampleGrid({
         const isChecked = selectedIds.has(sample.id)
         const isPlaying = playingId === sample.id
         const isDragging = draggedId === sample.id
+        const isTagPopupOpen = tagPopupId === sample.id
+        const isInfoOverlayOpen = infoOverlaySampleId === sample.id
+        const renamePreview = bulkRenamePreviewById.get(sample.id)
+        const hasRenamePreview = Boolean(renamePreview?.hasChange)
+        const duplicatePairMeta = duplicatePairMetaBySampleId.get(sample.id)
+        const duplicateRoleClass = duplicatePairMeta
+          ? duplicatePairMeta.selectedForDelete
+            ? 'bg-red-500/20 text-red-100'
+            : duplicatePairMeta.role === 'keep'
+              ? 'bg-emerald-500/20 text-emerald-200'
+              : 'bg-amber-500/20 text-amber-200'
+          : ''
+        const duplicateRoleLabel = duplicatePairMeta
+          ? duplicatePairMeta.role === 'keep'
+            ? 'Keep'
+            : 'Duplicate'
+          : null
+        const duplicateCanToggleDelete =
+          Boolean(duplicatePairMeta && duplicatePairMeta.canDelete && onToggleDuplicateDeleteTarget)
+        const duplicateActionLabel = duplicatePairMeta
+          ? duplicatePairMeta.selectedForDelete
+            ? 'Keep both'
+            : 'Delete this'
+          : ''
+        const bpmDisplay = typeof sample.bpm === 'number' && Number.isFinite(sample.bpm)
+          ? `${Math.round(sample.bpm)}`
+          : 'n/a'
+        const keyDisplay = getKeyDisplay(sample) || 'n/a'
+        const formatDisplay = sample.format?.toUpperCase() || 'n/a'
+        const channelsDisplay = sample.channels && sample.channels > 0 ? `${sample.channels}ch` : 'n/a'
+        const addedDisplay = formatDate(sample.dateAdded || sample.createdAt)
+        const artistDisplay = sample.track.artist?.trim() || 'Unknown'
         const resolvedInstrumentType = resolveInstrumentType(
           sample.instrumentType,
           sample.instrumentPrimary,
@@ -367,275 +1048,417 @@ export function SourcesSampleGrid({
           sample.name,
           sample.filePath,
         )
+        const defaultCardStateClass = duplicatePairMeta
+          ? duplicatePairMeta.selectedForDelete
+            ? 'ring-2 ring-red-500/60 shadow-lg shadow-red-500/20'
+            : duplicatePairMeta.role === 'keep'
+              ? 'ring-1 ring-emerald-500/50 shadow-md shadow-emerald-500/10'
+              : 'ring-1 ring-amber-500/50 shadow-md shadow-amber-500/10'
+          : 'hover:bg-surface-overlay hover:shadow-lg hover:scale-[1.02]'
 
         return (
-          <div
-            key={sample.id}
-            onClick={() => onSelect(sample.id)}
-            draggable
-            onDragStart={(e) => handleDragStart(e, sample)}
-            onDragEnd={handleDragEnd}
-            className={`group relative bg-surface-raised rounded-lg overflow-hidden cursor-pointer transition-all ${
-              isSelected
-                ? 'ring-2 ring-accent-primary shadow-lg shadow-accent-primary/20'
-                : isChecked
-                ? 'ring-2 ring-indigo-400/60 shadow-md shadow-indigo-400/10'
-                : 'hover:bg-surface-base hover:shadow-md'
-            } ${isDragging ? 'opacity-50' : ''}`}
-          >
-            {/* Instrument visual area */}
-            <div className="aspect-[4/3] relative flex items-center justify-center" style={getMetricGradient(sample)}>
-              <div className="absolute inset-0 flex items-center justify-center text-white/90">
-                <InstrumentIcon type={resolvedInstrumentType} size={56} className="drop-shadow-[0_2px_8px_rgba(0,0,0,0.45)]" />
-              </div>
-
-              {/* Play button overlay */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (playMode !== 'reproduce-while-clicking') {
-                    handlePlay(sample.id, e)
-                  }
-                }}
-                onMouseDown={playMode === 'reproduce-while-clicking' ? (e) => handleMouseDown(sample.id, e) : undefined}
-                onMouseUp={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
-                onMouseLeave={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
-                className={`absolute inset-0 flex items-center justify-center transition-opacity ${
-                  isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                }`}
-              >
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                  isPlaying ? 'bg-accent-primary' : 'bg-black/60 hover:bg-black/80'
-                }`}>
-                  {isPlaying && playMode === 'normal' ? (
-                    <Pause size={18} className="text-white" />
-                  ) : (
-                    <Play size={18} className="text-white ml-0.5" />
-                  )}
+          <FadeInOnMount key={sample.id}>
+            <div
+              data-sources-sample-card="true"
+              onClick={() => onSelect(sample.id)}
+              draggable
+              onDragStart={(e) => handleDragStart(e, sample)}
+              onDragEnd={handleDragEnd}
+              className={`group relative ${isTagPopupOpen ? 'z-[70]' : 'z-0 hover:z-10'} bg-surface-raised rounded-xl overflow-visible cursor-pointer transition-all ${
+                isSelected
+                  ? 'ring-2 ring-accent-warm shadow-lg shadow-accent-warm/20'
+                  : isChecked
+                  ? 'ring-2 ring-accent-primary/60 shadow-md shadow-accent-primary/10'
+                  : defaultCardStateClass
+              } ${isDragging ? 'opacity-50' : ''}`}
+            >
+              {/* Instrument visual area */}
+              <div className="aspect-[16/9] relative flex items-center justify-center overflow-hidden rounded-t-xl" style={getMetricGradient(sample)}>
+                <div className="absolute inset-0 flex items-center justify-center text-white/90">
+                  <InstrumentIcon type={resolvedInstrumentType} size={56} className="drop-shadow-[0_2px_8px_rgba(0,0,0,0.45)]" />
                 </div>
-              </button>
 
-              {/* Checkbox for selection */}
-              {onToggleSelect && (
-                <div
-                  className={`absolute top-1.5 left-1.5 transition-opacity ${
-                    isChecked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                  }`}
+                {/* Play button overlay */}
+                <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    onToggleSelect(sample.id)
+                    if (playMode !== 'reproduce-while-clicking') {
+                      handlePlay(sample.id, e)
+                    }
                   }}
+                  onMouseDown={playMode === 'reproduce-while-clicking' ? (e) => handleMouseDown(sample.id, e) : undefined}
+                  onMouseUp={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
+                  onMouseLeave={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
+                  className={`absolute inset-0 flex items-center justify-center transition-opacity ${
+                    isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                  }`}
                 >
-                  <CustomCheckbox
-                    checked={isChecked}
-                    onChange={() => {}}
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                    isPlaying ? 'bg-accent-primary' : 'bg-surface-base/60 hover:bg-surface-base/80'
+                  }`}>
+                    {isPlaying && playMode === 'normal' ? (
+                      <Pause size={18} className="text-white" />
+                    ) : (
+                      <Play size={18} className="text-white ml-0.5" />
+                    )}
+                  </div>
+                </button>
+
+                {/* Checkbox for selection */}
+                {onToggleSelect && (
+                  <div
+                    className={`absolute top-1.5 left-1.5 transition-opacity ${
+                      isChecked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                    }`}
                     onClick={(e) => {
                       e.stopPropagation()
                       onToggleSelect(sample.id)
                     }}
-                  />
-                </div>
-              )}
+                  >
+                    <CustomCheckbox
+                      checked={isChecked}
+                      onChange={() => {}}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onToggleSelect(sample.id)
+                      }}
+                    />
+                  </div>
+                )}
 
-              {/* Favorite button */}
-              {onToggleFavorite && (
+                {/* Favorite button */}
+                {onToggleFavorite && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onToggleFavorite(sample.id)
+                    }}
+                    className={`absolute top-1.5 right-1.5 p-1 rounded transition-all ${
+                      sample.favorite
+                        ? 'text-amber-400 bg-amber-400/20'
+                        : 'text-slate-400 opacity-0 group-hover:opacity-100 hover:text-amber-400 hover:bg-amber-400/20'
+                    }`}
+                  >
+                    <Heart size={14} className={sample.favorite ? 'fill-current' : ''} />
+                  </button>
+                )}
+
+                {/* Send to Drum Rack button */}
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    onToggleFavorite(sample.id)
+                    setPadPickerSample(sample)
                   }}
-                  className={`absolute top-1.5 right-1.5 p-1 rounded transition-all ${
-                    sample.favorite
-                      ? 'text-amber-400 bg-amber-400/20'
-                      : 'text-slate-400 opacity-0 group-hover:opacity-100 hover:text-amber-400 hover:bg-amber-400/20'
-                  }`}
+                  className="absolute top-1.5 right-8 p-1 rounded text-slate-400 opacity-0 group-hover:opacity-100 hover:text-accent-primary hover:bg-accent-primary/20 transition-all"
+                  title="Send to Drum Rack"
                 >
-                  <Heart size={14} className={sample.favorite ? 'fill-current' : ''} />
+                  <Disc3 size={14} />
                 </button>
-              )}
 
-              {/* Send to Drum Rack button */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setPadPickerSample(sample)
-                }}
-                className="absolute top-1.5 right-8 p-1 rounded text-slate-400 opacity-0 group-hover:opacity-100 hover:text-accent-primary hover:bg-accent-primary/20 transition-all"
-                title="Send to Drum Rack"
-              >
-                <Disc3 size={14} />
-              </button>
+                {/* Details button */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setInfoOverlaySampleId((current) => (current === sample.id ? null : sample.id))
+                  }}
+                  className={`absolute top-1.5 right-14 p-1 rounded transition-all ${
+                    isInfoOverlayOpen
+                      ? 'text-white bg-black/50 opacity-100'
+                      : 'text-slate-400 opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-surface-base/40'
+                  }`}
+                  title={isInfoOverlayOpen ? 'Hide sample info' : 'Show sample info'}
+                  aria-pressed={isInfoOverlayOpen}
+                >
+                  <Info size={14} />
+                </button>
 
-              {/* Drag handle */}
-              {!onToggleSelect && (
-                <div className="absolute top-1.5 left-1.5 p-1 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab">
-                  <GripVertical size={14} />
+                {/* Drag handle */}
+                {!onToggleSelect && (
+                  <div className="absolute top-1.5 left-1.5 p-1 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab">
+                    <GripVertical size={14} />
+                  </div>
+                )}
+
+                {/* Duration badge */}
+                <span className="absolute bottom-1.5 right-1.5 px-1.5 py-0 text-[10px] font-medium bg-surface-base/60 rounded text-white inline-block">
+                  {formatDuration(sample.startTime, sample.endTime)}
+                </span>
+
+                {/* Instrument type badge */}
+                <div
+                  className="absolute bottom-1.5 left-1.5 p-1 rounded text-white/90"
+                  title={`${resolvedInstrumentType} • brightness + loudness + harmonic/noisy`}
+                  style={{ ...getMetricGradient(sample), backgroundSize: '220% 220%' }}
+                >
+                  <InstrumentIcon type={resolvedInstrumentType} size={12} />
                 </div>
-              )}
 
-              {/* Duration badge */}
-              <span className="absolute bottom-1.5 right-1.5 px-1.5 py-0 text-[10px] font-medium bg-black/60 rounded text-white inline-block">
-                {formatDuration(sample.startTime, sample.endTime)}
-              </span>
+                <div
+                  className={`pointer-events-none absolute inset-0 z-20 flex flex-col justify-center gap-0.5 bg-black/70 px-2.5 text-left transition-all duration-200 ${
+                    isInfoOverlayOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'
+                  }`}
+                  aria-hidden={!isInfoOverlayOpen}
+                >
+                  <div className="grid grid-cols-[42px_minmax(0,1fr)] gap-x-2 gap-y-0.5 text-[10px] leading-tight">
+                    <span className="text-white/55">Track</span>
+                    <span className="truncate text-white/90">{sample.track.title?.trim() || 'Unknown track'}</span>
+                    <span className="text-white/55">Artist</span>
+                    <span className="truncate text-white/80">{artistDisplay}</span>
+                    <span className="text-white/55">Length</span>
+                    <span className="truncate text-white/80">{formatDuration(sample.startTime, sample.endTime)}</span>
+                    <span className="text-white/55">Tempo</span>
+                    <span className="truncate text-white/80">{bpmDisplay} BPM · {keyDisplay}</span>
+                    <span className="text-white/55">Audio</span>
+                    <span className="truncate text-white/80">{formatDisplay} · {formatSampleRate(sample.sampleRate)} · {channelsDisplay}</span>
+                    <span className="text-white/55">Added</span>
+                    <span className="truncate text-white/80">{addedDisplay} · {sample.tags.length} tag{sample.tags.length === 1 ? '' : 's'}</span>
+                  </div>
+                </div>
+              </div>
 
-              {/* Instrument type badge */}
-              <div
-                className="absolute bottom-1.5 left-1.5 p-1 rounded text-white/90"
-                title={`${resolvedInstrumentType} • brightness + loudness + harmonic/noisy`}
-                style={{ ...getMetricGradient(sample), backgroundSize: '220% 220%' }}
-              >
-                <InstrumentIcon type={resolvedInstrumentType} size={12} />
+              {/* Info */}
+              <div className={`px-2 py-1.5 overflow-visible ${duplicatePairMeta ? 'h-[92px] space-y-0.5' : 'h-[62px]'}`}>
+                {duplicatePairMeta && duplicateRoleLabel && (
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                      <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 font-medium ${duplicateRoleClass}`}>
+                        Pair {duplicatePairMeta.pairIndex} • {duplicateRoleLabel}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (!duplicateCanToggleDelete) return
+                          onToggleDuplicateDeleteTarget?.(sample.id)
+                        }}
+                        disabled={!duplicateCanToggleDelete}
+                        className={`inline-flex items-center rounded border px-1.5 py-0.5 font-medium transition-colors ${
+                          !duplicatePairMeta.canDelete
+                            ? 'border-surface-border text-slate-500 cursor-not-allowed'
+                            : duplicatePairMeta.selectedForDelete
+                              ? 'border-red-500/40 bg-red-500/20 text-red-100 hover:bg-red-500/25'
+                              : 'border-red-500/35 text-red-200 hover:bg-red-500/15'
+                        }`}
+                      >
+                        {duplicatePairMeta.canDelete ? duplicateActionLabel : 'Protected'}
+                      </button>
+                    </div>
+                    <div className="text-[10px] text-slate-500 truncate">
+                      {getDuplicateMatchLabel(duplicatePairMeta.matchType)} {duplicatePairMeta.similarityPercent}%
+                    </div>
+                  </div>
+                )}
+                {hasRenamePreview ? (
+                  <div className="space-y-0.5">
+                    <p className="text-[11px] text-slate-500 truncate line-through" title={sample.name}>
+                      {sample.name}
+                    </p>
+                    <p className="text-sm font-medium text-accent-primary truncate" title={renamePreview!.nextName}>
+                      {renamePreview!.nextName}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm font-medium text-white truncate" title={sample.name}>
+                    {sample.name}
+                  </p>
+                )}
+
+                {/* Tags preview */}
+                {sample.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1 items-center">
+                    {sample.tags.slice(0, 2).map(tag => (
+                      <span
+                        key={tag.id}
+                        onClick={(e) => {
+                          if (onTagClick) {
+                            e.stopPropagation()
+                            onTagClick(tag.id)
+                          }
+                        }}
+                        className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] leading-none whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                        style={{
+                          backgroundColor: tag.color + '25',
+                          color: tag.color,
+                        }}
+                        title={onTagClick ? `Filter by ${tag.name}` : tag.name}
+                      >
+                        {tag.name}
+                      </span>
+                    ))}
+                    {sample.tags.length > 2 && (
+                      <div
+                        className="relative inline-block"
+                        onMouseEnter={() => handleTagPopupOpen(sample.id)}
+                        onMouseLeave={handleTagPopupClose}
+                      >
+                        <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] leading-none text-slate-500 cursor-default bg-surface-overlay/50">
+                          +{sample.tags.length - 2}
+                        </span>
+                        {tagPopupId === sample.id && (
+                          <div
+                            className="absolute right-0 bottom-full mb-1 z-[60] bg-surface-raised border border-surface-border rounded-lg shadow-lg py-1 px-2 max-w-[200px] max-h-40 overflow-y-auto"
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseEnter={() => handleTagPopupEnter(sample.id)}
+                            onMouseLeave={handleTagPopupClose}
+                          >
+                            <div className="flex flex-col gap-1">
+                              {sample.tags.slice(2).map((tag) => (
+                                <span
+                                  key={tag.id}
+                                  onClick={(e) => {
+                                    if (onTagClick) {
+                                      e.stopPropagation()
+                                      onTagClick(tag.id)
+                                      setTagPopupId(null)
+                                      if (closeTimeoutRef.current) {
+                                        clearTimeout(closeTimeoutRef.current)
+                                        closeTimeoutRef.current = null
+                                      }
+                                    }
+                                  }}
+                                  className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] leading-none whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                                  style={{
+                                    backgroundColor: tag.color + '25',
+                                    color: tag.color,
+                                  }}
+                                  title={onTagClick ? `Filter by ${tag.name}` : tag.name}
+                                >
+                                  {tag.name}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
-
-            {/* Info */}
-            <div className="p-2">
-              <p className="text-sm font-medium text-white truncate" title={sample.name}>
-                {sample.name}
-              </p>
-
-              {/* Tags preview */}
-              {sample.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-1.5 items-center">
-                  {sample.tags.slice(0, 2).map(tag => (
-                    <span
-                      key={tag.id}
-                      onClick={(e) => {
-                        if (onTagClick) {
-                          e.stopPropagation()
-                          onTagClick(tag.id)
-                        }
-                      }}
-                      className={`inline-block px-1.5 py-0 text-[10px] rounded-full ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
-                      style={{
-                        backgroundColor: tag.color + '25',
-                        color: tag.color,
-                      }}
-                      title={onTagClick ? `Filter by ${tag.name}` : tag.name}
-                    >
-                      {tag.name}
-                    </span>
-                  ))}
-                  {sample.tags.length > 2 && (
-                    <div
-                      ref={(el) => { tagTriggerRefs.current[sample.id] = el }}
-                      className="relative inline-block"
-                      onMouseEnter={() => handleTagPopupOpen(sample.id)}
-                      onMouseLeave={handleTagPopupClose}
-                    >
-                      <span className="inline-block px-1.5 py-0 text-[10px] text-slate-500 cursor-default leading-none">
-                        +{sample.tags.length - 2}
-                      </span>
-                      {tagPopupId === sample.id && popupPosition[sample.id] && (
-                        <div
-                          className="fixed z-50 bg-surface-raised border border-surface-border rounded-lg shadow-lg py-1 px-2 max-w-[200px]"
-                          style={{
-                            bottom: popupPosition[sample.id].bottom !== undefined ? `${popupPosition[sample.id].bottom}px` : undefined,
-                            left: `${popupPosition[sample.id].left}px`,
-                            transform: 'translateX(-100%)'
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                          onMouseEnter={() => handleTagPopupEnter(sample.id)}
-                          onMouseLeave={handleTagPopupClose}
-                        >
-                          <div className="flex flex-col gap-1">
-                            {sample.tags.slice(2).map((tag) => (
-                              <span
-                                key={tag.id}
-                                onClick={(e) => {
-                                  if (onTagClick) {
-                                    e.stopPropagation()
-                                    onTagClick(tag.id)
-                                    setTagPopupId(null)
-                                    if (closeTimeoutRef.current) {
-                                      clearTimeout(closeTimeoutRef.current)
-                                      closeTimeoutRef.current = null
-                                    }
-                                  }
-                                }}
-                                className={`inline-block px-1.5 py-0 text-[10px] rounded-full whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
-                                style={{
-                                  backgroundColor: tag.color + '25',
-                                  color: tag.color,
-                                }}
-                                title={onTagClick ? `Filter by ${tag.name}` : tag.name}
-                              >
-                                {tag.name}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
+          </FadeInOnMount>
         )
   }
 
-  const gridClass = "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 p-4"
+  const gridClass = isDuplicatePairMode
+    ? 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6 gap-[10px]'
+    : 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-[10px]'
 
   return (
-    <div className="flex flex-col">
-      {/* Sort controls */}
-      <div className="flex items-center gap-2 px-4 pt-4 pb-2">
-        {onToggleSelect && onToggleSelectAll && (
-          <>
-            <CustomCheckbox
-              checked={selectAllChecked}
-              indeterminate={selectAllIndeterminate}
-              onChange={onToggleSelectAll}
-              className="flex-shrink-0"
-              title="Select all samples"
-            />
-            <div className="w-px h-5 bg-surface-border" />
-          </>
-        )}
-        <span className="text-sm text-slate-400">Sort by:</span>
-        <button
-          onClick={() => handleSortClick('name')}
-          className={`flex items-center px-3 py-1.5 text-sm rounded transition-colors ${
-            sortField === 'name'
-              ? 'bg-accent-primary text-white'
-              : 'bg-surface-raised text-slate-300 hover:bg-surface-base'
-          }`}
-        >
-          Name
-          {getSortIcon('name')}
-        </button>
-        <button
-          onClick={() => handleSortClick('duration')}
-          className={`flex items-center px-3 py-1.5 text-sm rounded transition-colors ${
-            sortField === 'duration'
-              ? 'bg-accent-primary text-white'
-              : 'bg-surface-raised text-slate-300 hover:bg-surface-base'
-          }`}
-        >
-          Duration
-          {getSortIcon('duration')}
-        </button>
-      </div>
+    <div ref={rootRef} className="relative isolate flex min-h-0 flex-col">
+      {showSortControls && (
+        <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 border-b border-surface-border bg-surface-base/95 px-4 py-2 backdrop-blur-sm">
+          {showSelectAllControl && onToggleSelect && onToggleSelectAll && (
+            <>
+              <CustomCheckbox
+                checked={selectAllChecked}
+                indeterminate={selectAllIndeterminate}
+                onChange={onToggleSelectAll}
+                className="flex-shrink-0"
+                title="Select all samples"
+              />
+              <div className="w-px h-5 bg-surface-border" />
+            </>
+          )}
+          <span className="text-sm text-slate-400">Sort by:</span>
+          {QUICK_SORT_OPTIONS.map((option) => (
+            <button
+              key={option.field}
+              onClick={() => handleSortClick(option.field)}
+              disabled={isDuplicatePairMode}
+              className={`flex items-center px-3 py-1.5 text-sm rounded transition-colors ${
+                sortField === option.field
+                  ? 'bg-accent-primary text-white'
+                  : 'bg-surface-raised text-slate-300 hover:bg-surface-base'
+              } ${isDuplicatePairMode ? 'opacity-50 cursor-not-allowed hover:bg-surface-raised' : ''}`}
+            >
+              {option.label}
+              {getSortIcon(option.field)}
+            </button>
+          ))}
+          <select
+            value={activeMoreSortField}
+            onChange={(e) => {
+              const field = e.target.value as SortField
+              if (!field) return
+              handleMoreSortChange(field)
+            }}
+            className={`px-3 py-1.5 text-sm rounded border border-surface-border bg-surface-raised text-slate-300 focus:outline-none focus:border-accent-primary ${isDuplicatePairMode ? 'opacity-50 cursor-not-allowed' : ''}`}
+            title="More sorting metrics"
+            disabled={isDuplicatePairMode}
+          >
+            <option value="">More metrics...</option>
+            {MORE_SORT_OPTIONS.map((option) => (
+              <option key={option.field} value={option.field}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          {sortField && (
+            <button
+              onClick={toggleSortOrder}
+              className={`flex items-center justify-center px-2.5 py-1.5 text-sm rounded bg-surface-raised text-slate-300 hover:bg-surface-base transition-colors ${isDuplicatePairMode ? 'opacity-50 cursor-not-allowed hover:bg-surface-raised' : ''}`}
+              title={sortOrder === 'asc' ? 'Ascending sort' : 'Descending sort'}
+              disabled={isDuplicatePairMode}
+            >
+              {sortOrder === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
+            </button>
+          )}
+          {isDuplicatePairMode && (
+            <span className="text-[11px] text-slate-500 ml-auto">
+              Pair mode keeps duplicate matches together.
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Grid - grouped or flat */}
-      {scaleDegreeGroups ? (
-        <div className="px-4 pb-4">
-          {Array.from(scaleDegreeGroups.entries()).map(([degree, groupSamples]) => (
-            <div key={degree} className="mb-4">
+      {sortedScaleDegreeGroups ? (
+        <div className="px-4 pt-2.5 pb-3">
+          {sortedScaleDegreeGroups.map(([degree, groupSamples]) => (
+            <div key={degree} className="mb-3">
               <h3 className="text-sm font-semibold text-slate-300 mb-2 px-1 border-l-2 border-accent-primary pl-2">
                 {degree}
                 <span className="text-xs text-slate-500 ml-2">({groupSamples.length})</span>
               </h3>
-              <div className={gridClass.replace('p-4', '')}>
-                {groupSamples.map(sample => renderSampleCard(sample))}
-              </div>
+              {(() => {
+                const groupVirtualWindow = getVirtualWindow(groupSamples.length, groupedGridRefs.current[degree] ?? null)
+                const visibleGroupSamples = groupSamples.slice(groupVirtualWindow.startIndex, groupVirtualWindow.endIndex)
+
+                return (
+                  <div
+                    ref={(el) => { groupedGridRefs.current[degree] = el }}
+                    className={gridClass}
+                  >
+                    {groupVirtualWindow.topSpacer > 0 && (
+                      <div
+                        aria-hidden="true"
+                        style={{ height: `${groupVirtualWindow.topSpacer}px`, gridColumn: '1 / -1' }}
+                      />
+                    )}
+                    {visibleGroupSamples.map(sample => renderSampleCard(sample))}
+                    {groupVirtualWindow.bottomSpacer > 0 && (
+                      <div
+                        aria-hidden="true"
+                        style={{ height: `${groupVirtualWindow.bottomSpacer}px`, gridColumn: '1 / -1' }}
+                      />
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           ))}
         </div>
       ) : (
-        <div className={gridClass}>
-          {sortedSamples.map(sample => renderSampleCard(sample))}
+        <div ref={flatGridContainerRef} className="px-4 pt-3 pb-3">
+          {flatVirtualWindow.topSpacer > 0 && (
+            <div aria-hidden="true" style={{ height: `${flatVirtualWindow.topSpacer}px` }} />
+          )}
+          <div className={gridClass}>
+            {visibleFlatSamples.map(sample => renderSampleCard(sample))}
+          </div>
+          {flatVirtualWindow.bottomSpacer > 0 && (
+            <div aria-hidden="true" style={{ height: `${flatVirtualWindow.bottomSpacer}px` }} />
+          )}
         </div>
       )}
 

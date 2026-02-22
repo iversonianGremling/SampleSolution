@@ -4,7 +4,9 @@ import { getSliceDownloadUrl } from '../api/client'
 
 interface SliceWaveformProps {
   sliceId: number
+  sourceUrl?: string
   height?: number
+  pitchSemitones?: number
   onReady?: () => void
   onPlay?: () => void
   onPause?: () => void
@@ -20,7 +22,7 @@ export interface SliceWaveformRef {
 }
 
 export const SliceWaveform = forwardRef<SliceWaveformRef, SliceWaveformProps>(
-  ({ sliceId, height = 80, onReady, onPlay, onPause, onFinish }, ref) => {
+  ({ sliceId, sourceUrl, height = 80, pitchSemitones = 0, onReady, onPlay, onPause, onFinish }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null)
     const wavesurferRef = useRef<WaveSurfer | null>(null)
 
@@ -29,6 +31,7 @@ export const SliceWaveform = forwardRef<SliceWaveformRef, SliceWaveformProps>(
     const onPlayRef = useRef(onPlay)
     const onPauseRef = useRef(onPause)
     const onFinishRef = useRef(onFinish)
+    const pitchSemitonesRef = useRef(pitchSemitones)
 
     useEffect(() => {
       onReadyRef.current = onReady
@@ -37,20 +40,24 @@ export const SliceWaveform = forwardRef<SliceWaveformRef, SliceWaveformProps>(
       onFinishRef.current = onFinish
     }, [onReady, onPlay, onPause, onFinish])
 
+    // Update playback rate when pitchSemitones changes
+    useEffect(() => {
+      pitchSemitonesRef.current = pitchSemitones
+      if (!wavesurferRef.current) return
+      const rate = Math.pow(2, pitchSemitones / 12)
+      wavesurferRef.current.setPlaybackRate(rate)
+    }, [pitchSemitones])
+
     useImperativeHandle(ref, () => ({
       play: async () => {
-        console.log('play() called, wavesurfer exists:', !!wavesurferRef.current)
         try {
           await wavesurferRef.current?.play()
-          console.log('play() completed')
         } catch (error) {
           console.error('Play failed:', error)
         }
       },
       pause: () => {
-        console.log('pause() called, wavesurfer exists:', !!wavesurferRef.current, 'isPlaying:', wavesurferRef.current?.isPlaying())
         wavesurferRef.current?.pause()
-        console.log('pause() completed')
       },
       isPlaying: () => wavesurferRef.current?.isPlaying() || false,
       getCurrentTime: () => wavesurferRef.current?.getCurrentTime() || 0,
@@ -60,7 +67,6 @@ export const SliceWaveform = forwardRef<SliceWaveformRef, SliceWaveformProps>(
     useEffect(() => {
       if (!containerRef.current) return
 
-      // Create WaveSurfer instance
       const ws = WaveSurfer.create({
         container: containerRef.current,
         waveColor: '#6366f1',
@@ -80,33 +86,36 @@ export const SliceWaveform = forwardRef<SliceWaveformRef, SliceWaveformProps>(
 
       // Set up event listeners
       ws.on('ready', () => {
-        console.log('WaveSurfer ready')
+        const rate = Math.pow(2, pitchSemitonesRef.current / 12)
+        ws.setPlaybackRate(rate)
         onReadyRef.current?.()
       })
       ws.on('play', () => {
-        console.log('WaveSurfer play event')
         onPlayRef.current?.()
       })
       ws.on('pause', () => {
-        console.log('WaveSurfer pause event')
         onPauseRef.current?.()
       })
       ws.on('finish', () => {
-        console.log('WaveSurfer finish event')
         onFinishRef.current?.()
       })
       ws.on('error', (error) => {
         console.error('WaveSurfer error:', error)
       })
 
-      // Load audio
-      ws.load(getSliceDownloadUrl(sliceId))
-
       // Cleanup
       return () => {
+        wavesurferRef.current = null
         ws.destroy()
       }
-    }, [sliceId, height])
+    }, [height])
+
+    useEffect(() => {
+      const ws = wavesurferRef.current
+      if (!ws) return
+      onPauseRef.current?.()
+      ws.load(sourceUrl || getSliceDownloadUrl(sliceId))
+    }, [sliceId, sourceUrl])
 
     return (
       <div className="bg-surface-base rounded-lg p-3">

@@ -12,6 +12,24 @@ const applyVolume = (audio: HTMLAudioElement, baseVolume: number) => {
   audio.volume = clamp01(baseVolume) * globalMasterVolume
 }
 
+const disablePitchPreservation = (audio: HTMLAudioElement) => {
+  const media = audio as HTMLAudioElement & {
+    preservesPitch?: boolean
+    mozPreservesPitch?: boolean
+    webkitPreservesPitch?: boolean
+  }
+
+  if (typeof media.preservesPitch === 'boolean') {
+    media.preservesPitch = false
+  }
+  if (typeof media.mozPreservesPitch === 'boolean') {
+    media.mozPreservesPitch = false
+  }
+  if (typeof media.webkitPreservesPitch === 'boolean') {
+    media.webkitPreservesPitch = false
+  }
+}
+
 export function getGlobalAudioVolume() {
   return globalMasterVolume
 }
@@ -43,6 +61,7 @@ export function createManagedAudio(
   const baseVolume = clamp01(options?.baseVolume ?? 1)
 
   audio.loop = options?.loop ?? false
+  disablePitchPreservation(audio)
   activeAudio.set(audio, baseVolume)
   applyVolume(audio, baseVolume)
 

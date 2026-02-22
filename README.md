@@ -125,6 +125,26 @@ A practical audio sample management and analysis platform for music producers an
 docker-compose up -d
 ```
 
+Optional downloader tool toggles (set in `.env`):
+```bash
+# Build-time image contents (requires rebuild)
+INSTALL_YTDLP=1
+INSTALL_SPOTDL=1
+
+# Runtime lazy install on first use
+AUTO_INSTALL_DOWNLOAD_TOOLS=0
+AUTO_INSTALL_YTDLP=0
+AUTO_INSTALL_SPOTDL=0
+
+# Hard-disable Spotify import path at backend runtime
+ENABLE_SPOTIFY_IMPORT=1
+
+# Frontend build flags (requires rebuild)
+# Optional override if building frontend manually
+VITE_ENABLE_SPOTIFY_IMPORT=1
+VITE_SHOW_DOWNLOAD_TOOLS_UI=0
+```
+
 Access:
 - Frontend: http://localhost:3000
 - Backend: http://localhost:4000

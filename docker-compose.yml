@@ -1,6 +1,10 @@
 services:
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        - VITE_ENABLE_SPOTIFY_IMPORT=${ENABLE_SPOTIFY_IMPORT:-1}
+        - VITE_SHOW_DOWNLOAD_TOOLS_UI=${VITE_SHOW_DOWNLOAD_TOOLS_UI:-0}
     ports:
       - "3000:3000"
     environment:
@@ -11,7 +15,11 @@ services:
       - app-network
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        - INSTALL_YTDLP=${INSTALL_YTDLP:-1}
+        - INSTALL_SPOTDL=${INSTALL_SPOTDL:-1}
     ports:
       - "4000:4000"
     volumes:
@@ -27,7 +35,15 @@ services:
       - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
       - SESSION_SECRET=${SESSION_SECRET:-change-me-in-production}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - ENABLE_SPOTIFY_IMPORT=${ENABLE_SPOTIFY_IMPORT:-1}
       - DEBUG_ANALYSIS=${DEBUG_ANALYSIS:-0}  # Set to 1 to enable detailed timing logs
+      - AUTO_INSTALL_DOWNLOAD_TOOLS=${AUTO_INSTALL_DOWNLOAD_TOOLS:-0}
+      - AUTO_INSTALL_YTDLP=${AUTO_INSTALL_YTDLP:-0}
+      - AUTO_INSTALL_SPOTDL=${AUTO_INSTALL_SPOTDL:-0}
+      - RCLONE_SHARE_AUTO_SETUP=${RCLONE_SHARE_AUTO_SETUP:-1}
+      - RCLONE_SHARE_REMOTE=${RCLONE_SHARE_REMOTE:-:local:/app/data/rclone-share-remote}
+      - RCLONE_SHARE_BASE_PATH=${RCLONE_SHARE_BASE_PATH:-sample-share}
+      - RCLONE_SHARE_LOCAL_LIBRARY_ROOT=${RCLONE_SHARE_LOCAL_LIBRARY_ROOT:-/app/data/shared-libraries}
     depends_on:
       - ollama
     networks:

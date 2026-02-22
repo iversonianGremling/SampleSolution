@@ -4,11 +4,17 @@ import fs from 'fs/promises'
 import path from 'path'
 import archiver from 'archiver'
 import multer from 'multer'
-import { randomUUID } from 'crypto'
+import { randomUUID, createHash } from 'crypto'
 import { db, schema, getRawDb } from '../db/index.js'
-import { extractSlice, getAudioFileMetadata } from '../services/ffmpeg.js'
+import {
+  convertAudioFile,
+  extractSlice,
+  getAudioFileMetadata,
+  type AudioConversionFormat,
+} from '../services/ffmpeg.js'
 import {
   analyzeAudioFeatures,
+  AUDIO_ANALYSIS_CANCELLED_ERROR,
   featuresToTags,
   getTagMetadata,
   storeAudioFeatures,
@@ -19,6 +25,18 @@ const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads')
 const SLICES_DIR = path.join(DATA_DIR, 'slices')
+const RESOLVED_DATA_DIR = path.resolve(DATA_DIR)
+
+function isManagedDataPath(filePath: string): boolean {
+  const resolved = path.resolve(filePath)
+  return resolved === RESOLVED_DATA_DIR || resolved.startsWith(`${RESOLVED_DATA_DIR}${path.sep}`)
+}
+
+async function unlinkManagedPath(filePath: string | null | undefined): Promise<void> {
+  if (!filePath) return
+  if (!isManagedDataPath(filePath)) return
+  await fs.unlink(filePath).catch(() => {})
+}
 
 const renderUpload = multer({
   storage: multer.memoryStorage(),
@@ -29,8 +47,25 @@ const renderUpload = multer({
 })
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
-const AUTO_REANALYSIS_TAG_CATEGORIES = ['type', 'tempo', 'spectral', 'energy', 'instrument', 'general'] as const
+const AUTO_REANALYSIS_TAG_CATEGORIES = ['type', 'energy', 'instrument', 'general'] as const
+const BATCH_REANALYZE_CANCELLED_ERROR = 'Batch re-analysis canceled'
+const BATCH_CONVERSION_FORMATS: AudioConversionFormat[] = ['mp3', 'wav', 'flac', 'aiff', 'ogg', 'm4a']
+const BATCH_CONVERSION_FORMAT_SET = new Set<AudioConversionFormat>(BATCH_CONVERSION_FORMATS)
 type Range = { min: number | null; max: number | null }
+type DimensionKey =
+  | 'brightness'
+  | 'harmonicity'
+  | 'noisiness'
+  | 'attack'
+  | 'dynamics'
+  | 'saturation'
+  | 'surface'
+  | 'density'
+  | 'ambience'
+  | 'stereoWidth'
+  | 'depth'
+type DimensionRanges = Record<DimensionKey, Range>
+type DimensionFilterRange = Record<DimensionKey, Range>
 
 /** Convert a frequency in Hz to the nearest note name (e.g., 440 -> "A"). */
 function freqToNoteName(hz: number): string | null {
@@ -115,6 +150,13 @@ function normalizeValue(value: number | null | undefined, range: Range): number 
   return Math.max(0, Math.min(1, normalized))
 }
 
+function parseNormalizedBound(raw: string | undefined): number | null {
+  if (raw === undefined) return null
+  const parsed = Number.parseFloat(raw)
+  if (!Number.isFinite(parsed)) return null
+  return Math.max(0, Math.min(1, parsed))
+}
+
 function isPathInFolderScope(candidatePath: string | null, scopePath: string): boolean {
   if (!candidatePath) return false
   const normalizedCandidate = normalizeFolderPathValue(candidatePath)
@@ -124,6 +166,41 @@ function isPathInFolderScope(candidatePath: string | null, scopePath: string): b
     normalizedCandidate === normalizedScope ||
     normalizedCandidate.startsWith(`${normalizedScope}/`)
   )
+}
+
+function getImportedTrackFolderScopePath(
+  folderPath: string | null,
+  relativePath: string | null,
+  originalPath: string | null
+): string | null {
+  if (!folderPath || !folderPath.trim()) return null
+  const normalizedFolderPath = normalizeFolderPathValue(folderPath)
+  if (!normalizedFolderPath) return null
+
+  if (relativePath && relativePath.trim()) {
+    const normalizedRelativePath = normalizeFolderPathValue(relativePath)
+    if (normalizedRelativePath) {
+      const relativeDir = path.posix.dirname(normalizedRelativePath)
+      if (!relativeDir || relativeDir === '.') return normalizedFolderPath
+      return normalizeFolderPathValue(path.posix.join(normalizedFolderPath, relativeDir))
+    }
+  }
+
+  // Backward compatibility for rows that only have originalPath.
+  if (originalPath && originalPath.trim()) {
+    const normalizedOriginal = normalizeFolderPathValue(originalPath)
+    if (isPathInFolderScope(normalizedOriginal, normalizedFolderPath)) {
+      const relativeToRoot = path.posix.relative(normalizedFolderPath, normalizedOriginal)
+      if (relativeToRoot && relativeToRoot !== '.' && !relativeToRoot.startsWith('..')) {
+        const relativeDir = path.posix.dirname(relativeToRoot)
+        if (relativeDir && relativeDir !== '.') {
+          return normalizeFolderPathValue(path.posix.join(normalizedFolderPath, relativeDir))
+        }
+      }
+    }
+  }
+
+  return normalizedFolderPath
 }
 
 function computeTagDiff(beforeTags: string[], afterTags: string[]) {
@@ -158,6 +235,24 @@ function createUniqueArchiveEntryName(
 
   if (seen === 0) return canonicalName
   return `${baseName}-${seen + 1}${normalizedExt}`
+}
+
+function normalizeConversionFormat(raw: unknown): AudioConversionFormat | null {
+  if (typeof raw !== 'string') return null
+  const normalized = raw.trim().toLowerCase().replace(/^\./, '')
+  const canonical = normalized === 'aif' ? 'aiff' : normalized
+
+  if (!BATCH_CONVERSION_FORMAT_SET.has(canonical as AudioConversionFormat)) {
+    return null
+  }
+
+  return canonical as AudioConversionFormat
+}
+
+function inferFormatFromFilePath(filePath: string | null | undefined): AudioConversionFormat | null {
+  if (!filePath) return null
+  const extension = path.extname(filePath)
+  return normalizeConversionFormat(extension)
 }
 
 async function getSliceTagNames(sliceId: number): Promise<string[]> {
@@ -305,6 +400,16 @@ router.post('/slices/:id/render', renderUpload.single('audio'), async (req, res)
         artist: sourceTrack.artist,
         album: sourceTrack.album,
         year: sourceTrack.year,
+        albumArtist: sourceTrack.albumArtist,
+        genre: sourceTrack.genre,
+        composer: sourceTrack.composer,
+        trackNumber: sourceTrack.trackNumber,
+        discNumber: sourceTrack.discNumber,
+        trackComment: sourceTrack.trackComment,
+        musicalKey: sourceTrack.musicalKey,
+        tagBpm: sourceTrack.tagBpm,
+        isrc: sourceTrack.isrc,
+        metadataRaw: sourceTrack.metadataRaw,
         source: 'local',
         originalPath: sourceTrack.originalPath || sourceSlice.filePath || null,
         folderPath: sourceTrack.folderPath || null,
@@ -357,10 +462,10 @@ router.post('/slices/:id/render', renderUpload.single('audio'), async (req, res)
 // GET /api/sources/samples - Returns samples filtered by scope
 // Query params:
 //   scope: 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'my-folder:{id}' | 'folder:{id}' | 'all'
-//   tags: comma-separated tag IDs (optional)
 //   search: search term (optional)
 //   favorites: 'true' to show only favorites (optional)
-//   sortBy: 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt' | 'similarity' (optional)
+//   tags: comma-separated tag IDs (optional, AND semantics)
+//   sortBy: 'artist' | 'album' | 'year' | 'albumArtist' | 'genre' | 'composer' | 'trackNumber' | 'discNumber' | 'tagBpm' | 'musicalKey' | 'isrc' | 'bpm' | 'key' | 'note' | 'name' | 'duration' | 'createdAt' | 'similarity' (optional)
 //   sortOrder: 'asc' | 'desc' (optional, default: 'asc', or 'desc' if similarTo is provided)
 //   minBpm: minimum BPM (optional)
 //   maxBpm: maximum BPM (optional)
@@ -370,6 +475,8 @@ router.post('/slices/:id/render', renderUpload.single('audio'), async (req, res)
 //   dateCreatedFrom/dateCreatedTo: source-file creation-date range filter in YYYY-MM-DD (optional)
 //   similarTo: slice ID to find similar samples (optional)
 //   minSimilarity: minimum similarity threshold 0-1 (optional, default: 0.5)
+//   <dimension>Min/<dimension>Max: normalized dimension ranges, each 0-1
+//   dimensions: brightness, harmonicity, noisiness, attack, dynamics, saturation, surface, density, ambience, stereoWidth, depth
 router.get('/sources/samples', async (req, res) => {
   try {
     const {
@@ -389,6 +496,28 @@ router.get('/sources/samples', async (req, res) => {
       dateCreatedTo,
       similarTo,
       minSimilarity,
+      brightnessMin,
+      brightnessMax,
+      harmonicityMin,
+      harmonicityMax,
+      noisinessMin,
+      noisinessMax,
+      attackMin,
+      attackMax,
+      dynamicsMin,
+      dynamicsMax,
+      saturationMin,
+      saturationMax,
+      surfaceMin,
+      surfaceMax,
+      densityMin,
+      densityMax,
+      ambienceMin,
+      ambienceMax,
+      stereoWidthMin,
+      stereoWidthMax,
+      depthMin,
+      depthMax,
     } = req.query as {
       scope?: string
       tags?: string
@@ -406,12 +535,65 @@ router.get('/sources/samples', async (req, res) => {
       dateCreatedTo?: string
       similarTo?: string
       minSimilarity?: string
+      brightnessMin?: string
+      brightnessMax?: string
+      harmonicityMin?: string
+      harmonicityMax?: string
+      noisinessMin?: string
+      noisinessMax?: string
+      attackMin?: string
+      attackMax?: string
+      dynamicsMin?: string
+      dynamicsMax?: string
+      saturationMin?: string
+      saturationMax?: string
+      surfaceMin?: string
+      surfaceMax?: string
+      densityMin?: string
+      densityMax?: string
+      ambienceMin?: string
+      ambienceMax?: string
+      stereoWidthMin?: string
+      stereoWidthMax?: string
+      depthMin?: string
+      depthMax?: string
+    }
+
+    const dimensionFilters: DimensionFilterRange = {
+      brightness: { min: parseNormalizedBound(brightnessMin), max: parseNormalizedBound(brightnessMax) },
+      harmonicity: { min: parseNormalizedBound(harmonicityMin), max: parseNormalizedBound(harmonicityMax) },
+      noisiness: { min: parseNormalizedBound(noisinessMin), max: parseNormalizedBound(noisinessMax) },
+      attack: { min: parseNormalizedBound(attackMin), max: parseNormalizedBound(attackMax) },
+      dynamics: { min: parseNormalizedBound(dynamicsMin), max: parseNormalizedBound(dynamicsMax) },
+      saturation: { min: parseNormalizedBound(saturationMin), max: parseNormalizedBound(saturationMax) },
+      surface: { min: parseNormalizedBound(surfaceMin), max: parseNormalizedBound(surfaceMax) },
+      density: { min: parseNormalizedBound(densityMin), max: parseNormalizedBound(densityMax) },
+      ambience: { min: parseNormalizedBound(ambienceMin), max: parseNormalizedBound(ambienceMax) },
+      stereoWidth: { min: parseNormalizedBound(stereoWidthMin), max: parseNormalizedBound(stereoWidthMax) },
+      depth: { min: parseNormalizedBound(depthMin), max: parseNormalizedBound(depthMax) },
+    }
+    for (const range of Object.values(dimensionFilters)) {
+      if (range.min !== null && range.max !== null && range.min > range.max) {
+        const tmp = range.min
+        range.min = range.max
+        range.max = tmp
+      }
     }
 
     const dateAddedFromTs = parseDateFilterValue(dateAddedFrom, 'start')
     const dateAddedToTs = parseDateFilterValue(dateAddedTo, 'end')
     const dateCreatedFromTs = parseDateFilterValue(dateCreatedFrom, 'start')
     const dateCreatedToTs = parseDateFilterValue(dateCreatedTo, 'end')
+    const selectedTagIds = tags
+      ? Array.from(
+          new Set(
+            tags
+              .split(',')
+              .map((id) => Number.parseInt(id.trim(), 10))
+              .filter((id) => Number.isInteger(id) && id > 0)
+          )
+        )
+      : []
 
     // Build base query conditions
     const conditions: any[] = []
@@ -601,6 +783,15 @@ router.get('/sources/samples', async (req, res) => {
         trackArtist: schema.tracks.artist,
         trackAlbum: schema.tracks.album,
         trackYear: schema.tracks.year,
+        trackAlbumArtist: schema.tracks.albumArtist,
+        trackGenre: schema.tracks.genre,
+        trackComposer: schema.tracks.composer,
+        trackTrackNumber: schema.tracks.trackNumber,
+        trackDiscNumber: schema.tracks.discNumber,
+        trackComment: schema.tracks.trackComment,
+        trackMusicalKey: schema.tracks.musicalKey,
+        trackTagBpm: schema.tracks.tagBpm,
+        trackIsrc: schema.tracks.isrc,
         // Audio features
         sampleRate: schema.audioFeatures.sampleRate,
         channels: schema.audioFeatures.channels,
@@ -622,6 +813,12 @@ router.get('/sources/samples', async (req, res) => {
         noisiness: schema.audioFeatures.noisiness,
         loudness: schema.audioFeatures.loudness,
         roughness: schema.audioFeatures.roughness,
+        dynamicRange: schema.audioFeatures.dynamicRange,
+        attackTime: schema.audioFeatures.attackTime,
+        harmonicPercussiveRatio: schema.audioFeatures.harmonicPercussiveRatio,
+        stereoWidth: schema.audioFeatures.stereoWidth,
+        eventDensity: schema.audioFeatures.eventDensity,
+        releaseTime: schema.audioFeatures.releaseTime,
       })
       .from(schema.slices)
       .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
@@ -651,9 +848,14 @@ router.get('/sources/samples', async (req, res) => {
         const sliceIdSet = new Set(folderSliceIds)
         slices = slices.filter(s => sliceIdSet.has(s.id))
       } else {
-        slices = slices.filter((slice) =>
-          isPathInFolderScope(slice.trackFolderPath, folderScopeValue)
-        )
+        slices = slices.filter((slice) => {
+          const trackFolderScopePath = getImportedTrackFolderScopePath(
+            slice.trackFolderPath,
+            slice.trackRelativePath,
+            slice.trackOriginalPath
+          )
+          return isPathInFolderScope(trackFolderScopePath, folderScopeValue)
+        })
       }
     }
 
@@ -672,34 +874,43 @@ router.get('/sources/samples', async (req, res) => {
       }
     }
 
-    // Get tags for all slices
-    const sliceIds = slices.map(s => s.id)
-    const sliceTagsResult = sliceIds.length > 0
-      ? await db
-          .select()
-          .from(schema.sliceTags)
-          .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
-          .where(inArray(schema.sliceTags.sliceId, sliceIds))
-      : []
-
     const tagsBySlice = new Map<number, typeof schema.tags.$inferSelect[]>()
-    for (const row of sliceTagsResult) {
-      const sliceId = row.slice_tags.sliceId
-      if (!tagsBySlice.has(sliceId)) {
-        tagsBySlice.set(sliceId, [])
-      }
-      tagsBySlice.get(sliceId)!.push(row.tags)
-    }
-
-    // Tag filter (post-filter since it requires multiple tags match)
     let filteredSlices = slices
-    if (tags && tags.trim()) {
-      const tagIds = tags.split(',').map(t => parseInt(t.trim())).filter(t => !isNaN(t))
-      if (tagIds.length > 0) {
-        filteredSlices = slices.filter(slice => {
-          const sliceTags = tagsBySlice.get(slice.id) || []
-          const sliceTagIds = sliceTags.map(t => t.id)
-          return tagIds.every(tagId => sliceTagIds.includes(tagId))
+
+    if (selectedTagIds.length > 0) {
+      const candidateSliceIds = filteredSlices.map((slice) => slice.id)
+      if (candidateSliceIds.length === 0) {
+        filteredSlices = []
+      } else {
+        const selectedTagSet = new Set(selectedTagIds)
+        const rows = await db
+          .select({
+            sliceId: schema.sliceTags.sliceId,
+            tagId: schema.sliceTags.tagId,
+          })
+          .from(schema.sliceTags)
+          .where(
+            and(
+              inArray(schema.sliceTags.sliceId, candidateSliceIds),
+              inArray(schema.sliceTags.tagId, selectedTagIds),
+            )
+          )
+
+        const tagIdsBySlice = new Map<number, Set<number>>()
+        for (const row of rows) {
+          if (!tagIdsBySlice.has(row.sliceId)) {
+            tagIdsBySlice.set(row.sliceId, new Set<number>())
+          }
+          tagIdsBySlice.get(row.sliceId)!.add(row.tagId)
+        }
+
+        filteredSlices = filteredSlices.filter((slice) => {
+          const found = tagIdsBySlice.get(slice.id)
+          if (!found || found.size < selectedTagSet.size) return false
+          for (const tagId of selectedTagSet) {
+            if (!found.has(tagId)) return false
+          }
+          return true
         })
       }
     }
@@ -749,6 +960,23 @@ router.get('/sources/samples', async (req, res) => {
 
     // Keep payload unique by slice id after all post-filters.
     filteredSlices = Array.from(new Map(filteredSlices.map((slice) => [slice.id, slice])).values())
+
+    const filteredSliceIdsForTags = filteredSlices.map((slice) => slice.id)
+    if (filteredSliceIdsForTags.length > 0) {
+      const sliceTagsResult = await db
+        .select()
+        .from(schema.sliceTags)
+        .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
+        .where(inArray(schema.sliceTags.sliceId, filteredSliceIdsForTags))
+
+      for (const row of sliceTagsResult) {
+        const sliceId = row.slice_tags.sliceId
+        if (!tagsBySlice.has(sliceId)) {
+          tagsBySlice.set(sliceId, [])
+        }
+        tagsBySlice.get(sliceId)!.push(row.tags)
+      }
+    }
 
     // Similarity filter and calculation
     let similarityScores = new Map<number, number>()
@@ -838,6 +1066,38 @@ router.get('/sources/samples', async (req, res) => {
           case 'year':
             aVal = a.trackYear ?? -1
             bVal = b.trackYear ?? -1
+            break
+          case 'albumArtist':
+            aVal = (a.trackAlbumArtist ?? '').toLowerCase()
+            bVal = (b.trackAlbumArtist ?? '').toLowerCase()
+            break
+          case 'genre':
+            aVal = (a.trackGenre ?? '').toLowerCase()
+            bVal = (b.trackGenre ?? '').toLowerCase()
+            break
+          case 'composer':
+            aVal = (a.trackComposer ?? '').toLowerCase()
+            bVal = (b.trackComposer ?? '').toLowerCase()
+            break
+          case 'trackNumber':
+            aVal = a.trackTrackNumber ?? -1
+            bVal = b.trackTrackNumber ?? -1
+            break
+          case 'discNumber':
+            aVal = a.trackDiscNumber ?? -1
+            bVal = b.trackDiscNumber ?? -1
+            break
+          case 'tagBpm':
+            aVal = a.trackTagBpm ?? -1
+            bVal = b.trackTagBpm ?? -1
+            break
+          case 'musicalKey':
+            aVal = (a.trackMusicalKey ?? '').toLowerCase()
+            bVal = (b.trackMusicalKey ?? '').toLowerCase()
+            break
+          case 'isrc':
+            aVal = (a.trackIsrc ?? '').toLowerCase()
+            bVal = (b.trackIsrc ?? '').toLowerCase()
             break
           case 'bpm':
             aVal = a.bpm ?? -1
@@ -990,12 +1250,30 @@ router.get('/sources/samples', async (req, res) => {
         .where(eq(schema.audioFeatures.sliceId, update.sliceId))
     }
 
-    const perceptualStatsRaw = sqlite.prepare(`
+    const normalizedStatsRaw = sqlite.prepare(`
       SELECT
         MIN(brightness) AS brightnessMin,
         MAX(brightness) AS brightnessMax,
+        MIN(harmonic_percussive_ratio) AS harmonicityMin,
+        MAX(harmonic_percussive_ratio) AS harmonicityMax,
         MIN(COALESCE(noisiness, roughness)) AS noisinessMin,
         MAX(COALESCE(noisiness, roughness)) AS noisinessMax,
+        MIN(hardness) AS attackMin,
+        MAX(hardness) AS attackMax,
+        MIN(dynamic_range) AS dynamicsMin,
+        MAX(dynamic_range) AS dynamicsMax,
+        MIN(roughness) AS saturationMin,
+        MAX(roughness) AS saturationMax,
+        MIN(roughness) AS surfaceMin,
+        MAX(roughness) AS surfaceMax,
+        MIN(event_density) AS densityMin,
+        MAX(event_density) AS densityMax,
+        MIN(release_time) AS ambienceMin,
+        MAX(release_time) AS ambienceMax,
+        MIN(stereo_width) AS stereoWidthMin,
+        MAX(stereo_width) AS stereoWidthMax,
+        MIN(-loudness) AS depthMin,
+        MAX(-loudness) AS depthMax,
         MIN(warmth) AS warmthMin,
         MAX(warmth) AS warmthMax,
         MIN(hardness) AS hardnessMin,
@@ -1005,12 +1283,62 @@ router.get('/sources/samples', async (req, res) => {
       FROM audio_features
     `).get() as Record<string, number | null>
 
+    const dimensionRanges: DimensionRanges = {
+      brightness: { min: normalizedStatsRaw.brightnessMin, max: normalizedStatsRaw.brightnessMax },
+      harmonicity: { min: normalizedStatsRaw.harmonicityMin, max: normalizedStatsRaw.harmonicityMax },
+      noisiness: { min: normalizedStatsRaw.noisinessMin, max: normalizedStatsRaw.noisinessMax },
+      attack: { min: normalizedStatsRaw.attackMin, max: normalizedStatsRaw.attackMax },
+      dynamics: { min: normalizedStatsRaw.dynamicsMin, max: normalizedStatsRaw.dynamicsMax },
+      saturation: { min: normalizedStatsRaw.saturationMin, max: normalizedStatsRaw.saturationMax },
+      surface: { min: normalizedStatsRaw.surfaceMin, max: normalizedStatsRaw.surfaceMax },
+      density: { min: normalizedStatsRaw.densityMin, max: normalizedStatsRaw.densityMax },
+      ambience: { min: normalizedStatsRaw.ambienceMin, max: normalizedStatsRaw.ambienceMax },
+      stereoWidth: { min: normalizedStatsRaw.stereoWidthMin, max: normalizedStatsRaw.stereoWidthMax },
+      depth: { min: normalizedStatsRaw.depthMin, max: normalizedStatsRaw.depthMax },
+    }
+
     const perceptualRanges: Record<'brightness' | 'noisiness' | 'warmth' | 'hardness' | 'sharpness', Range> = {
-      brightness: { min: perceptualStatsRaw.brightnessMin, max: perceptualStatsRaw.brightnessMax },
-      noisiness: { min: perceptualStatsRaw.noisinessMin, max: perceptualStatsRaw.noisinessMax },
-      warmth: { min: perceptualStatsRaw.warmthMin, max: perceptualStatsRaw.warmthMax },
-      hardness: { min: perceptualStatsRaw.hardnessMin, max: perceptualStatsRaw.hardnessMax },
-      sharpness: { min: perceptualStatsRaw.sharpnessMin, max: perceptualStatsRaw.sharpnessMax },
+      brightness: dimensionRanges.brightness,
+      noisiness: dimensionRanges.noisiness,
+      warmth: { min: normalizedStatsRaw.warmthMin, max: normalizedStatsRaw.warmthMax },
+      hardness: { min: normalizedStatsRaw.hardnessMin, max: normalizedStatsRaw.hardnessMax },
+      sharpness: { min: normalizedStatsRaw.sharpnessMin, max: normalizedStatsRaw.sharpnessMax },
+    }
+
+    const getNormalizedDimensions = (slice: typeof filteredSlices[number]) => {
+      const noisiness = slice.noisiness ?? slice.roughness ?? null
+      const depthRaw = typeof slice.loudness === 'number' ? -slice.loudness : null
+      return {
+        brightness: normalizeValue(slice.brightness, dimensionRanges.brightness),
+        harmonicity: normalizeValue(slice.harmonicPercussiveRatio, dimensionRanges.harmonicity),
+        noisiness: normalizeValue(noisiness, dimensionRanges.noisiness),
+        attack: normalizeValue(slice.hardness, dimensionRanges.attack),
+        dynamics: normalizeValue(slice.dynamicRange, dimensionRanges.dynamics),
+        saturation: normalizeValue(slice.roughness, dimensionRanges.saturation),
+        surface: normalizeValue(slice.roughness, dimensionRanges.surface),
+        density: normalizeValue(slice.eventDensity, dimensionRanges.density),
+        ambience: normalizeValue(slice.releaseTime, dimensionRanges.ambience),
+        stereoWidth: normalizeValue(slice.stereoWidth, dimensionRanges.stereoWidth),
+        depth: normalizeValue(depthRaw, dimensionRanges.depth),
+      }
+    }
+
+    const dimensionFilterEntries = Object.entries(dimensionFilters) as Array<[DimensionKey, Range]>
+    const hasDimensionFilters = dimensionFilterEntries.some(
+      ([, range]) => range.min !== null || range.max !== null
+    )
+    if (hasDimensionFilters) {
+      filteredSlices = filteredSlices.filter((slice) => {
+        const normalizedDimensions = getNormalizedDimensions(slice)
+        for (const [key, range] of dimensionFilterEntries) {
+          if (range.min === null && range.max === null) continue
+          const value = normalizedDimensions[key]
+          if (value === null) return false
+          if (range.min !== null && value < range.min) return false
+          if (range.max !== null && value > range.max) return false
+        }
+        return true
+      })
     }
 
     const result = filteredSlices.map(slice => ({
@@ -1032,6 +1360,8 @@ router.get('/sources/samples', async (req, res) => {
           sharpness: normalizeValue(slice.sharpness, perceptualRanges.sharpness),
         }
 
+        const dimensionNormalized = getNormalizedDimensions(slice)
+
         return {
           scale: derivedScale,
           sampleRate: slice.sampleRate,
@@ -1046,6 +1376,7 @@ router.get('/sources/samples', async (req, res) => {
           polyphony: slice.polyphony,
           pathDisplay,
           subjectiveNormalized,
+          dimensionNormalized,
         }
       })(),
       id: slice.id,
@@ -1082,6 +1413,15 @@ router.get('/sources/samples', async (req, res) => {
         artist: slice.trackArtist,
         album: slice.trackAlbum,
         year: slice.trackYear,
+        albumArtist: slice.trackAlbumArtist,
+        genre: slice.trackGenre,
+        composer: slice.trackComposer,
+        trackNumber: slice.trackTrackNumber,
+        discNumber: slice.trackDiscNumber,
+        trackComment: slice.trackComment,
+        musicalKey: slice.trackMusicalKey,
+        tagBpm: slice.trackTagBpm,
+        isrc: slice.trackIsrc,
       },
     }))
 
@@ -1096,9 +1436,9 @@ router.get('/sources/samples', async (req, res) => {
 })
 
 // Helper function to auto-tag a slice using audio analysis
-async function autoTagSlice(sliceId: number, audioPath: string, analysisLevel?: 'quick' | 'standard' | 'advanced'): Promise<void> {
+async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
   try {
-    const level = analysisLevel || 'advanced'
+    const level: 'advanced' = 'advanced'
     console.log(`Running audio analysis on slice ${sliceId} (level: ${level})...`)
 
     // Analyze audio with Python (Essentia + Librosa)
@@ -1185,6 +1525,23 @@ async function autoTagSlice(sliceId: number, audioPath: string, analysisLevel?: 
     // Don't throw - auto-tagging is optional
   }
 }
+
+// Get total sample count
+router.get('/slices/count', async (_req, res) => {
+  try {
+    const row = await db
+      .select({
+        total: sql<number>`cast(count(*) as integer)`,
+      })
+      .from(schema.slices)
+      .get()
+
+    res.json({ total: row?.total ?? 0 })
+  } catch (error) {
+    console.error('Error getting slice count:', error)
+    res.status(500).json({ error: 'Failed to get slice count' })
+  }
+})
 
 // Get ALL slices (for Samples browser)
 router.get('/slices', async (_req, res) => {
@@ -1318,11 +1675,10 @@ router.get('/tracks/:trackId/slices', async (req, res) => {
 // Create slice
 router.post('/tracks/:trackId/slices', async (req, res) => {
   const trackId = parseInt(req.params.trackId)
-  const { name, startTime, endTime, analysisLevel } = req.body as {
+  const { name, startTime, endTime } = req.body as {
     name: string
     startTime: number
     endTime: number
-    analysisLevel?: 'quick' | 'standard' | 'advanced'
   }
 
   if (!name || startTime === undefined || endTime === undefined) {
@@ -1381,7 +1737,7 @@ router.post('/tracks/:trackId/slices', async (req, res) => {
       inserted.filePath = slicePath
 
       // Auto-tag the slice with YAMNet (run in background)
-      autoTagSlice(inserted.id, slicePath, analysisLevel).catch(err => {
+      autoTagSlice(inserted.id, slicePath).catch(err => {
         console.error('Background auto-tagging failed:', err)
       })
     } catch (err) {
@@ -1614,6 +1970,173 @@ router.post('/slices/batch-download', async (req, res) => {
   }
 })
 
+// Batch convert slices to a target audio format
+router.post('/slices/batch-convert', async (req, res) => {
+  const { sliceIds, targetFormat: rawTargetFormat } = req.body as {
+    sliceIds?: number[]
+    targetFormat?: unknown
+  }
+
+  if (!Array.isArray(sliceIds) || sliceIds.length === 0) {
+    return res.status(400).json({ error: 'sliceIds array required' })
+  }
+
+  const targetFormat = normalizeConversionFormat(rawTargetFormat)
+  if (!targetFormat) {
+    return res.status(400).json({
+      error: `targetFormat must be one of: ${BATCH_CONVERSION_FORMATS.join(', ')}`,
+    })
+  }
+
+  const uniqueSliceIds = Array.from(
+    new Set(
+      sliceIds
+        .map((id) => Number.parseInt(String(id), 10))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    )
+  )
+
+  if (uniqueSliceIds.length === 0) {
+    return res.status(400).json({ error: 'sliceIds array required' })
+  }
+
+  try {
+    await ensureCoreDataDirs()
+
+    const slices = await db
+      .select({
+        id: schema.slices.id,
+        filePath: schema.slices.filePath,
+      })
+      .from(schema.slices)
+      .where(inArray(schema.slices.id, uniqueSliceIds))
+
+    if (slices.length === 0) {
+      return res.status(404).json({ error: 'No slices found for conversion' })
+    }
+
+    const orderById = new Map(uniqueSliceIds.map((id, index) => [id, index]))
+    const orderedSlices = [...slices].sort(
+      (a, b) => (orderById.get(a.id) ?? 0) - (orderById.get(b.id) ?? 0)
+    )
+
+    const results: Array<{
+      sliceId: number
+      success: boolean
+      skipped: boolean
+      outputPath?: string
+      format?: string | null
+      error?: string
+    }> = []
+
+    let converted = 0
+    let skipped = 0
+    let failed = 0
+
+    for (const slice of orderedSlices) {
+      const sourcePath = slice.filePath
+
+      if (!sourcePath) {
+        failed += 1
+        results.push({
+          sliceId: slice.id,
+          success: false,
+          skipped: false,
+          error: 'Slice file not found',
+        })
+        continue
+      }
+
+      const absoluteSourcePath = path.resolve(sourcePath)
+      try {
+        await fs.access(absoluteSourcePath)
+      } catch {
+        failed += 1
+        results.push({
+          sliceId: slice.id,
+          success: false,
+          skipped: false,
+          error: 'Slice file is missing on disk',
+        })
+        continue
+      }
+
+      if (inferFormatFromFilePath(sourcePath) === targetFormat) {
+        skipped += 1
+        results.push({
+          sliceId: slice.id,
+          success: true,
+          skipped: true,
+          format: targetFormat,
+        })
+        continue
+      }
+
+      const outputBase = `${path.parse(absoluteSourcePath).name}-${targetFormat}-${randomUUID().slice(0, 8)}`
+      const outputPath = path.join(SLICES_DIR, `${outputBase}.${targetFormat}`)
+
+      try {
+        await convertAudioFile(absoluteSourcePath, outputPath, targetFormat)
+
+        const fileMetadata = await getAudioFileMetadata(outputPath).catch(() => null)
+        const modifiedAt = new Date().toISOString()
+
+        await db
+          .update(schema.slices)
+          .set({
+            filePath: outputPath,
+            sampleModified: 1,
+            sampleModifiedAt: modifiedAt,
+          })
+          .where(eq(schema.slices.id, slice.id))
+
+        await db
+          .update(schema.audioFeatures)
+          .set({
+            sampleRate: fileMetadata?.sampleRate ?? undefined,
+            channels: fileMetadata?.channels ?? undefined,
+            fileFormat: fileMetadata?.format ?? targetFormat,
+            sourceMtime: fileMetadata?.modifiedAt ?? undefined,
+            sourceCtime: fileMetadata?.createdAt ?? undefined,
+          })
+          .where(eq(schema.audioFeatures.sliceId, slice.id))
+
+        await unlinkManagedPath(sourcePath)
+
+        converted += 1
+        results.push({
+          sliceId: slice.id,
+          success: true,
+          skipped: false,
+          outputPath,
+          format: fileMetadata?.format ?? targetFormat,
+        })
+      } catch (error) {
+        await unlinkManagedPath(outputPath)
+        failed += 1
+        results.push({
+          sliceId: slice.id,
+          success: false,
+          skipped: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        })
+      }
+    }
+
+    res.json({
+      targetFormat,
+      total: orderedSlices.length,
+      converted,
+      skipped,
+      failed,
+      results,
+    })
+  } catch (error) {
+    console.error('Error batch converting slices:', error)
+    res.status(500).json({ error: 'Failed to batch convert slices' })
+  }
+})
+
 // Stream slice audio (for playback)
 router.get('/slices/:id/download', async (req, res) => {
   const id = parseInt(req.params.id)
@@ -1805,6 +2328,16 @@ router.get('/slices/features', async (_req, res) => {
         transientSpectralFlatness: schema.audioFeatures.transientSpectralFlatness,
         sampleTypeConfidence: schema.audioFeatures.sampleTypeConfidence,
         polyphony: schema.audioFeatures.polyphony,
+        // Fields needed for client-side filtering in the space view
+        fundamentalFrequency: schema.audioFeatures.fundamentalFrequency,
+        envelopeType: schema.audioFeatures.envelopeType,
+        brightness: schema.audioFeatures.brightness,
+        warmth: schema.audioFeatures.warmth,
+        hardness: schema.audioFeatures.hardness,
+        genrePrimary: schema.audioFeatures.genrePrimary,
+        instrumentType: schema.audioFeatures.instrumentType,
+        sliceCreatedAt: schema.slices.createdAt,
+        sourceCtime: schema.audioFeatures.sourceCtime,
       })
       .from(schema.slices)
       .innerJoin(schema.audioFeatures, eq(schema.slices.id, schema.audioFeatures.sliceId))
@@ -1937,12 +2470,13 @@ router.get('/slices/:id/features', async (req, res) => {
       eventCount: feature.eventCount,
       eventDensity: feature.eventDensity,
       chromaprintFingerprint: feature.chromaprintFingerprint,
+      similarityHash: feature.similarityHash,
       temporalCentroid: feature.temporalCentroid,
       crestFactor: feature.crestFactor,
       transientSpectralCentroid: feature.transientSpectralCentroid,
       transientSpectralFlatness: feature.transientSpectralFlatness,
       sampleTypeConfidence: feature.sampleTypeConfidence,
-      analysisLevel: feature.analysisLevel,
+      analysisLevel: 'advanced',
     })
   } catch (error) {
     console.error('Error fetching audio features for slice:', error)
@@ -2001,7 +2535,7 @@ router.post('/slices/batch-delete', async (req, res) => {
       try {
         // Delete file if it exists
         if (slice.filePath) {
-          await fs.unlink(slice.filePath).catch(() => {})
+          await unlinkManagedPath(slice.filePath)
         }
 
         // Delete from database
@@ -2029,10 +2563,33 @@ router.post('/slices/batch-delete', async (req, res) => {
 
 // POST /api/slices/batch-reanalyze - Re-analyze all or selected slices
 router.post('/slices/batch-reanalyze', async (req, res) => {
+  const abortController = new AbortController()
+  let cancellationRequested = false
+
+  const requestCancellation = () => {
+    if (cancellationRequested) return
+    cancellationRequested = true
+    abortController.abort()
+    console.log('[reanalyze] Cancellation requested by client')
+  }
+
+  const handleRequestClose = () => {
+    if (!res.writableEnded) {
+      requestCancellation()
+    }
+  }
+
+  const isCancellationError = (error: unknown): boolean => (
+    error instanceof Error &&
+    (error.message === AUDIO_ANALYSIS_CANCELLED_ERROR || error.message === BATCH_REANALYZE_CANCELLED_ERROR)
+  )
+
+  req.on('aborted', requestCancellation)
+  req.on('close', handleRequestClose)
+
   try {
-    const { sliceIds, analysisLevel, concurrency, includeFilenameTags } = req.body as {
+    const { sliceIds, concurrency, includeFilenameTags } = req.body as {
       sliceIds?: number[]
-      analysisLevel?: 'quick' | 'standard' | 'advanced'
       concurrency?: number
       includeFilenameTags?: boolean
     }
@@ -2100,11 +2657,14 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
 
     // Process in chunks
     for (let i = 0; i < slicesToAnalyze.length; i += CHUNK_SIZE) {
+      if (cancellationRequested) break
       const chunk = slicesToAnalyze.slice(i, i + CHUNK_SIZE)
 
       await Promise.all(
         chunk.map(async (slice) => {
           try {
+            if (cancellationRequested) return
+
             if (!slice.filePath) {
               results.push({
                 sliceId: slice.id,
@@ -2148,9 +2708,17 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
                 )
               )
             const beforeAutoTags = beforeAutoTagRows.map((row) => row.name.toLowerCase())
+            if (cancellationRequested) {
+              throw new Error(BATCH_REANALYZE_CANCELLED_ERROR)
+            }
 
             // Re-analyze the audio
-            const features = await analyzeAudioFeatures(filePath, analysisLevel)
+            const features = await analyzeAudioFeatures(filePath, 'advanced', {
+              signal: abortController.signal,
+            })
+            if (cancellationRequested) {
+              throw new Error(BATCH_REANALYZE_CANCELLED_ERROR)
+            }
             const fileMetadata = await getAudioFileMetadata(filePath).catch(() => null)
             const enrichedFeatures = {
               ...features,
@@ -2161,25 +2729,28 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
               sourceCtime: fileMetadata?.createdAt ?? undefined,
             }
             const suggestedAutoTags = Array.from(
-              new Set((features.suggestedTags || []).map((tag: string) => tag.toLowerCase()))
+              new Set(featuresToTags(features).map((tag: string) => tag.toLowerCase()))
             )
 
             // Store updated features
             await storeAudioFeatures(slice.id, enrichedFeatures)
+            if (cancellationRequested) {
+              throw new Error(BATCH_REANALYZE_CANCELLED_ERROR)
+            }
 
             // Clear existing auto-generated tags before adding new ones
             // Keep only filename-category tags (user-created from filenames)
             await db.run(sql`
               DELETE FROM slice_tags WHERE slice_id = ${slice.id}
               AND tag_id IN (
-                SELECT id FROM tags WHERE category IN (${AUTO_REANALYSIS_TAG_CATEGORIES[0]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[1]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[2]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[3]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[4]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[5]})
+                SELECT id FROM tags WHERE category IN (${AUTO_REANALYSIS_TAG_CATEGORIES[0]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[1]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[2]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[3]})
               )
             `)
 
-            // Update tags if suggestedTags exist
-            if (features.suggestedTags && features.suggestedTags.length > 0) {
+            // Update tags if generated tags exist
+            if (suggestedAutoTags.length > 0) {
               // Get or create tags
-              const tagPromises = features.suggestedTags.map(async (tagName: string) => {
+              const tagPromises = suggestedAutoTags.map(async (tagName: string) => {
                 const existingTag = await db
                   .select()
                   .from(schema.tags)
@@ -2300,6 +2871,9 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
               })
               .where(eq(schema.slices.id, slice.id))
           } catch (error) {
+            if (cancellationRequested && isCancellationError(error)) {
+              return
+            }
             console.error(`Error re-analyzing slice ${slice.id}:`, error)
             results.push({
               sliceId: slice.id,
@@ -2314,6 +2888,10 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
       if (i + CHUNK_SIZE < slicesToAnalyze.length) {
         await new Promise((resolve) => setTimeout(resolve, 100))
       }
+    }
+
+    if (cancellationRequested || res.writableEnded) {
+      return
     }
 
     const analyzed = results.filter((r) => r.success).length
@@ -2331,8 +2909,14 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
       results,
     })
   } catch (error) {
+    if (cancellationRequested || res.writableEnded) {
+      return
+    }
     console.error('Error batch re-analyzing slices:', error)
     res.status(500).json({ error: 'Failed to batch re-analyze slices' })
+  } finally {
+    req.off('aborted', requestCancellation)
+    req.off('close', handleRequestClose)
   }
 })
 
@@ -2373,7 +2957,7 @@ function buildScalarFeatureVector(f: Record<string, any>): number[] | null {
   push(f.attackTime, 1, 1)
   push(f.kurtosis, 50, 0.5)
 
-  // Perceptual / Phase-1 features (0-1 normalised, present after standard analysis)
+  // Perceptual / Phase-1 features (0-1 normalised, present after advanced analysis)
   push(f.brightness, 1, 2)
   push(f.warmth, 1, 2)
   push(f.hardness, 1, 1.5)
@@ -2525,6 +3109,7 @@ router.get('/slices/duplicates', async (_req, res) => {
       .select({
         sliceId: schema.slices.id,
         chromaprintFingerprint: schema.audioFeatures.chromaprintFingerprint,
+        similarityHash: schema.audioFeatures.similarityHash,
         filePath: schema.slices.filePath,
         startTime: schema.slices.startTime,
         endTime: schema.slices.endTime,
@@ -2538,15 +3123,33 @@ router.get('/slices/duplicates', async (_req, res) => {
       return res.json({ groups: [], total: 0 })
     }
 
+    // Degenerate chromaprint fingerprint returned for audio too short for meaningful analysis.
+    // Treat it as missing so we fall through to content hashing.
+    const DEGENERATE_FINGERPRINT = 'AQAAAA'
+
     const exactGroups = new Map<string, Set<number>>()
     const fileIdentityGroups = new Map<string, Set<number>>()
+    const contentHashGroups = new Map<string, Set<number>>()
+
+    // Collect slices that need content hashing (missing persisted hash)
+    const needsHash: Array<{ sliceId: number; filePath: string }> = []
+    const hashBackfills: Array<{ sliceId: number; hash: string }> = []
 
     for (const row of allRows) {
-      if (row.chromaprintFingerprint) {
-        if (!exactGroups.has(row.chromaprintFingerprint)) {
-          exactGroups.set(row.chromaprintFingerprint, new Set<number>())
+      const fp = row.chromaprintFingerprint
+      if (fp && fp !== DEGENERATE_FINGERPRINT) {
+        if (!exactGroups.has(fp)) {
+          exactGroups.set(fp, new Set<number>())
         }
-        exactGroups.get(row.chromaprintFingerprint)!.add(row.sliceId)
+        exactGroups.get(fp)!.add(row.sliceId)
+      }
+
+      const storedHash = row.similarityHash?.trim()
+      if (storedHash) {
+        if (!contentHashGroups.has(storedHash)) {
+          contentHashGroups.set(storedHash, new Set<number>())
+        }
+        contentHashGroups.get(storedHash)!.add(row.sliceId)
       }
 
       const identityPath = row.trackOriginalPath || row.filePath
@@ -2562,23 +3165,53 @@ router.get('/slices/duplicates', async (_req, res) => {
         }
         fileIdentityGroups.get(identityKey)!.add(row.sliceId)
       }
+
+      // Queue for content hashing if we don't already have a persisted hash.
+      if (!storedHash && row.filePath) {
+        needsHash.push({ sliceId: row.sliceId, filePath: row.filePath })
+      }
     }
+
+    // Compute SHA256 of slice file contents for exact byte-level duplicate detection.
+    // This catches re-imports of the same file regardless of path or name.
+    await Promise.all(needsHash.map(async ({ sliceId, filePath }) => {
+      try {
+        const buf = await fs.readFile(filePath)
+        const hash = createHash('sha256').update(buf).digest('hex')
+        if (!contentHashGroups.has(hash)) {
+          contentHashGroups.set(hash, new Set<number>())
+        }
+        contentHashGroups.get(hash)!.add(sliceId)
+        hashBackfills.push({ sliceId, hash })
+      } catch {
+        // File missing or unreadable — skip
+      }
+    }))
+
+    // Persist computed hashes so subsequent scans are fast and don't depend on file reads.
+    await Promise.all(hashBackfills.map(({ sliceId, hash }) =>
+      db
+        .update(schema.audioFeatures)
+        .set({ similarityHash: hash })
+        .where(eq(schema.audioFeatures.sliceId, sliceId))
+    ))
 
     const dedupedGroups = new Map<string, {
       sliceIds: number[]
-      matchType: 'exact' | 'file'
+      matchType: 'exact' | 'file' | 'content'
       hashSimilarity: number
     }>()
 
-    const addGroup = (sliceIdSet: Set<number>, matchType: 'exact' | 'file') => {
+    const addGroup = (sliceIdSet: Set<number>, matchType: 'exact' | 'file' | 'content') => {
       const sliceIds = Array.from(sliceIdSet).sort((a, b) => a - b)
       if (sliceIds.length <= 1) return
 
       const signature = sliceIds.join(',')
       const existing = dedupedGroups.get(signature)
 
-      // Prefer exact fingerprint classification when both strategies match same ids.
-      if (!existing || (existing.matchType !== 'exact' && matchType === 'exact')) {
+      // Priority: exact fingerprint > content hash > file path identity
+      const priority = { exact: 2, content: 1, file: 0 }
+      if (!existing || priority[matchType] > priority[existing.matchType]) {
         dedupedGroups.set(signature, {
           sliceIds,
           matchType,
@@ -2588,6 +3221,7 @@ router.get('/slices/duplicates', async (_req, res) => {
     }
 
     for (const set of exactGroups.values()) addGroup(set, 'exact')
+    for (const set of contentHashGroups.values()) addGroup(set, 'content')
     for (const set of fileIdentityGroups.values()) addGroup(set, 'file')
 
     const duplicateGroups = Array.from(dedupedGroups.values())
@@ -2605,13 +3239,53 @@ router.get('/slices/duplicates', async (_req, res) => {
         id: schema.slices.id,
         name: schema.slices.name,
         filePath: schema.slices.filePath,
+        favorite: schema.slices.favorite,
+        createdAt: schema.slices.createdAt,
         trackTitle: schema.tracks.title,
+        sampleRate: schema.audioFeatures.sampleRate,
+        channels: schema.audioFeatures.channels,
+        format: schema.audioFeatures.fileFormat,
       })
       .from(schema.slices)
       .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .leftJoin(schema.audioFeatures, eq(schema.slices.id, schema.audioFeatures.sliceId))
       .where(inArray(schema.slices.id, Array.from(allDuplicateIds)))
 
-    const sliceMap = new Map(slices.map(s => [s.id, s]))
+    const duplicateIdList = Array.from(allDuplicateIds)
+    const tagCountsResult = duplicateIdList.length > 0
+      ? await db
+          .select({
+            sliceId: schema.sliceTags.sliceId,
+            count: sql<number>`cast(count(*) as integer)`,
+          })
+          .from(schema.sliceTags)
+          .where(inArray(schema.sliceTags.sliceId, duplicateIdList))
+          .groupBy(schema.sliceTags.sliceId)
+      : []
+
+    const folderCountsResult = duplicateIdList.length > 0
+      ? await db
+          .select({
+            sliceId: schema.folderSlices.sliceId,
+            count: sql<number>`cast(count(*) as integer)`,
+          })
+          .from(schema.folderSlices)
+          .where(inArray(schema.folderSlices.sliceId, duplicateIdList))
+          .groupBy(schema.folderSlices.sliceId)
+      : []
+
+    const tagCountBySliceId = new Map(tagCountsResult.map((row) => [row.sliceId, Number(row.count) || 0]))
+    const folderCountBySliceId = new Map(folderCountsResult.map((row) => [row.sliceId, Number(row.count) || 0]))
+
+    const sliceMap = new Map(slices.map((s) => [
+      s.id,
+      {
+        ...s,
+        favorite: s.favorite === 1,
+        tagsCount: tagCountBySliceId.get(s.id) ?? 0,
+        folderCount: folderCountBySliceId.get(s.id) ?? 0,
+      },
+    ]))
 
     const groups = duplicateGroups
       .map(g => ({

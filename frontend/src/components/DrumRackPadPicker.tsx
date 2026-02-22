@@ -60,7 +60,7 @@ export function DrumRackPadPicker({ sample, onClose }: DrumRackPadPickerProps) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center"
+      className="fixed inset-0 bg-surface-base/60 backdrop-blur-sm z-50 flex items-center justify-center"
       onClick={onClose}
     >
       <div

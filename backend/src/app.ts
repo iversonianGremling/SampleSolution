@@ -13,12 +13,25 @@ import foldersRouter from './routes/folders.js'
 import collectionsRouter from './routes/collections.js'
 import importRouter from './routes/import.js'
 import libraryRouter from './routes/library.js'
+import spotifyRouter from './routes/spotify.js'
+import soundcloudRouter from './routes/soundcloud.js'
+import toolsRouter from './routes/tools.js'
+import backupRouter from './routes/backup.js'
+import { startBackupScheduler } from './services/backup.js'
+
+const TRUTHY = new Set(['1', 'true', 'yes', 'on'])
+
+function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (!value || value.trim() === '') return fallback
+  return TRUTHY.has(value.trim().toLowerCase())
+}
 
 export function createApp(options: { dataDir?: string; frontendUrl?: string; sessionSecret?: string } = {}) {
   const app = express()
   const DATA_DIR = options.dataDir || process.env.DATA_DIR || './data'
   const FRONTEND_URL = options.frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'
   const SESSION_SECRET = options.sessionSecret || process.env.SESSION_SECRET || 'dev-secret-change-me'
+  const SPOTIFY_IMPORT_ENABLED = parseBooleanEnv(process.env.ENABLE_SPOTIFY_IMPORT, true)
 
   // Ensure data directories exist
   const dirs = ['audio', 'slices', 'peaks', 'uploads']
@@ -62,6 +75,12 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
   app.use('/api', foldersRouter)
   app.use('/api', collectionsRouter)
   app.use('/api', libraryRouter)
+  if (SPOTIFY_IMPORT_ENABLED) {
+    app.use('/api/spotify', spotifyRouter)
+  }
+  app.use('/api/soundcloud', soundcloudRouter)
+  app.use('/api/tools', toolsRouter)
+  app.use('/api', backupRouter)
 
   // Health check
   app.get('/api/health', (req, res) => {
@@ -84,6 +103,9 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
       }
     })
   })
+
+  // Start backup scheduler (checks every 5 min for due scheduled backups)
+  startBackupScheduler()
 
   return app
 }

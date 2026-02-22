@@ -16,6 +16,16 @@ export interface Track {
   artist?: string | null
   album?: string | null
   year?: number | null
+  albumArtist?: string | null
+  genre?: string | null
+  composer?: string | null
+  trackNumber?: number | null
+  discNumber?: number | null
+  trackComment?: string | null
+  musicalKey?: string | null
+  tagBpm?: number | null
+  isrc?: string | null
+  metadataRaw?: string | null
   createdAt: string
   tags: Tag[]
 }
@@ -62,6 +72,19 @@ export interface Slice {
     warmth?: number | null
     hardness?: number | null
     sharpness?: number | null
+  } | null
+  dimensionNormalized?: {
+    brightness?: number | null
+    harmonicity?: number | null
+    noisiness?: number | null
+    attack?: number | null
+    dynamics?: number | null
+    saturation?: number | null
+    surface?: number | null
+    density?: number | null
+    ambience?: number | null
+    stereoWidth?: number | null
+    depth?: number | null
   } | null
 }
 
@@ -148,7 +171,7 @@ export interface ImportResult {
   failed: { url: string; error: string }[]
 }
 
-export type AnalysisLevel = 'quick' | 'standard' | 'advanced'
+export type AnalysisLevel = 'advanced'
 
 export type NormalizationMethod = 'minmax' | 'robust' | 'zscore'
 
@@ -248,6 +271,7 @@ export interface AudioFeatures {
   polyphony?: number | null
   // Phase 6: Audio Fingerprinting & Similarity Detection
   chromaprintFingerprint?: string | null
+  similarityHash?: string | null
   // Metadata
   analysisLevel?: AnalysisLevel | null
 }
@@ -354,6 +378,11 @@ export interface AudioFeaturesWithMetadata extends AudioFeatures {
   track: { title: string; youtubeId: string }
   startTime: number
   endTime: number
+  instrumentPrimary?: string | null
+  instrumentType?: string | null
+  dateAdded?: string | null
+  dateCreated?: string | null
+  dateModified?: string | null
 }
 
 // Sources feature types
@@ -371,10 +400,19 @@ export interface FolderNode {
   sampleCount: number
 }
 
+export interface LibrarySourceNode {
+  id: string
+  name: string
+  sampleCount: number
+  collectionCount?: number
+  importedAt?: string | null
+}
+
 export interface SourceTree {
   youtube: YouTubeSourceNode[]
   local: { count: number }
   folders: FolderNode[]
+  libraries?: LibrarySourceNode[]
 }
 
 export type SourceScope =
@@ -383,6 +421,7 @@ export type SourceScope =
   | { type: 'youtube-video'; trackId: number }
   | { type: 'local' }
   | { type: 'folder'; path: string }
+  | { type: 'library'; libraryId: string }
   | { type: 'my-folder'; folderId: number }
   | { type: 'collection'; collectionId: number }
 
@@ -399,6 +438,15 @@ export interface SliceWithTrackExtended extends Slice {
     artist?: string | null
     album?: string | null
     year?: number | null
+    albumArtist?: string | null
+    genre?: string | null
+    composer?: string | null
+    trackNumber?: number | null
+    discNumber?: number | null
+    trackComment?: string | null
+    musicalKey?: string | null
+    tagBpm?: number | null
+    isrc?: string | null
   }
 }
 

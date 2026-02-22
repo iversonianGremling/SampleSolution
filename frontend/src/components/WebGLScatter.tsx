@@ -10,6 +10,8 @@ interface WebGLScatterProps {
   points: SamplePoint[]
   onPointHover: (point: SamplePoint | null) => void
   onPointClick: (point: SamplePoint) => void
+  getPointPlaybackRate?: (point: SamplePoint) => number
+  preparePointPlayback?: (point: SamplePoint) => Promise<{ url: string; playbackRate: number }>
   onSelectionChange?: (selectedIds: number[]) => void
   onPointSelect?: (point: SamplePoint | null) => void
   selectedId?: number | null
@@ -228,6 +230,8 @@ export function WebGLScatter({
   points,
   onPointHover,
   onPointClick,
+  getPointPlaybackRate,
+  preparePointPlayback,
   onSelectionChange,
   onPointSelect,
   selectedId,
@@ -242,8 +246,10 @@ export function WebGLScatter({
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [resizeCounter, setResizeCounter] = useState(0)
   const [actualContainerSize, setActualContainerSize] = useState({ width, height })
+  const [appReadyVersion, setAppReadyVersion] = useState(0)
   const [refreshCounter, setRefreshCounter] = useState(0)
   const audioManagerRef = useRef<AudioManager>(AudioManager.getInstance())
+  const hoverPlaybackRequestRef = useRef(0)
 
   // Animation refs
   const animationStateRef = useRef<Map<number, PointAnimationState>>(new Map())
@@ -253,6 +259,8 @@ export function WebGLScatter({
   const lastMouseEventRef = useRef<MouseEvent | null>(null)
   const previousResizeCountRef = useRef<number>(0)
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const initialWidthRef = useRef(width)
+  const initialHeightRef = useRef(height)
 
   // Dirty tracking for optimization - never overdraw
   const previousHoverRef = useRef<number | null>(null)
@@ -278,16 +286,36 @@ export function WebGLScatter({
     [actualContainerSize]
   )
 
+  const resizeRenderer = useCallback((targetWidth: number, targetHeight: number) => {
+    const app = appRef.current
+    if (!app) return
+
+    const safeWidth = Math.max(1, Math.round(targetWidth))
+    const safeHeight = Math.max(1, Math.round(targetHeight))
+    const rendererWidth = Math.round(app.renderer.width)
+    const rendererHeight = Math.round(app.renderer.height)
+
+    if (rendererWidth === safeWidth && rendererHeight === safeHeight) return
+
+    setActualContainerSize((prev) =>
+      prev.width === safeWidth && prev.height === safeHeight ? prev : { width: safeWidth, height: safeHeight }
+    )
+    app.renderer.resize(safeWidth, safeHeight)
+    setResizeCounter((prev) => prev + 1)
+    app.render()
+  }, [])
+
   // Initialize PIXI application
   useEffect(() => {
-    if (!containerRef.current || width <= 0 || height <= 0) return
+    if (!containerRef.current) return
+    let isDisposed = false
 
     const initApp = async () => {
       try {
         // Get actual container dimensions
         const rect = containerRef.current!.getBoundingClientRect()
-        const containerWidth = Math.round(rect.width)
-        const containerHeight = Math.round(rect.height)
+        const containerWidth = Math.max(1, Math.round(rect.width) || initialWidthRef.current || 1)
+        const containerHeight = Math.max(1, Math.round(rect.height) || initialHeightRef.current || 1)
 
         // Debug: test raw WebGL context creation
         const testCanvas = document.createElement('canvas')
@@ -298,9 +326,6 @@ export function WebGLScatter({
           console.log('[WebGLScatter] Renderer:', dbg ? testGl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : testGl.getParameter(testGl.RENDERER))
         }
         console.log('[WebGLScatter] Container size:', containerWidth, 'x', containerHeight)
-
-        // Update state with actual container size
-        setActualContainerSize({ width: containerWidth, height: containerHeight })
 
         const app = new PIXI.Application()
         const dpr = Math.min(window.devicePixelRatio || 1, 2) // Cap at 2x for performance
@@ -318,6 +343,11 @@ export function WebGLScatter({
         })
         console.log('[WebGLScatter] PixiJS init SUCCESS, renderer type:', app.renderer.type)
 
+        if (isDisposed) {
+          app.destroy(true, { children: true })
+          return
+        }
+
         if (containerRef.current && !appRef.current) {
           const canvas = app.canvas as HTMLCanvasElement
           canvas.style.display = 'block'
@@ -331,6 +361,9 @@ export function WebGLScatter({
           const pointsContainer = new PIXI.Container()
           app.stage.addChild(pointsContainer)
           pointsContainerRef.current = pointsContainer
+          setAppReadyVersion((prev) => prev + 1)
+          setActualContainerSize({ width: containerWidth, height: containerHeight })
+          setResizeCounter((prev) => prev + 1)
         }
       } catch (error) {
         console.error('Failed to initialize PixiJS:', error)
@@ -349,36 +382,32 @@ export function WebGLScatter({
     initApp()
 
     return () => {
+      isDisposed = true
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current)
       }
+      animationStateRef.current.clear()
+      pointSpritesRef.current.clear()
+      previousPointsRef.current = []
+      previousResizeCountRef.current = 0
       if (appRef.current) {
         appRef.current.destroy(true, { children: true })
         appRef.current = null
         pointsContainerRef.current = null
       }
     }
-  }, [width, height])
+  }, [])
 
   // Update canvas size when dimensions change (with debounce)
   useEffect(() => {
-    if (!appRef.current || width <= 0 || height <= 0) return
+    if (width <= 0 || height <= 0) return
 
     const timer = setTimeout(() => {
-      const app = appRef.current
-      if (!app) return
-
-      // Update renderer size (don't change resolution)
-      app.renderer.resize(width, height)
-
-      // Trigger re-render of all points with new coordinate system
-      setResizeCounter((prev) => prev + 1)
-
-      app.render()
+      resizeRenderer(width, height)
     }, 100) // Debounce resize updates
 
     return () => clearTimeout(timer)
-  }, [width, height])
+  }, [appReadyVersion, width, height, resizeRenderer])
 
   // Observe container size changes and trigger PIXI rerender on grace period
   useEffect(() => {
@@ -400,16 +429,7 @@ export function WebGLScatter({
         const newHeight = Math.round(rect.height)
 
         if (newWidth > 0 && newHeight > 0) {
-          // Update actual container size state (triggers transform recalculation)
-          setActualContainerSize({ width: newWidth, height: newHeight })
-
-          // Update renderer size
-          app.renderer.resize(newWidth, newHeight)
-
-          // Trigger re-render of all points with new coordinate system
-          setResizeCounter((prev) => prev + 1)
-
-          app.render()
+          resizeRenderer(newWidth, newHeight)
         }
 
         resizeTimerRef.current = null
@@ -424,7 +444,7 @@ export function WebGLScatter({
         clearTimeout(resizeTimerRef.current)
       }
     }
-  }, [])
+  }, [resizeRenderer])
 
   // Check if cursor is over a menu element
   const isOverMenu = useCallback((): boolean => {
@@ -456,10 +476,24 @@ export function WebGLScatter({
       }
       // Only play if cursor is not over a menu element
       if (!isOverMenu()) {
-        audioManager.play(point.id, `/api/slices/${point.id}/download`, { volume: 1 })
+        if (preparePointPlayback) {
+          const requestId = ++hoverPlaybackRequestRef.current
+          void (async () => {
+            try {
+              const { url, playbackRate } = await preparePointPlayback(point)
+              if (requestId !== hoverPlaybackRequestRef.current) return
+              audioManager.play(point.id, url, { volume: 1, playbackRate })
+            } catch (error) {
+              console.error('Failed to prepare hover preview playback:', error)
+            }
+          })()
+          return
+        }
+        const playbackRate = getPointPlaybackRate?.(point)
+        audioManager.play(point.id, `/api/slices/${point.id}/download`, { volume: 1, playbackRate })
       }
     },
-    [isOverMenu]
+    [getPointPlaybackRate, isOverMenu, preparePointPlayback]
   )
 
   // Track mouse position for menu detection
@@ -757,6 +791,17 @@ export function WebGLScatter({
     let currentHoveredId: number | null = null
 
     const handlePointerMove = (event: PIXI.FederatedPointerEvent) => {
+      // Ignore scatter hover interactions while cursor is over UI overlays.
+      if (isOverMenu()) {
+        if (currentHoveredId !== null) {
+          hoverPlaybackRequestRef.current += 1
+          currentHoveredId = null
+          setHoveredId(null)
+          onPointHover(null)
+        }
+        return
+      }
+
       // Get mouse position in canvas space (already accounts for DPR)
       const mouseX = event.global.x
       const mouseY = event.global.y
@@ -788,6 +833,7 @@ export function WebGLScatter({
           playAudio(data.point)
         }
       } else if (closestPointId === null && currentHoveredId !== null) {
+        hoverPlaybackRequestRef.current += 1
         currentHoveredId = null
         setHoveredId(null)
         onPointHover(null)
@@ -796,6 +842,7 @@ export function WebGLScatter({
 
     const handlePointerTap = () => {
       if (currentHoveredId !== null) {
+        hoverPlaybackRequestRef.current += 1
         const data = pointSpritesRef.current.get(currentHoveredId)
         if (data) {
           audioManagerRef.current.stopAll()
@@ -815,7 +862,7 @@ export function WebGLScatter({
       container.off('pointermove', handlePointerMove)
       container.off('pointertap', handlePointerTap)
     }
-  }, [actualContainerSize, onPointHover, onPointClick, onPointSelect, playAudio, selectedIds])
+  }, [actualContainerSize, isOverMenu, onPointHover, onPointClick, onPointSelect, playAudio, selectedIds])
 
   // Update visuals when hover/selection changes (dirty tracking - never overdraw)
   useEffect(() => {
@@ -872,6 +919,7 @@ export function WebGLScatter({
   // Cleanup audio on unmount
   useEffect(() => {
     return () => {
+      hoverPlaybackRequestRef.current += 1
       audioManagerRef.current.stopAll()
     }
   }, [])

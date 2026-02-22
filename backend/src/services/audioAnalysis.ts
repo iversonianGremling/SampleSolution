@@ -21,7 +21,7 @@ const PYTHON_EXECUTABLE = process.env.PYTHON_PATH || VENV_PYTHON
 /**
  * Analysis level type
  */
-export type AnalysisLevel = 'quick' | 'standard' | 'advanced'
+export type AnalysisLevel = 'advanced'
 
 /**
  * Audio features extracted from analysis
@@ -131,6 +131,10 @@ export interface AudioFeatures {
     confidence: number
   }>
 
+  // Phase 6: Audio Fingerprinting & Similarity Detection
+  chromaprintFingerprint?: string
+  similarityHash?: string
+
   // New analysis features
   temporalCentroid?: number
   crestFactor?: number
@@ -158,24 +162,34 @@ export interface AnalysisError {
   details?: string
 }
 
+export const AUDIO_ANALYSIS_CANCELLED_ERROR = 'Audio analysis canceled'
+
+export interface AnalyzeAudioOptions {
+  signal?: AbortSignal
+}
+
 /**
  * Analyze audio file using Python script (Essentia + Librosa)
  * Spawns Python process and parses JSON output
  */
 export async function analyzeAudioFeatures(
   audioPath: string,
-  analysisLevel: AnalysisLevel = 'standard'
+  analysisLevel: AnalysisLevel = 'advanced',
+  options: AnalyzeAudioOptions = {}
 ): Promise<AudioFeatures> {
   return new Promise((resolve, reject) => {
-    // Adjust timeout based on analysis level
-    // Advanced mode uses ML models (YAMNet) which require more time
-    // First run needs extra time for model download (~60-90s) + analysis (~60-90s)
-    const timeoutMs = analysisLevel === 'advanced' ? 300000 : analysisLevel === 'quick' ? 30000 : 60000
+    const { signal } = options
+    if (signal?.aborted) {
+      reject(new Error(AUDIO_ANALYSIS_CANCELLED_ERROR))
+      return
+    }
+
+    // Advanced mode uses ML models (YAMNet) which require more time.
+    // First run needs extra time for model download (~60-90s) + analysis (~60-90s).
+    const timeoutMs = 300000
 
     const args = [PYTHON_SCRIPT, audioPath]
-    if (analysisLevel !== 'standard') {
-      args.push('--level', analysisLevel)
-    }
+    args.push('--level', analysisLevel)
 
     // Pass original filename for filename-based detection
     const basename = path.basename(audioPath)
@@ -186,9 +200,50 @@ export async function analyzeAudioFeatures(
       stdio: ['ignore', 'pipe', 'pipe'], // Explicitly pipe stdout/stderr
     })
 
+    let didAbort = false
+    let settled = false
     let stdout = ''
     let stderr = ''
     let pythonError = ''
+
+    const cleanupAbortListener = () => {
+      if (signal) {
+        signal.removeEventListener('abort', onAbort)
+      }
+    }
+
+    const finishReject = (error: Error) => {
+      if (settled) return
+      settled = true
+      cleanupAbortListener()
+      reject(error)
+    }
+
+    const finishResolve = (value: AudioFeatures) => {
+      if (settled) return
+      settled = true
+      cleanupAbortListener()
+      resolve(value)
+    }
+
+    const onAbort = () => {
+      if (didAbort) return
+      didAbort = true
+      if (!proc.killed) {
+        proc.kill('SIGTERM')
+      }
+
+      const killTimer = setTimeout(() => {
+        if (!proc.killed) {
+          proc.kill('SIGKILL')
+        }
+      }, 2000)
+      killTimer.unref?.()
+    }
+
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
 
     proc.stdout.on('data', (data) => {
       const chunk = data.toString()
@@ -243,6 +298,10 @@ export async function analyzeAudioFeatures(
     })
 
     proc.on('close', (code, signal) => {
+      if (didAbort || options.signal?.aborted) {
+        finishReject(new Error(AUDIO_ANALYSIS_CANCELLED_ERROR))
+        return
+      }
 
       if (code !== 0) {
         // Process killed by signal (OOM, timeout, etc.)
@@ -251,7 +310,7 @@ export async function analyzeAudioFeatures(
             : signal === 'SIGKILL' ? 'process was killed (likely out of memory)'
             : `process received signal ${signal || 'unknown'}`
           console.error(`Audio analysis killed for ${audioPath}: ${reason}`)
-          reject(new Error(`Audio analysis failed: ${reason}`))
+          finishReject(new Error(`Audio analysis failed: ${reason}`))
           return
         }
 
@@ -263,7 +322,7 @@ export async function analyzeAudioFeatures(
             const parsed = JSON.parse(jsonMatch[0])
             if (parsed.error) {
               console.error(`Audio analysis failed for ${audioPath}:`, parsed.error)
-              reject(new Error(`Audio analysis failed: ${parsed.error}`))
+              finishReject(new Error(`Audio analysis failed: ${parsed.error}`))
               return
             }
           }
@@ -272,13 +331,13 @@ export async function analyzeAudioFeatures(
         // Fall back to stderr if we have filtered errors
         if (pythonError.trim()) {
           console.error(`Audio analysis failed for ${audioPath}:`, pythonError)
-          reject(new Error(`Audio analysis failed: ${pythonError.substring(0, 300)}`))
+          finishReject(new Error(`Audio analysis failed: ${pythonError.substring(0, 300)}`))
           return
         }
 
         // Last resort: generic error
         console.error(`Audio analysis failed with code ${code} for ${audioPath}`)
-        reject(new Error(`Audio analysis failed: unknown error (exit code ${code})`))
+        finishReject(new Error(`Audio analysis failed: unknown error (exit code ${code})`))
         return
       }
 
@@ -286,7 +345,7 @@ export async function analyzeAudioFeatures(
         const result = JSON.parse(stdout) as Record<string, any>
 
         if (result.error) {
-          reject(new Error(`Analysis error: ${result.error}`))
+          finishReject(new Error(`Analysis error: ${result.error}`))
           return
         }
 
@@ -357,6 +416,8 @@ export async function analyzeAudioFeatures(
           genrePrimary: result.genre_primary,
           yamnetEmbeddings: result.yamnet_embeddings,
           moodClasses: result.mood_classes,
+          chromaprintFingerprint: result.chromaprint_fingerprint,
+          similarityHash: result.similarity_hash,
           // New analysis features
           temporalCentroid: result.temporal_centroid,
           crestFactor: result.crest_factor,
@@ -366,20 +427,25 @@ export async function analyzeAudioFeatures(
           fundamentalFrequency: result.fundamental_frequency,
           polyphony: result.polyphony,
           // Metadata
-          analysisLevel: result.analysis_level,
+          analysisLevel: 'advanced',
           analysisDurationMs: result.analysis_duration_ms,
           suggestedTags: result.suggested_tags,
         }
 
-        resolve(converted)
+        finishResolve(converted)
       } catch (err) {
         console.error('Failed to parse Python output:', stdout.substring(0, 500))
-        reject(new Error('Failed to parse analysis results'))
+        finishReject(new Error('Failed to parse analysis results'))
       }
     })
 
     proc.on('error', (err) => {
-      reject(
+      if (didAbort || options.signal?.aborted) {
+        finishReject(new Error(AUDIO_ANALYSIS_CANCELLED_ERROR))
+        return
+      }
+
+      finishReject(
         new Error(
           `Failed to spawn Python process: ${err.message}. Make sure Python is installed: python3 --version`
         )
@@ -561,6 +627,9 @@ export async function storeAudioFeatures(
     genrePrimary: features.genrePrimary ?? null,
     yamnetEmbeddings: features.yamnetEmbeddings ? JSON.stringify(features.yamnetEmbeddings) : null,
     moodClasses: features.moodClasses ? JSON.stringify(features.moodClasses) : null,
+    // Phase 6: Audio Fingerprinting & Similarity Detection
+    chromaprintFingerprint: features.chromaprintFingerprint ?? null,
+    similarityHash: features.similarityHash ?? null,
     // New analysis features
     temporalCentroid: features.temporalCentroid ?? null,
     crestFactor: features.crestFactor ?? null,
@@ -570,8 +639,8 @@ export async function storeAudioFeatures(
     fundamentalFrequency: features.fundamentalFrequency ?? null,
     polyphony: features.polyphony ?? null,
     // Metadata
-    analysisLevel: features.analysisLevel ?? 'standard',
-    analysisVersion: '1.6', // Updated for polyphony + creation metadata
+    analysisLevel: 'advanced' as const,
+    analysisVersion: '1.7', // Updated for persisted fingerprint/hash features
     createdAt,
     analysisDurationMs: features.analysisDurationMs,
   }
@@ -680,6 +749,8 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     genrePrimary: row.genrePrimary ?? undefined,
     yamnetEmbeddings: row.yamnetEmbeddings ? JSON.parse(row.yamnetEmbeddings) : undefined,
     moodClasses: row.moodClasses ? JSON.parse(row.moodClasses) : undefined,
+    chromaprintFingerprint: row.chromaprintFingerprint ?? undefined,
+    similarityHash: row.similarityHash ?? undefined,
     // New analysis features
     temporalCentroid: row.temporalCentroid ?? undefined,
     crestFactor: row.crestFactor ?? undefined,
@@ -689,7 +760,7 @@ export async function getAudioFeatures(sliceId: number): Promise<AudioFeatures |
     fundamentalFrequency: row.fundamentalFrequency ?? undefined,
     polyphony: row.polyphony ?? undefined,
     // Metadata
-    analysisLevel: row.analysisLevel as AnalysisLevel | undefined,
+    analysisLevel: 'advanced',
     analysisDurationMs: row.analysisDurationMs || 0,
   }
 }
@@ -709,7 +780,7 @@ export function parseFilenameTags(
     vocal: ['vocal', 'vox', 'voice', 'acapella', 'spoken', 'chant', 'choir', 'adlib'],
     fx: ['riser', 'rise', 'sweep', 'impact', 'hit', 'noise', 'texture', 'atmosphere', 'atmos', 'ambience', 'foley', 'whoosh', 'boom', 'swell', 'transition', 'downlifter', 'uplifter'],
     processing: ['tape', 'vinyl', 'lo-fi', 'lofi', 'distorted', 'saturated', 'filtered', 'processed', 'dry', 'wet', 'reverb', 'delay', 'compressed'],
-    character: ['dark', 'bright', 'warm', 'cold', 'hard', 'soft', 'dirty', 'clean', 'analog', 'analogue', 'digital', 'vintage', 'modern', 'fat', 'thin', 'crispy'],
+    character: ['dirty', 'clean', 'analog', 'analogue', 'digital', 'vintage', 'modern', 'fat', 'thin', 'crispy'],
     type: ['loop', 'beat', 'groove', 'pattern', 'one-shot', 'oneshot', 'one_shot', 'hit', 'shot', 'single', 'fill', 'break', 'top'],
   }
 
@@ -749,6 +820,35 @@ export function parseFilenameTags(
   return tags
 }
 
+const DEPRECATED_TEMPO_TAGS = new Set([
+  'slow',
+  'fast',
+  'uptempo',
+  'downtempo',
+  'midtempo',
+  '60-80bpm',
+  '80-100bpm',
+  '100-120bpm',
+  '120-140bpm',
+  '140+bpm',
+])
+
+const DEPRECATED_SPECTRAL_TAGS = new Set([
+  'bright',
+  'dark',
+  'mid-range',
+  'midrange',
+  'bass-heavy',
+  'high-freq',
+  'noisy',
+  'smooth',
+])
+
+function isDeprecatedTempoOrSpectralTag(tagName: string): boolean {
+  const lowerTag = tagName.trim().toLowerCase()
+  return lowerTag.includes('bpm') || DEPRECATED_TEMPO_TAGS.has(lowerTag) || DEPRECATED_SPECTRAL_TAGS.has(lowerTag)
+}
+
 /**
  * Convert audio features to searchable tags
  * Prefers tags generated by Python, but can generate fallback tags
@@ -756,7 +856,14 @@ export function parseFilenameTags(
 export function featuresToTags(features: AudioFeatures): string[] {
   // Use suggested tags from Python if available
   if (features.suggestedTags && features.suggestedTags.length > 0) {
-    return features.suggestedTags
+    return Array.from(
+      new Set(
+        features.suggestedTags
+          .map((tag) => tag.trim().toLowerCase())
+          .filter((tag) => tag.length > 0)
+          .filter((tag) => !isDeprecatedTempoOrSpectralTag(tag))
+      )
+    )
   }
 
   // Fallback: generate tags in Node (less preferred)
@@ -766,33 +873,10 @@ export function featuresToTags(features: AudioFeatures): string[] {
   if (features.isOneShot) tags.push('one-shot')
   if (features.isLoop) tags.push('loop')
 
-  // BPM tags (only for loops)
-  if (features.bpm && features.isLoop) {
-    const bpm = features.bpm
-    if (bpm < 80) tags.push('slow', '60-80bpm')
-    else if (bpm < 100) tags.push('downtempo', '80-100bpm')
-    else if (bpm < 120) tags.push('midtempo', '100-120bpm')
-    else if (bpm < 140) tags.push('uptempo', '120-140bpm')
-    else tags.push('fast', '140+bpm')
-  }
-
-  // Spectral tags (brightness)
-  const centroid = features.spectralCentroid
-  if (centroid > 3500) tags.push('bright')
-  else if (centroid > 1500) tags.push('mid-range')
-  else tags.push('dark')
-
-  // Frequency content
-  const rolloff = features.spectralRolloff
-  if (rolloff < 2000) tags.push('bass-heavy')
-  else if (rolloff > 8000) tags.push('high-freq')
+  // Brightness/warmth/hardness/noisiness/loudness descriptors are omitted from
+  // fallback tags because these dimensions already exist as numeric fields.
 
   // Energy/dynamics tags
-  const loudness = features.loudness
-
-  if (loudness > -10) tags.push('aggressive')
-  else if (loudness < -30) tags.push('ambient')
-
   if (features.dynamicRange > 30) tags.push('dynamic')
   else if (features.dynamicRange < 10) tags.push('compressed')
 
@@ -802,7 +886,7 @@ export function featuresToTags(features: AudioFeatures): string[] {
     .forEach((p) => tags.push(p.name))
 
   // Return unique tags (preserving order)
-  return Array.from(new Set(tags))
+  return Array.from(new Set(tags)).filter((tag) => !isDeprecatedTempoOrSpectralTag(tag))
 }
 
 /**
@@ -810,25 +894,14 @@ export function featuresToTags(features: AudioFeatures): string[] {
  */
 export function getTagMetadata(
   tagName: string
-): { color: string; category: 'type' | 'tempo' | 'spectral' | 'energy' | 'instrument' | 'general' | 'filename' } {
+): { color: string; category: 'type' | 'energy' | 'instrument' | 'general' | 'filename' } {
   const lowerTag = tagName.toLowerCase()
 
   // Category determination
-  let category: 'type' | 'tempo' | 'spectral' | 'energy' | 'instrument' | 'general' | 'filename' =
+  let category: 'type' | 'energy' | 'instrument' | 'general' | 'filename' =
     'general'
 
   if (
-    lowerTag.includes('bpm') ||
-    ['slow', 'fast', 'uptempo', 'downtempo', 'midtempo'].includes(lowerTag)
-  ) {
-    category = 'tempo'
-  } else if (
-    ['bright', 'dark', 'mid-range', 'bass-heavy', 'high-freq', 'noisy', 'smooth'].includes(
-      lowerTag
-    )
-  ) {
-    category = 'spectral'
-  } else if (
     ['punchy', 'soft', 'aggressive', 'ambient', 'dynamic', 'compressed'].includes(lowerTag)
   ) {
     category = 'energy'
@@ -853,8 +926,6 @@ export function getTagMetadata(
   // Color scheme by category
   const colorSchemes = {
     type: '#8b5cf6', // Purple
-    tempo: '#3b82f6', // Blue
-    spectral: '#14b8a6', // Teal
     energy: '#f59e0b', // Amber
     instrument: '#22c55e', // Green
     general: '#6366f1', // Indigo

@@ -136,6 +136,10 @@ const clamp = (value: number, min: number, max: number) => {
   return Math.max(min, Math.min(max, value))
 }
 
+const yieldToMainThread = async () => {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
+
 const writeString = (view: DataView, offset: number, text: string) => {
   for (let i = 0; i < text.length; i++) {
     view.setUint8(offset + i, text.charCodeAt(i))
@@ -201,25 +205,30 @@ const hannWindow = (size: number) => {
   return window
 }
 
-const resampleLinear = (input: Float32Array, ratio: number) => {
+const resampleLinear = async (input: Float32Array, ratio: number) => {
   const safeRatio = Math.max(0.01, ratio)
   const outputLength = Math.max(1, Math.floor(input.length / safeRatio))
   const output = new Float32Array(outputLength)
 
-  for (let i = 0; i < outputLength; i++) {
-    const sourcePos = i * safeRatio
-    const index = Math.floor(sourcePos)
-    const nextIndex = Math.min(index + 1, input.length - 1)
-    const frac = sourcePos - index
-    const valueA = input[index] || 0
-    const valueB = input[nextIndex] || 0
-    output[i] = valueA + (valueB - valueA) * frac
+  const chunkSize = 65536
+  for (let start = 0; start < outputLength; start += chunkSize) {
+    const end = Math.min(start + chunkSize, outputLength)
+    for (let i = start; i < end; i++) {
+      const sourcePos = i * safeRatio
+      const index = Math.floor(sourcePos)
+      const nextIndex = Math.min(index + 1, input.length - 1)
+      const frac = sourcePos - index
+      const valueA = input[index] || 0
+      const valueB = input[nextIndex] || 0
+      output[i] = valueA + (valueB - valueA) * frac
+    }
+    await yieldToMainThread()
   }
 
   return output
 }
 
-const granularTimeStretch = (
+const granularTimeStretch = async (
   input: Float32Array,
   stretch: number,
   grainSize: number,
@@ -238,6 +247,7 @@ const granularTimeStretch = (
 
   let inputPos = 0
   let outputPos = 0
+  let grainsSinceYield = 0
 
   while (inputPos + safeGrain < input.length && outputPos < outputLength) {
     for (let i = 0; i < safeGrain; i++) {
@@ -251,12 +261,23 @@ const granularTimeStretch = (
 
     inputPos += analysisHop
     outputPos += synthesisHop
+
+    grainsSinceYield += 1
+    if (grainsSinceYield >= 8) {
+      grainsSinceYield = 0
+      await yieldToMainThread()
+    }
   }
 
-  for (let i = 0; i < outputLength; i++) {
-    if (weights[i] > 0.000001) {
-      output[i] /= weights[i]
+  const normalizeChunkSize = 65536
+  for (let start = 0; start < outputLength; start += normalizeChunkSize) {
+    const end = Math.min(start + normalizeChunkSize, outputLength)
+    for (let i = start; i < end; i++) {
+      if (weights[i] > 0.000001) {
+        output[i] /= weights[i]
+      }
     }
+    await yieldToMainThread()
   }
 
   return output
@@ -281,7 +302,7 @@ const trimBufferFromOffset = (source: AudioBuffer, offsetSeconds: number) => {
   return trimmed
 }
 
-const pitchShiftPreservingDuration = (
+const pitchShiftPreservingDuration = async (
   source: AudioBuffer,
   semitones: number,
   quality: 'granular' | 'hq'
@@ -300,8 +321,8 @@ const pitchShiftPreservingDuration = (
 
   for (let channel = 0; channel < source.numberOfChannels; channel++) {
     const inData = source.getChannelData(channel)
-    const resampled = resampleLinear(inData, ratio)
-    const stretched = granularTimeStretch(resampled, ratio, grainSize, overlap)
+    const resampled = await resampleLinear(inData, ratio)
+    const stretched = await granularTimeStretch(resampled, ratio, grainSize, overlap)
     const outData = shifted.getChannelData(channel)
 
     if (stretched.length >= outData.length) {
@@ -310,6 +331,8 @@ const pitchShiftPreservingDuration = (
       outData.set(stretched)
       outData.fill(0, stretched.length)
     }
+
+    await yieldToMainThread()
   }
 
   return shifted
@@ -325,7 +348,7 @@ export async function renderLabAudioBuffer(
 
   const pitched =
     !isTapeMode && Math.abs(settings.pitchSemitones) > 0.001
-      ? pitchShiftPreservingDuration(
+      ? await pitchShiftPreservingDuration(
           trimmed,
           settings.pitchSemitones,
           settings.pitchMode === 'hq' ? 'hq' : 'granular'
@@ -349,7 +372,7 @@ export async function renderLabAudioBuffer(
 
     for (let channel = 0; channel < pitched.numberOfChannels; channel++) {
       const inData = pitched.getChannelData(channel)
-      const stretchedData = granularTimeStretch(inData, stretchFactor, grainSize, overlap)
+      const stretchedData = await granularTimeStretch(inData, stretchFactor, grainSize, overlap)
       const outData = stretched.getChannelData(channel)
       if (stretchedData.length >= outData.length) {
         outData.set(stretchedData.subarray(0, outData.length))
@@ -357,6 +380,8 @@ export async function renderLabAudioBuffer(
         outData.set(stretchedData)
         outData.fill(0, stretchedData.length)
       }
+
+      await yieldToMainThread()
     }
     tempoStretched = stretched
   }
@@ -568,6 +593,54 @@ export function audioBufferToWavArrayBuffer(audioBuffer: AudioBuffer): ArrayBuff
       view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
       offset += 2
     }
+  }
+
+  return wav
+}
+
+export async function audioBufferToWavArrayBufferAsync(audioBuffer: AudioBuffer): Promise<ArrayBuffer> {
+  const channels = audioBuffer.numberOfChannels
+  const sampleRate = audioBuffer.sampleRate
+  const bitDepth = 16
+  const bytesPerSample = bitDepth / 8
+  const blockAlign = channels * bytesPerSample
+  const byteRate = sampleRate * blockAlign
+  const dataSize = audioBuffer.length * blockAlign
+
+  const wav = new ArrayBuffer(44 + dataSize)
+  const view = new DataView(wav)
+
+  writeString(view, 0, 'RIFF')
+  view.setUint32(4, 36 + dataSize, true)
+  writeString(view, 8, 'WAVE')
+  writeString(view, 12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, channels, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, byteRate, true)
+  view.setUint16(32, blockAlign, true)
+  view.setUint16(34, bitDepth, true)
+  writeString(view, 36, 'data')
+  view.setUint32(40, dataSize, true)
+
+  const channelData: Float32Array[] = []
+  for (let channel = 0; channel < channels; channel++) {
+    channelData.push(audioBuffer.getChannelData(channel))
+  }
+
+  let offset = 44
+  const frameChunk = 16384
+  for (let frameStart = 0; frameStart < audioBuffer.length; frameStart += frameChunk) {
+    const frameEnd = Math.min(frameStart + frameChunk, audioBuffer.length)
+    for (let i = frameStart; i < frameEnd; i++) {
+      for (let channel = 0; channel < channels; channel++) {
+        const sample = clamp(channelData[channel][i], -1, 1)
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+        offset += 2
+      }
+    }
+    await yieldToMainThread()
   }
 
   return wav

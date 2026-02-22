@@ -3,6 +3,9 @@ import {
   ChevronRight,
   ChevronDown,
   ChevronUp,
+  Circle,
+  CircleDot,
+  Database,
   Youtube,
   FolderOpen,
   Music2,
@@ -11,23 +14,34 @@ import {
   Pencil,
   Trash2,
   Search,
+  Heart,
   FolderPlus,
   Palette,
   Tag,
   Settings2,
-  Layers,
 } from 'lucide-react'
-import type { SourceTree, SourceScope, Folder, Collection, FolderNode as SourceFolderNode } from '../types'
+import { useResizablePanel } from '../hooks/useResizablePanel'
+import { ResizableDivider } from './ResizableDivider'
+import type {
+  SourceTree,
+  SourceScope,
+  Folder,
+  Collection,
+  FolderNode as SourceFolderNode,
+  LibrarySourceNode as SourceLibraryNode,
+} from '../types'
 
 interface SourcesTreeProps {
   tree: SourceTree | undefined
   folders: Folder[]
   currentScope: SourceScope
   onScopeChange: (scope: SourceScope) => void
+  onDeleteSource?: (scope: string, label: string) => void
   onCreateFolder?: (name: string, parentId?: number) => void
   onRenameFolder?: (id: number, name: string) => void
   onDeleteFolder?: (id: number) => void
   onUpdateFolder?: (id: number, data: { parentId?: number | null; color?: string; collectionId?: number | null }) => void
+  onCreateImportedFolder?: (parentPath: string, name: string) => Promise<void> | void
   onBatchAddToFolder?: (folderId: number, sampleIds: number[]) => void
   onCreateTagFromFolder?: (folderId: number, name: string, color: string) => void
   isLoading?: boolean
@@ -39,21 +53,31 @@ interface SourcesTreeProps {
   onDeleteCollection?: (id: number) => void
   onMoveCollection?: (id: number, direction: 'up' | 'down') => void
   onOpenAdvancedCategoryManagement?: () => void
+  onOpenAddSource?: () => void
+  onOpenLibraryImport?: () => void
+  showFavoritesOnly?: boolean
+  onToggleFavoritesOnly?: () => void
 }
 
 interface MyFolderNode extends Folder {
   children: MyFolderNode[]
 }
 
+const TREE_SECTION_DIVIDER_HEIGHT = 4
+const TREE_SECTION_MIN_HEIGHT = 120
+const TREE_SECTION_FALLBACK_HEIGHT = 640
+
 export function SourcesTree({
   tree,
   folders,
   currentScope,
   onScopeChange,
+  onDeleteSource,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
   onUpdateFolder,
+  onCreateImportedFolder,
   onBatchAddToFolder,
   onCreateTagFromFolder,
   isLoading = false,
@@ -65,8 +89,14 @@ export function SourcesTree({
   onDeleteCollection,
   onMoveCollection,
   onOpenAdvancedCategoryManagement,
+  onOpenAddSource,
+  onOpenLibraryImport,
+  showFavoritesOnly = false,
+  onToggleFavoritesOnly,
 }: SourcesTreeProps) {
   const hasInitializedCollectionExpansion = useRef(false)
+  const sectionsContainerRef = useRef<HTMLDivElement | null>(null)
+  const [sectionsContainerHeight, setSectionsContainerHeight] = useState(TREE_SECTION_FALLBACK_HEIGHT)
 
   // Expanded state for tree nodes
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['sources', 'myfolders']))
@@ -74,6 +104,10 @@ export function SourcesTree({
   const [expandedFolders, setExpandedFolders] = useState<Set<number>>(new Set())
   const [expandedCollections, setExpandedCollections] = useState<Set<string>>(new Set())
   const [treeSearchQuery, setTreeSearchQuery] = useState('')
+  const [creatingImportedFolderParentPath, setCreatingImportedFolderParentPath] = useState<string | null>(null)
+  const [newImportedFolderName, setNewImportedFolderName] = useState('')
+  const [isCreatingImportedFolder, setIsCreatingImportedFolder] = useState(false)
+  const [importedFolderError, setImportedFolderError] = useState<string | null>(null)
 
   // Auto-expand YouTube section when tree loads and has videos
   useEffect(() => {
@@ -81,6 +115,17 @@ export function SourcesTree({
       setExpandedSections(prev => {
         const updated = new Set(prev)
         updated.add('youtube')
+        return updated
+      })
+    }
+  }, [tree])
+
+  // Auto-expand Libraries section when imported libraries exist
+  useEffect(() => {
+    if (tree && (tree.libraries?.length ?? 0) > 0) {
+      setExpandedSections(prev => {
+        const updated = new Set(prev)
+        updated.add('libraries')
         return updated
       })
     }
@@ -130,6 +175,25 @@ export function SourcesTree({
   const [dropTargetCollection, setDropTargetCollection] = useState<string | null>(null)
   const expandTimerRef = useRef<number | null>(null)
   const lastHoveredIdRef = useRef<number | null>(null)
+  const maxSourcesSectionHeight = Math.max(
+    TREE_SECTION_MIN_HEIGHT,
+    sectionsContainerHeight - TREE_SECTION_MIN_HEIGHT - TREE_SECTION_DIVIDER_HEIGHT,
+  )
+  const sourcesSectionInitialHeight = Math.max(
+    TREE_SECTION_MIN_HEIGHT,
+    Math.min(
+      maxSourcesSectionHeight,
+      Math.floor((sectionsContainerHeight - TREE_SECTION_DIVIDER_HEIGHT) * 0.56),
+    ),
+  )
+  const sourcesCollectionsPanel = useResizablePanel({
+    direction: 'vertical',
+    initialSize: sourcesSectionInitialHeight,
+    minSize: TREE_SECTION_MIN_HEIGHT,
+    maxSize: maxSourcesSectionHeight,
+    storageKey: 'sources-tree-sources-section-height',
+    clampOnBoundsChange: false,
+  })
 
   // Click outside handler for context menu and color picker
   useEffect(() => {
@@ -146,6 +210,38 @@ export function SourcesTree({
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  useEffect(() => {
+    const element = sectionsContainerRef.current
+    if (!element) return
+
+    const setMeasuredHeight = (height: number) => {
+      setSectionsContainerHeight(
+        Math.max(
+          TREE_SECTION_MIN_HEIGHT * 2 + TREE_SECTION_DIVIDER_HEIGHT,
+          Math.floor(height),
+        ),
+      )
+    }
+
+    setMeasuredHeight(element.getBoundingClientRect().height)
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries[0]
+        if (!entry) return
+        setMeasuredHeight(entry.contentRect.height)
+      })
+      observer.observe(element)
+      return () => observer.disconnect()
+    }
+
+    const handleResize = () => {
+      setMeasuredHeight(element.getBoundingClientRect().height)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
   }, [])
 
   const toggleSection = (section: string) => {
@@ -190,6 +286,45 @@ export function SourcesTree({
     setExpandedSourceFolders(newExpanded)
   }
 
+  const startCreateImportedFolder = (parentPath: string) => {
+    if (!onCreateImportedFolder) return
+    setCreatingImportedFolderParentPath(parentPath)
+    setNewImportedFolderName('')
+    setImportedFolderError(null)
+    setExpandedSections(prev => new Set(prev).add('folders'))
+    setExpandedSourceFolders(prev => new Set(prev).add(parentPath))
+  }
+
+  const cancelCreateImportedFolder = () => {
+    setCreatingImportedFolderParentPath(null)
+    setNewImportedFolderName('')
+    setImportedFolderError(null)
+  }
+
+  const submitCreateImportedFolder = async () => {
+    if (!onCreateImportedFolder || !creatingImportedFolderParentPath) return
+    const folderName = newImportedFolderName.trim()
+    if (!folderName) {
+      setImportedFolderError('Folder name is required')
+      return
+    }
+
+    try {
+      setIsCreatingImportedFolder(true)
+      setImportedFolderError(null)
+      await Promise.resolve(onCreateImportedFolder(creatingImportedFolderParentPath, folderName))
+      cancelCreateImportedFolder()
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to create folder'
+      setImportedFolderError(message)
+    } finally {
+      setIsCreatingImportedFolder(false)
+    }
+  }
+
   const isActive = (scope: SourceScope): boolean => {
     if (scope.type !== currentScope.type) return false
     switch (scope.type) {
@@ -197,6 +332,8 @@ export function SourcesTree({
         return currentScope.type === 'youtube-video' && currentScope.trackId === scope.trackId
       case 'folder':
         return currentScope.type === 'folder' && currentScope.path === scope.path
+      case 'library':
+        return currentScope.type === 'library' && currentScope.libraryId === scope.libraryId
       case 'my-folder':
         return currentScope.type === 'my-folder' && currentScope.folderId === scope.folderId
       default:
@@ -437,6 +574,9 @@ export function SourcesTree({
   const filteredYouTubeVideos = (tree?.youtube ?? []).filter(video =>
     !treeSearchQuery || video.title.toLowerCase().includes(treeSearchQuery.toLowerCase())
   )
+  const filteredLibrarySources = (tree?.libraries ?? []).filter((library) =>
+    !treeSearchQuery || library.name.toLowerCase().includes(treeSearchQuery.toLowerCase())
+  )
 
   const filterFolderTree = (nodes: MyFolderNode[]): MyFolderNode[] => {
     if (!treeSearchQuery) return nodes
@@ -498,23 +638,81 @@ export function SourcesTree({
 
   const totalYouTubeSlices = (tree?.youtube ?? []).reduce((sum, v) => sum + Number(v.sliceCount || 0), 0)
   const totalImportedFolderSlices = (tree?.folders ?? []).reduce((sum, f) => sum + Number(f.sampleCount || 0), 0)
+  const totalLibrarySourceSlices = (tree?.libraries ?? []).reduce((sum, l) => sum + Number(l.sampleCount || 0), 0)
+
+  const selectedSourceFolderPath = currentScope.type === 'folder' ? currentScope.path : null
+  const folderById = new Map<number, Folder>(folders.map((folder) => [folder.id, folder]))
+  const selectedMyFolderId = currentScope.type === 'my-folder' ? currentScope.folderId : null
+  const selectedMyFolderAncestorIds = new Set<number>()
+  let selectedMyFolderCollectionId: number | null = null
+
+  if (selectedMyFolderId !== null) {
+    const selectedFolder = folderById.get(selectedMyFolderId)
+    if (selectedFolder) {
+      selectedMyFolderCollectionId = selectedFolder.collectionId ?? null
+      let parentId = selectedFolder.parentId
+      while (parentId !== null) {
+        selectedMyFolderAncestorIds.add(parentId)
+        parentId = folderById.get(parentId)?.parentId ?? null
+      }
+    }
+  }
+  const hasSelectedMyFolder = selectedMyFolderId !== null && folderById.has(selectedMyFolderId)
+
+  const sourceFolderContainsActivePath = (path: string): boolean => {
+    if (!selectedSourceFolderPath || selectedSourceFolderPath === path) return false
+    const pathWithSlash = path.endsWith('/') ? path : `${path}/`
+    return selectedSourceFolderPath.startsWith(pathWithSlash)
+  }
+
+  type SelectionMarkerState = 'none' | 'active' | 'contains-active'
+
+  const SelectionMarker = ({
+    state,
+    activeClassName = 'text-accent-warm',
+    containsClassName = 'text-accent-primary/70',
+  }: {
+    state: SelectionMarkerState
+    activeClassName?: string
+    containsClassName?: string
+  }) => (
+    <span
+      aria-hidden="true"
+      className={`w-3.5 shrink-0 flex items-center justify-center transition-opacity ${
+        state === 'none' ? 'opacity-0' : 'opacity-100'
+      }`}
+    >
+      {state === 'active' ? (
+        <CircleDot size={11} className={activeClassName} />
+      ) : state === 'contains-active' ? (
+        <Circle size={9} className={containsClassName} />
+      ) : null}
+    </span>
+  )
+
   const renderSourceFolderNode = (node: SourceFolderNode, depth: number = 0) => {
     const isExpanded = expandedSourceFolders.has(node.path)
     const hasChildren = node.children && node.children.length > 0
     const scope: SourceScope = { type: 'folder', path: node.path }
     const active = isActive(scope)
+    const markerState: SelectionMarkerState = active
+      ? 'active'
+      : sourceFolderContainsActivePath(node.path)
+      ? 'contains-active'
+      : 'none'
 
     return (
       <div key={node.path}>
         <button
           onClick={() => onScopeChange(scope)}
-          className={`w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors ${
+          className={`group w-full min-h-6 flex items-center gap-1.5 pl-1.5 pr-0.5 py-0.5 text-[12px] rounded-sm transition-colors ${
             active
-              ? 'bg-accent-primary/20 text-accent-primary'
-              : 'text-slate-300 hover:bg-surface-base'
+              ? 'bg-accent-warm/12 text-accent-warm'
+              : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
           }`}
-          style={{ paddingLeft: `${(depth + 2) * 12}px` }}
+          style={{ paddingLeft: `${(depth + 2) * 10}px` }}
         >
+          <SelectionMarker state={markerState} />
           {hasChildren ? (
             <span
               role="button"
@@ -540,13 +738,142 @@ export function SourcesTree({
           )}
           <FolderOpen size={14} className={active ? 'text-accent-primary' : 'text-slate-400'} />
           <span className="flex-1 text-left truncate">{node.name}</span>
-          <span className="text-xs text-slate-500">{Number(node.sampleCount || 0)}</span>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            {onCreateImportedFolder && (
+              <span
+                role="button"
+                tabIndex={0}
+                className="p-0.5 rounded text-slate-400 opacity-0 group-hover:opacity-100 hover:text-white hover:bg-surface-overlay transition-all"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  startCreateImportedFolder(node.path)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    startCreateImportedFolder(node.path)
+                  }
+                }}
+                aria-label={`Create folder inside ${node.name}`}
+                title={`Create folder inside ${node.name}`}
+              >
+                <FolderPlus size={12} />
+              </span>
+            )}
+            {onDeleteSource && (
+              <span
+                role="button"
+                tabIndex={0}
+                className="p-0.5 rounded text-slate-400 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-surface-overlay transition-all"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDeleteSource(`folder:${node.path}`, `imported folder "${node.name}"`)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    onDeleteSource(`folder:${node.path}`, `imported folder "${node.name}"`)
+                  }
+                }}
+                aria-label={`Delete imported folder source ${node.name}`}
+                title={`Delete imported folder source ${node.name}`}
+              >
+                <Trash2 size={12} />
+              </span>
+            )}
+            <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
+              {Number(node.sampleCount || 0)}
+            </span>
+          </div>
         </button>
         {isExpanded && hasChildren && (
           <div>
             {node.children.map(child => renderSourceFolderNode(child, depth + 1))}
           </div>
         )}
+        {creatingImportedFolderParentPath === node.path && onCreateImportedFolder && (
+          <div className="px-2 py-1" style={{ paddingLeft: `${(depth + 3) * 12}px` }}>
+            <div className="flex items-center gap-1">
+              <input
+                type="text"
+                value={newImportedFolderName}
+                onChange={(e) => setNewImportedFolderName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void submitCreateImportedFolder()
+                  if (e.key === 'Escape') cancelCreateImportedFolder()
+                }}
+                placeholder="New subfolder..."
+                className="flex-1 px-2 py-1 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
+                autoFocus
+              />
+              <button
+                onClick={() => void submitCreateImportedFolder()}
+                disabled={isCreatingImportedFolder || !newImportedFolderName.trim()}
+                className="px-2 py-1 text-xs bg-accent-primary text-white rounded hover:bg-accent-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Create
+              </button>
+              <button
+                onClick={cancelCreateImportedFolder}
+                disabled={isCreatingImportedFolder}
+                className="px-2 py-1 text-xs bg-slate-700 text-slate-300 rounded hover:bg-slate-600 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+            {importedFolderError && (
+              <div className="mt-1 text-xs text-red-400">{importedFolderError}</div>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const renderLibrarySourceNode = (library: SourceLibraryNode) => {
+    const scope: SourceScope = { type: 'library', libraryId: library.id }
+    const active = isActive(scope)
+
+    return (
+      <div
+        key={library.id}
+        className={`group flex min-w-0 items-center gap-1.5 min-h-6 pl-7 pr-0.5 rounded-sm transition-colors ${
+          active
+            ? 'bg-accent-warm/12 text-accent-warm'
+            : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
+        }`}
+      >
+        <SelectionMarker state={active ? 'active' : 'none'} />
+        <button
+          type="button"
+          onClick={() => onScopeChange(scope)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-[12px] text-left"
+          title={library.name}
+        >
+          <Database size={14} className="text-cyan-400 shrink-0" />
+          <span className="min-w-0 flex-1 truncate text-left">{library.name}</span>
+        </button>
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {onDeleteSource && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onDeleteSource(`library:${library.id}`, `library source "${library.name}"`)
+              }}
+              className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-base transition-all"
+              title={`Delete library source ${library.name}`}
+              aria-label={`Delete library source ${library.name}`}
+            >
+              <Trash2 size={12} className="text-red-400" />
+            </button>
+          )}
+          <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
+            {Number(library.sampleCount || 0)}
+          </span>
+        </div>
       </div>
     )
   }
@@ -562,6 +889,12 @@ export function SourcesTree({
   const renderMyFolderNode = (node: MyFolderNode, depth: number = 0) => {
     const scope: SourceScope = { type: 'my-folder', folderId: node.id }
     const active = isActive(scope)
+    const containsActiveDescendant = selectedMyFolderAncestorIds.has(node.id)
+    const markerState: SelectionMarkerState = active
+      ? 'active'
+      : containsActiveDescendant
+      ? 'contains-active'
+      : 'none'
     const isEditing = editingFolderId === node.id
     const isExpanded = expandedFolders.has(node.id)
     const hasChildren = node.children && node.children.length > 0
@@ -597,7 +930,7 @@ export function SourcesTree({
       <div key={node.id} className="relative">
         {/* Drop indicator - BEFORE */}
         {isDragOver && dropPosition === 'before' && (
-          <div className="absolute left-0 right-0 -top-[2px] h-[3px] bg-indigo-400 rounded-full shadow-lg shadow-indigo-400/50 z-10 animate-pulse" />
+          <div className="absolute left-0 right-0 -top-[2px] h-[3px] bg-accent-warm rounded-full shadow-lg shadow-accent-warm/40 z-10 animate-pulse" />
         )}
 
         <div
@@ -627,15 +960,16 @@ export function SourcesTree({
               }
               onScopeChange(scope)
             }}
-            className={`group/folder w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors relative ${
+            className={`group/folder w-full flex items-center gap-2 text-sm rounded-md transition-colors relative ${
               active
-                ? 'bg-accent-primary/20 text-accent-primary'
+                ? 'bg-accent-warm/12 text-accent-warm'
                 : shouldHighlightSelf
-                ? 'bg-indigo-500/30 outline outline-2 outline-indigo-400'
-                : 'text-slate-300 hover:bg-surface-base'
+                ? 'bg-accent-warm/20 outline outline-2 outline-accent-warm/50'
+                : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
             } ${isDragging ? 'opacity-40 cursor-grabbing' : ''}`}
             style={{ paddingLeft: `${depth * 16 + 8}px` }}
           >
+            <SelectionMarker state={markerState} />
             {hasChildren ? (
               <span
                 role="button"
@@ -663,22 +997,22 @@ export function SourcesTree({
             <span className="flex-1 text-left truncate">{node.name}</span>
             {/* Drop hint on hover */}
             {!active && !isDragOver && draggedFolderId !== null && !isDragging && (
-              <span className="text-[10px] text-indigo-400/70 transition-colors mr-1">
+              <span className="text-[10px] text-accent-warm/60 transition-colors mr-1">
                 drop here
               </span>
             )}
             {isDragOver && dropPosition === 'inside' && (
-              <span className="text-[10px] text-indigo-300 mr-1 font-semibold animate-pulse">
+              <span className="text-[10px] text-accent-warm mr-1 font-semibold animate-pulse">
                 drop inside
               </span>
             )}
             {isDragOver && dropPosition === 'before' && (
-              <span className="text-[10px] text-indigo-300 mr-1 font-semibold animate-pulse">
+              <span className="text-[10px] text-accent-warm mr-1 font-semibold animate-pulse">
                 drop above
               </span>
             )}
             {isDragOver && dropPosition === 'after' && (
-              <span className="text-[10px] text-indigo-300 mr-1 font-semibold animate-pulse">
+              <span className="text-[10px] text-accent-warm mr-1 font-semibold animate-pulse">
                 drop below
               </span>
             )}
@@ -700,7 +1034,7 @@ export function SourcesTree({
           {contextMenuId === node.id && (
             <div
               ref={contextMenuRef}
-              className="absolute right-0 top-full mt-1 z-20 w-40 bg-surface-raised border border-surface-border rounded-lg shadow-xl overflow-hidden"
+              className="absolute right-0 top-full mt-1 z-20 w-44 bg-surface-overlay/95 backdrop-blur-sm border border-surface-border rounded-xl shadow-xl overflow-hidden"
             >
               <button
                 onClick={(e) => {
@@ -709,7 +1043,7 @@ export function SourcesTree({
                   setEditingFolderName(node.name)
                   setContextMenuId(null)
                 }}
-                className="w-full px-3 py-2 text-left text-sm text-slate-300 hover:bg-surface-base flex items-center gap-2"
+                className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-raised hover:text-text-primary flex items-center gap-2 transition-colors"
               >
                 <Pencil size={12} />
                 Rename
@@ -720,7 +1054,7 @@ export function SourcesTree({
                   setColorPickerFolderId(node.id)
                   setContextMenuId(null)
                 }}
-                className="w-full px-3 py-2 text-left text-sm text-slate-300 hover:bg-surface-base flex items-center gap-2"
+                className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-raised hover:text-text-primary flex items-center gap-2 transition-colors"
               >
                 <Palette size={12} />
                 Change Color
@@ -737,7 +1071,7 @@ export function SourcesTree({
                   // Expand to show new subfolder
                   setExpandedFolders(prev => new Set(prev).add(node.id))
                 }}
-                className="w-full px-3 py-2 text-left text-sm text-slate-300 hover:bg-surface-base flex items-center gap-2"
+                className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-raised hover:text-text-primary flex items-center gap-2 transition-colors"
               >
                 <FolderPlus size={12} />
                 Add Subfolder
@@ -750,7 +1084,7 @@ export function SourcesTree({
                     setCreateTagName(node.name)
                     setContextMenuId(null)
                   }}
-                  className="w-full px-3 py-2 text-left text-sm text-slate-300 hover:bg-surface-base flex items-center gap-2"
+                  className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-raised hover:text-text-primary flex items-center gap-2 transition-colors"
                 >
                   <Tag size={12} />
                   Create Tag from Folder
@@ -850,7 +1184,7 @@ export function SourcesTree({
 
         {/* Drop indicator - AFTER */}
         {isDragOver && dropPosition === 'after' && (
-          <div className="absolute left-0 right-0 -bottom-[2px] h-[3px] bg-indigo-400 rounded-full shadow-lg shadow-indigo-400/50 z-10 animate-pulse" />
+          <div className="absolute left-0 right-0 -bottom-[2px] h-[3px] bg-accent-warm rounded-full shadow-lg shadow-accent-warm/40 z-10 animate-pulse" />
         )}
 
         {/* Render children */}
@@ -906,74 +1240,171 @@ export function SourcesTree({
     <div className="flex flex-col h-full overflow-hidden">
       {/* Search bar */}
       <div className="p-2 border-b border-surface-border">
-        <div className="relative">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
-          <input
-            type="text"
-            value={treeSearchQuery}
-            onChange={(e) => setTreeSearchQuery(e.target.value)}
-            placeholder="Filter sources..."
-            className="w-full pl-7 pr-2 py-1.5 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary transition-colors"
-          />
+        <div className="flex items-center gap-1.5">
+          <div className="relative flex-1 min-w-0">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
+            <input
+              type="text"
+              value={treeSearchQuery}
+              onChange={(e) => setTreeSearchQuery(e.target.value)}
+              placeholder="Filter sources..."
+              className="w-full pl-7 pr-2 py-1.5 text-sm bg-surface-base border border-surface-border rounded-lg text-text-primary placeholder-text-muted focus:outline-none focus:border-accent-primary/50 transition-colors"
+            />
+          </div>
+
+          {onToggleFavoritesOnly && (
+            <button
+              type="button"
+              onClick={onToggleFavoritesOnly}
+              className={`inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border transition-colors ${
+                showFavoritesOnly
+                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                  : 'bg-surface-base text-slate-400 hover:text-slate-300 border-surface-border'
+              }`}
+              title={showFavoritesOnly ? 'Showing favorites' : 'Show favorites only'}
+              aria-label={showFavoritesOnly ? 'Showing favorites' : 'Show favorites only'}
+            >
+              <Heart size={14} className={showFavoritesOnly ? 'fill-current' : ''} />
+            </button>
+          )}
         </div>
       </div>
 
-      {/* SOURCES Section */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="p-2">
-          {/* Section Header: SOURCES */}
-          <button
-            onClick={() => toggleSection('sources')}
-            className="w-full flex items-center gap-2 px-2 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-slate-300 transition-colors"
-          >
-            {expandedSections.has('sources') ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            Sources
-          </button>
+      <div ref={sectionsContainerRef} className="flex-1 min-h-0 flex flex-col">
+        {/* SOURCES Section */}
+        <div
+          className={sourcesCollectionsPanel.isDragging ? 'panel-animate dragging min-h-0 overflow-hidden' : 'panel-animate min-h-0 overflow-hidden'}
+          style={{ height: sourcesCollectionsPanel.size }}
+        >
+          <div className="h-full overflow-y-auto px-2 py-2">
+            {/* Section Header: SOURCES */}
+            <div className="flex items-center gap-1 px-1.5 py-1">
+              <button
+                onClick={() => toggleSection('sources')}
+                className="flex-1 flex items-center gap-1.5 section-label hover:text-text-secondary transition-colors text-left"
+              >
+                {expandedSections.has('sources') ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                Sources
+              </button>
+            </div>
 
-          {expandedSections.has('sources') && (
-            <div className="space-y-0.5">
+            {expandedSections.has('sources') && (
+              <div className="space-y-px rounded-md border-surface-border/70 bg-surface-base/20 p-0.5">
+              {(onOpenAddSource || onOpenLibraryImport) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onOpenAddSource) {
+                      onOpenAddSource()
+                      return
+                    }
+                    onOpenLibraryImport?.()
+                  }}
+                  className="w-full min-h-6 px-1.5 py-0.5 text-[12px] rounded-sm transition-colors flex items-center gap-1.5 text-text-secondary hover:text-text-primary hover:bg-surface-overlay"
+                >
+                  <Plus size={14} />
+                  <span className="text-left">Add source</span>
+                </button>
+              )}
+
+              {(() => {
+                const showAllActive = isActive({ type: 'all' })
+                return (
+                  <button
+                    onClick={() => onScopeChange({ type: 'all' })}
+                    className={`w-full min-h-6 px-1.5 py-0.5 text-[12px] rounded-sm transition-colors flex items-center gap-1.5 ${
+                      showAllActive
+                        ? 'bg-accent-warm/12 text-accent-warm'
+                        : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+                    }`}
+                  >
+                    <SelectionMarker state={showAllActive ? 'active' : 'none'} />
+                    <span className="text-left">Show all</span>
+                  </button>
+                )
+              })()}
+
               {/* YouTube Section */}
               <div>
-                <button
-                  onClick={() => {
-                    onScopeChange({ type: 'youtube' })
-                    toggleSection('youtube')
-                  }}
-                  className={`w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors ${
-                    currentScope.type === 'youtube' || currentScope.type === 'youtube-video'
-                      ? 'bg-red-500/20 text-red-400'
-                      : 'text-slate-300 hover:bg-surface-base'
-                  }`}
-                >
-                  {expandedSections.has('youtube') ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <Youtube size={14} className="text-red-500" />
-                  <span className="flex-1 text-left">YouTube</span>
-                  <span className="text-xs text-slate-500">{totalYouTubeSlices}</span>
-                </button>
+                {(() => {
+                  const youtubeSectionActive = currentScope.type === 'youtube'
+                  const youtubeSectionContainsActive = currentScope.type === 'youtube-video'
+                  return (
+                    <div
+                      className={`group flex min-w-0 items-center gap-1 rounded-sm min-h-6 transition-colors ${
+                        youtubeSectionActive || youtubeSectionContainsActive
+                          ? 'bg-red-500/15 text-red-400'
+                          : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
+                      }`}
+                    >
+                      <SelectionMarker
+                        state={youtubeSectionActive ? 'active' : youtubeSectionContainsActive ? 'contains-active' : 'none'}
+                        activeClassName="text-red-400"
+                        containsClassName="text-red-400/70"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          toggleSection('youtube')
+                        }}
+                        className="p-0.5 rounded text-slate-500 hover:text-slate-200"
+                        aria-label={expandedSections.has('youtube') ? 'Collapse YouTube' : 'Expand YouTube'}
+                      >
+                        {expandedSections.has('youtube') ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onScopeChange({ type: 'youtube' })}
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px]"
+                      >
+                        <Youtube size={14} className="text-red-500" />
+                        <span className="flex-1 truncate text-left">YouTube</span>
+                      </button>
+                      <div className="ml-auto flex shrink-0 items-center gap-1">
+                        <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
+                          {totalYouTubeSlices}
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })()}
 
                 {expandedSections.has('youtube') && filteredYouTubeVideos.map(video => {
                   const scope: SourceScope = { type: 'youtube-video', trackId: video.id }
                   const active = isActive(scope)
                   return (
-                    <button
+                    <div
                       key={video.id}
-                      onClick={() => onScopeChange(scope)}
-                      className={`w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors pl-8 ${
+                      className={`flex min-w-0 items-center gap-1.5 min-h-6 pl-7 pr-0.5 rounded-sm transition-colors ${
                         active
                           ? 'bg-accent-primary/20 text-accent-primary'
                           : 'text-slate-300 hover:bg-surface-base'
                       }`}
                     >
-                      {video.thumbnailUrl && (
-                        <img
-                          src={video.thumbnailUrl}
-                          alt=""
-                          className="w-6 h-4 object-cover rounded"
-                        />
-                      )}
-                      <span className="flex-1 text-left truncate text-xs">{video.title}</span>
-                      <span className="text-xs text-slate-500">{Number(video.sliceCount || 0)}</span>
-                    </button>
+                      <SelectionMarker
+                        state={active ? 'active' : 'none'}
+                        activeClassName="text-accent-primary"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => onScopeChange(scope)}
+                        className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-[12px]"
+                      >
+                        {video.thumbnailUrl && (
+                          <img
+                            src={video.thumbnailUrl}
+                            alt=""
+                            className="w-6 h-4 shrink-0 object-cover rounded"
+                          />
+                        )}
+                        <span className="min-w-0 flex-1 truncate text-left text-[11px]">{video.title}</span>
+                      </button>
+                      <div className="ml-auto flex shrink-0 items-center gap-1">
+                        <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
+                          {Number(video.sliceCount || 0)}
+                        </span>
+                      </div>
+                    </div>
                   )
                 })}
                 {expandedSections.has('youtube') && treeSearchQuery && filteredYouTubeVideos.length === 0 && (
@@ -984,39 +1415,115 @@ export function SourcesTree({
               </div>
 
               {/* Local Samples */}
-              <button
-                onClick={() => onScopeChange({ type: 'local' })}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors ${
-                  isActive({ type: 'local' })
-                    ? 'bg-accent-primary/20 text-accent-primary'
-                    : 'text-slate-300 hover:bg-surface-base'
-                }`}
-              >
-                <span className="w-3.5" />
-                <Music2 size={14} className="text-emerald-500" />
-                <span className="flex-1 text-left">Local Samples</span>
-                <span className="text-xs text-slate-500">{Number(tree?.local?.count || 0)}</span>
-              </button>
+              {(() => {
+                const localActive = isActive({ type: 'local' })
+                return (
+                  <div
+                    className={`flex items-center gap-1.5 pl-1.5 pr-0.5 py-0.5 min-h-6 rounded-sm transition-colors ${
+                      localActive
+                        ? 'bg-accent-warm/12 text-accent-warm'
+                        : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onScopeChange({ type: 'local' })}
+                      className="flex flex-1 items-center gap-1.5 text-[12px] text-left"
+                    >
+                      <SelectionMarker state={localActive ? 'active' : 'none'} />
+                      <Music2 size={14} className="text-emerald-500" />
+                      <span className="flex-1 text-left">Local Samples</span>
+                    </button>
+                    <div className="ml-auto flex shrink-0 items-center gap-1">
+                      <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
+                        {Number(tree?.local?.count || 0)}
+                      </span>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* Library Sources */}
+              {tree?.libraries && tree.libraries.length > 0 && (
+                <div>
+                  {(() => {
+                    const librarySectionContainsActive = currentScope.type === 'library'
+                    return (
+                      <div
+                        className={`flex items-center gap-1 pl-1.5 pr-0.5 py-0.5 min-h-6 text-[12px] rounded-sm transition-colors ${
+                          librarySectionContainsActive
+                            ? 'bg-accent-warm/12 text-accent-warm'
+                            : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
+                        }`}
+                      >
+                        <SelectionMarker state={librarySectionContainsActive ? 'contains-active' : 'none'} />
+                        <button
+                          type="button"
+                          onClick={() => toggleSection('libraries')}
+                          className="p-0.5 rounded text-slate-500 hover:text-slate-200"
+                          aria-label={expandedSections.has('libraries') ? 'Collapse library sources' : 'Expand library sources'}
+                        >
+                          {expandedSections.has('libraries') ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        </button>
+                        <div className="flex flex-1 items-center gap-1.5 py-0.5 text-left">
+                          <Database size={14} className="text-cyan-400" />
+                          <span>Library Sources</span>
+                        </div>
+                        <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
+                          {totalLibrarySourceSlices}
+                        </span>
+                      </div>
+                    )
+                  })()}
+
+                  {expandedSections.has('libraries') && (
+                    <div className="ml-2 border-l border-surface-border/60 pl-1">
+                      {filteredLibrarySources.map((library) => renderLibrarySourceNode(library))}
+                      {treeSearchQuery && filteredLibrarySources.length === 0 && (
+                        <div className="pl-8 pr-2 py-2 text-xs text-slate-500 italic">
+                          No library sources found
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Imported Folders */}
               {tree?.folders && tree.folders.length > 0 && (
                 <div>
-                  <button
-                    onClick={() => toggleSection('folders')}
-                    className={`w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors ${
-                      currentScope.type === 'folder'
-                        ? 'bg-accent-primary/20 text-accent-primary'
-                        : 'text-slate-300 hover:bg-surface-base'
-                    }`}
-                  >
-                    {expandedSections.has('folders') ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    <FolderOpen size={14} className="text-amber-500" />
-                    <span className="flex-1 text-left">Imported Folders</span>
-                    <span className="text-xs text-slate-500">{totalImportedFolderSlices}</span>
-                  </button>
+                  {(() => {
+                    const importedFoldersSectionContainsActive = currentScope.type === 'folder'
+                    return (
+                      <div
+                        className={`flex items-center gap-1 pl-1.5 pr-0.5 py-0.5 min-h-6 text-[12px] rounded-sm transition-colors ${
+                          importedFoldersSectionContainsActive
+                            ? 'bg-accent-warm/12 text-accent-warm'
+                            : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
+                        }`}
+                      >
+                        <SelectionMarker state={importedFoldersSectionContainsActive ? 'contains-active' : 'none'} />
+                        <button
+                          type="button"
+                          onClick={() => toggleSection('folders')}
+                          className="p-0.5 rounded text-slate-500 hover:text-slate-200"
+                          aria-label={expandedSections.has('folders') ? 'Collapse imported folders' : 'Expand imported folders'}
+                        >
+                          {expandedSections.has('folders') ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        </button>
+                        <div className="flex flex-1 items-center gap-1.5 py-0.5 text-left">
+                          <FolderOpen size={14} className="text-amber-500" />
+                          <span>Imported Folders</span>
+                        </div>
+                        <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
+                          {totalImportedFolderSlices}
+                        </span>
+                      </div>
+                    )
+                  })()}
 
                   {expandedSections.has('folders') && (
-                    <div>
+                    <div className="ml-2 border-l border-surface-border/60 pl-1">
                       {filteredFolders.map(folder => renderSourceFolderNode(folder))}
                       {treeSearchQuery && filteredFolders.length === 0 && (
                         <div className="pl-8 pr-2 py-2 text-xs text-slate-500 italic">
@@ -1027,65 +1534,78 @@ export function SourcesTree({
                   )}
                 </div>
               )}
-            </div>
-          )}
+              </div>
+            )}
 
-          {/* Section Header: MY FOLDERS */}
-          <div className="flex items-center gap-2 px-2 py-2 mt-4">
-            <button
-              onClick={() => toggleSection('myfolders')}
-              className="flex-1 flex items-center gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-slate-300 transition-colors text-left"
-            >
-              {expandedSections.has('myfolders') ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              My Folders
-            </button>
-            {onOpenAdvancedCategoryManagement && (
-              <button
-                onClick={onOpenAdvancedCategoryManagement}
-                className="p-1 rounded text-slate-400 hover:text-white hover:bg-surface-base transition-colors"
-                title="advanced category management"
-                aria-label="advanced category management"
-              >
-                <Settings2 size={14} />
-              </button>
-            )}
-            {onCreateCollection && (
-              <button
-                onClick={() => {
-                  setIsCreatingCollection(true)
-                  setNewCollectionName('')
-                }}
-                className="p-1 rounded text-slate-400 hover:text-white hover:bg-surface-base transition-colors"
-                title="new collection"
-                aria-label="new collection"
-              >
-                <Plus size={14} />
-              </button>
-            )}
           </div>
+        </div>
 
-          {expandedSections.has('myfolders') && (
-            <div className="space-y-2">
+        <ResizableDivider
+          direction="vertical"
+          isDragging={sourcesCollectionsPanel.isDragging}
+          isCollapsed={sourcesCollectionsPanel.isCollapsed}
+          onMouseDown={sourcesCollectionsPanel.dividerProps.onMouseDown}
+          onDoubleClick={sourcesCollectionsPanel.dividerProps.onDoubleClick}
+          onExpand={sourcesCollectionsPanel.restore}
+        />
+
+        {/* COLLECTIONS Section */}
+        <div className="min-h-0 flex-1">
+          <div className="h-full overflow-y-auto px-2 py-2">
+            <div className="flex items-center gap-2 px-2 py-1.5">
               <button
-                onClick={() => onScopeChange({ type: 'all' })}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors ${
-                  isActive({ type: 'all' })
-                    ? 'bg-accent-primary/20 text-accent-primary'
-                    : 'text-slate-300 hover:bg-surface-base'
-                }`}
+                onClick={() => toggleSection('myfolders')}
+                className="flex-1 flex items-center gap-1.5 section-label hover:text-text-secondary transition-colors text-left"
               >
-                <Layers size={14} className={isActive({ type: 'all' }) ? 'text-accent-primary' : 'text-slate-400'} />
-                <span className="flex-1 text-left font-mono">All</span>
+                {expandedSections.has('myfolders') ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                COLLECTIONS
               </button>
+              {onOpenAdvancedCategoryManagement && (
+                <button
+                  onClick={onOpenAdvancedCategoryManagement}
+                  className="p-1 rounded text-slate-400 hover:text-white hover:bg-surface-base transition-colors"
+                  title="advanced category management"
+                  aria-label="advanced category management"
+                >
+                  <Settings2 size={14} />
+                </button>
+              )}
+              {onCreateCollection && (
+                <button
+                  onClick={() => {
+                    setIsCreatingCollection(true)
+                    setNewCollectionName('')
+                  }}
+                  className="p-1 rounded text-slate-400 hover:text-white hover:bg-surface-base transition-colors"
+                  title="new collection"
+                  aria-label="new collection"
+                >
+                  <Plus size={14} />
+                </button>
+              )}
+            </div>
 
-              {collectionTrees
-                .filter(entry => !treeSearchQuery || entry.filtered.length > 0)
-                .map(entry => {
+            {expandedSections.has('myfolders') && (
+              <div className="space-y-1.5">
+                {collectionTrees
+                  .filter(entry => !treeSearchQuery || entry.filtered.length > 0)
+                  .map(entry => {
                   const key = entry.id === null ? 'ungrouped' : String(entry.id)
                   const isExpanded = treeSearchQuery.trim() ? true : expandedCollections.has(key)
-                  const isActiveCollection = entry.id !== null && entry.id === activeCollectionId
+                  const isActiveCollection =
+                    entry.id !== null &&
+                    currentScope.type === 'collection' &&
+                    currentScope.collectionId === entry.id
+                  const collectionContainsActiveFolder =
+                    hasSelectedMyFolder &&
+                    currentScope.type === 'my-folder' &&
+                    selectedMyFolderCollectionId === entry.id
+                  const collectionMarkerState: SelectionMarkerState = isActiveCollection
+                    ? 'active'
+                    : collectionContainsActiveFolder
+                    ? 'contains-active'
+                    : 'none'
                   const isDropTarget = dropTargetCollection === key
-                  const totalFolders = (foldersByCollection.get(entry.id) || []).length
                   const collectionIndex = entry.id !== null
                     ? collections.findIndex(p => p.id === entry.id)
                     : -1
@@ -1095,13 +1615,14 @@ export function SourcesTree({
                   return (
                     <div key={key} className="relative">
                       <div
-                        className={`group relative flex items-center gap-2 px-2 py-2 rounded-md text-xs font-mono uppercase tracking-wide transition-colors ${
-                          isDropTarget ? 'bg-indigo-500/20' : 'hover:bg-surface-base'
+                        className={`group relative flex items-center gap-2 rounded-md transition-colors ${
+                          isDropTarget ? 'bg-accent-warm/15' : 'hover:bg-surface-overlay'
                         }`}
                         onDragOver={(e) => handleCollectionDragOver(e, key)}
                         onDrop={(e) => handleCollectionDrop(e, key, entry.id)}
                         onDragLeave={handleDragLeave}
                       >
+                        <SelectionMarker state={collectionMarkerState} />
                         <button
                           className="p-0.5 text-slate-500 hover:text-slate-300"
                           onClick={() => toggleCollection(key)}
@@ -1109,8 +1630,12 @@ export function SourcesTree({
                           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                         </button>
                         <button
-                          className={`flex-1 text-left ${
-                            isActiveCollection ? 'text-accent-primary' : 'text-slate-200'
+                          className={`flex-1 text-left text-xs font-semibold uppercase tracking-wider ${
+                            isActiveCollection
+                              ? 'text-accent-warm'
+                              : collectionContainsActiveFolder
+                              ? 'text-accent-warm/80'
+                              : 'text-text-secondary'
                           }`}
                           onClick={() => {
                             if (entry.id !== null) {
@@ -1121,21 +1646,15 @@ export function SourcesTree({
                         >
                           {entry.name}
                         </button>
-                        <span
-                          className={`text-[10px] text-slate-500 transition-opacity ${
-                            collectionContextMenuId === entry.id ? 'opacity-0' : 'group-hover:opacity-0'
-                          }`}
-                        >
-                          {totalFolders} {totalFolders === 1 ? 'folder' : 'folders'}
-                        </span>
-
                         {entry.id !== null && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
                               setCollectionContextMenuId(prev => prev === entry.id ? null : entry.id)
                             }}
-                            className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-base transition-all"
+                            className={`p-1 rounded hover:bg-surface-base transition-all ${
+                              collectionContextMenuId === entry.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                            }`}
                             title="Collection options"
                             aria-label="Collection options"
                           >
@@ -1146,11 +1665,11 @@ export function SourcesTree({
                         {entry.id !== null && collectionContextMenuId === entry.id && (
                           <div
                             ref={collectionContextMenuRef}
-                            className="absolute right-0 top-full mt-1 z-20 w-40 bg-surface-raised border border-surface-border rounded-lg shadow-xl overflow-hidden"
+                            className="absolute right-0 top-full mt-1 z-20 w-44 bg-surface-overlay/95 backdrop-blur-sm border border-surface-border rounded-xl shadow-xl overflow-hidden"
                           >
                             {onCreateFolder && (
                               <button
-                                className="w-full px-3 py-2 text-left text-sm text-slate-300 hover:bg-surface-base flex items-center gap-2"
+                                className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-raised hover:text-text-primary flex items-center gap-2 transition-colors"
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   onCollectionChange?.(entry.id)
@@ -1193,7 +1712,7 @@ export function SourcesTree({
                             )}
                             {onRenameCollection && (
                               <button
-                                className="w-full px-3 py-2 text-left text-sm text-slate-300 hover:bg-surface-base flex items-center gap-2"
+                                className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-raised hover:text-text-primary flex items-center gap-2 transition-colors"
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   setEditingCollectionId(entry.id)
@@ -1285,42 +1804,43 @@ export function SourcesTree({
                       )}
                     </div>
                   )
-                })}
+                  })}
 
-              {treeSearchQuery && collectionTrees.every(entry => entry.filtered.length === 0) && (
-                <div className="px-2 py-2 text-xs text-slate-500 italic">
-                  No folders found
-                </div>
-              )}
+                {treeSearchQuery && collectionTrees.every(entry => entry.filtered.length === 0) && (
+                  <div className="px-2 py-2 text-xs text-slate-500 italic">
+                    No folders found
+                  </div>
+                )}
 
-              {!treeSearchQuery && isCreatingCollection && (
-                <div className="px-2 py-1">
-                  <input
-                    type="text"
-                    value={newCollectionName}
-                    onChange={(e) => setNewCollectionName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleCreateCollection()
-                      if (e.key === 'Escape') {
-                        setIsCreatingCollection(false)
-                        setNewCollectionName('')
-                      }
-                    }}
-                    onBlur={() => {
-                      if (newCollectionName.trim()) {
-                        handleCreateCollection()
-                      } else {
-                        setIsCreatingCollection(false)
-                      }
-                    }}
-                    placeholder="Collection name..."
-                    className="w-full px-2 py-1 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
-                    autoFocus
-                  />
-                </div>
-              )}
-            </div>
-          )}
+                {!treeSearchQuery && isCreatingCollection && (
+                  <div className="px-2 py-1">
+                    <input
+                      type="text"
+                      value={newCollectionName}
+                      onChange={(e) => setNewCollectionName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleCreateCollection()
+                        if (e.key === 'Escape') {
+                          setIsCreatingCollection(false)
+                          setNewCollectionName('')
+                        }
+                      }}
+                      onBlur={() => {
+                        if (newCollectionName.trim()) {
+                          handleCreateCollection()
+                        } else {
+                          setIsCreatingCollection(false)
+                        }
+                      }}
+                      placeholder="Collection name..."
+                      className="w-full px-2 py-1 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
+                      autoFocus
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

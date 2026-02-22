@@ -1,6 +1,7 @@
 import { spawn } from 'child_process'
 import path from 'path'
 import type { YouTubeVideoInfo } from '../types/index.js'
+import { ensureDownloadTool } from './downloadTools.js'
 
 const DATA_DIR = process.env.DATA_DIR || './data'
 const YOUTUBE_VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/
@@ -18,6 +19,8 @@ function parseUrl(input: string): URL | null {
 }
 
 export async function getVideoInfo(videoId: string): Promise<YouTubeVideoInfo> {
+  await ensureDownloadTool('yt-dlp')
+
   return new Promise((resolve, reject) => {
     const args = [
       '--dump-json',
@@ -64,6 +67,8 @@ export async function downloadAudio(
   videoId: string,
   outputPath: string
 ): Promise<string> {
+  await ensureDownloadTool('yt-dlp')
+
   return new Promise((resolve, reject) => {
     const outputTemplate = path.join(outputPath, `${videoId}.%(ext)s`)
     const args = [

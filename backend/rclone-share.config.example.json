@@ -1,0 +1,6 @@
+{
+  "remote": ":local:./rclone-share-remote",
+  "basePath": "sample-share",
+  "localLibraryRoot": "./shared-libraries",
+  "rcloneBinary": "rclone"
+}
