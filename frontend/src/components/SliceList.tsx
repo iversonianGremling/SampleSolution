@@ -221,7 +221,7 @@ export function SliceList({ slices, trackId, playingSliceId, onTogglePlay, onOne
                       removeTagFromSlice.mutate({ sliceId: slice.id, tagId: tag.id })
                     }}
                     className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface-base/20 rounded ml-0.5"
-                    title="Remove tag"
+                    title="Remove instrument"
                   >
                     <X size={10} />
                   </button>

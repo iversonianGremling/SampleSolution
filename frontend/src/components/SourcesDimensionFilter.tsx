@@ -5,8 +5,6 @@ export type DimensionCategory = 'spectral' | 'energy' | 'texture' | 'space'
 type DimensionFieldKey =
   | 'minBrightness'
   | 'maxBrightness'
-  | 'minHarmonicity'
-  | 'maxHarmonicity'
   | 'minNoisiness'
   | 'maxNoisiness'
   | 'minAttack'
@@ -17,6 +15,8 @@ type DimensionFieldKey =
   | 'maxSaturation'
   | 'minSurface'
   | 'maxSurface'
+  | 'minRhythmic'
+  | 'maxRhythmic'
   | 'minDensity'
   | 'maxDensity'
   | 'minAmbience'
@@ -35,7 +35,6 @@ type DimensionFieldPair = {
 const DIMENSIONS_BY_CATEGORY: Record<DimensionCategory, DimensionFieldPair[]> = {
   spectral: [
     { label: 'Brightness', minKey: 'minBrightness', maxKey: 'maxBrightness' },
-    { label: 'Harmonicity', minKey: 'minHarmonicity', maxKey: 'maxHarmonicity' },
     { label: 'Noisiness', minKey: 'minNoisiness', maxKey: 'maxNoisiness' },
   ],
   energy: [
@@ -45,6 +44,7 @@ const DIMENSIONS_BY_CATEGORY: Record<DimensionCategory, DimensionFieldPair[]> = 
   ],
   texture: [
     { label: 'Surface', minKey: 'minSurface', maxKey: 'maxSurface' },
+    { label: 'Rhythmic', minKey: 'minRhythmic', maxKey: 'maxRhythmic' },
     { label: 'Density', minKey: 'minDensity', maxKey: 'maxDensity' },
   ],
   space: [
@@ -59,6 +59,8 @@ interface SourcesDimensionFilterProps {
   filterState: AudioFilterState
   onChange: (next: AudioFilterState) => void
 }
+
+const HANDLE_OVERLAP_THRESHOLD = 0.02
 
 const toRangeValue = (value: number | undefined, fallback: number) =>
   Number.isFinite(value) ? Math.max(0, Math.min(1, value as number)) : fallback
@@ -103,6 +105,9 @@ export function SourcesDimensionFilter({
       next[dimension.minKey] = 0
       next[dimension.maxKey] = 1
     }
+    if (category === 'space') {
+      next.stereoChannelMode = 'all'
+    }
     onChange(next)
   }
 
@@ -110,20 +115,26 @@ export function SourcesDimensionFilter({
     const min = getMinValue(filterState, dimension.minKey)
     const max = getMaxValue(filterState, dimension.maxKey)
     return min > 0 || max < 1
-  })
+  }) || (category === 'space' && (filterState.stereoChannelMode ?? 'all') !== 'all')
 
   return (
     <div className="space-y-3">
       {dimensions.map((dimension) => {
         const min = getMinValue(filterState, dimension.minKey)
         const max = getMaxValue(filterState, dimension.maxKey)
+        const handlesOverlap = max - min <= HANDLE_OVERLAP_THRESHOLD
+        const prioritizeMinHandle = handlesOverlap && min > 0.5
+        const minHandleZIndex = prioritizeMinHandle ? 5 : 3
+        const maxHandleZIndex = handlesOverlap && !prioritizeMinHandle ? 5 : 4
         return (
           <div key={dimension.label} className="space-y-1.5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-slate-300">{dimension.label}:</span>
-              <span className="text-[11px] text-slate-500">
-                {min.toFixed(2)} - {max.toFixed(2)}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-500">
+                  {min.toFixed(2)} - {max.toFixed(2)}
+                </span>
+              </div>
             </div>
             <div className="relative h-5 flex items-center">
               <div className="absolute left-0 right-0 h-0.5 bg-surface-border rounded-full" />
@@ -149,7 +160,7 @@ export function SourcesDimensionFilter({
                   )
                 }
                 className="absolute w-full h-5 appearance-none bg-transparent cursor-pointer slider-thumb"
-                style={{ zIndex: min > max - 0.02 ? 5 : 3 }}
+                style={{ zIndex: minHandleZIndex }}
               />
               <input
                 type="range"
@@ -166,7 +177,7 @@ export function SourcesDimensionFilter({
                   )
                 }
                 className="absolute w-full h-5 appearance-none bg-transparent cursor-pointer slider-thumb"
-                style={{ zIndex: max < min + 0.02 ? 5 : 4 }}
+                style={{ zIndex: maxHandleZIndex }}
               />
             </div>
           </div>

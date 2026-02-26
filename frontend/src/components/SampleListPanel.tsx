@@ -300,7 +300,7 @@ export function SampleListPanel({
             ) : (
               <Sparkles size={12} />
             )}
-            Tag {selectedSliceIds.size}
+            Instrument {selectedSliceIds.size}
           </button>
           <button
             onClick={() => {
@@ -691,8 +691,8 @@ function EditableSliceRow({
                       [
                         'Warning: Potential custom state detected before analysis.',
                         result.warning.message,
-                        `Removed tags: ${result.warning.removedTags.join(', ') || 'none'}`,
-                        `Added tags: ${result.warning.addedTags.join(', ') || 'none'}`,
+                        `Removed instruments: ${result.warning.removedTags.join(', ') || 'none'}`,
+                        `Added instruments: ${result.warning.addedTags.join(', ') || 'none'}`,
                       ].join('\n')
                     )
                   }
@@ -701,7 +701,7 @@ function EditableSliceRow({
             }
             disabled={generateAiTags.isPending}
             className="p-1.5 text-gray-400 hover:text-yellow-400 transition-colors"
-            title="Generate AI tags"
+            title="Generate AI instruments"
           >
             {generateAiTags.isPending ? (
               <Loader2 className="animate-spin" size={14} />
@@ -732,7 +732,7 @@ function EditableSliceRow({
         </div>
       </div>
 
-      {/* Tags and Folders row */}
+      {/* Instruments and Folders row */}
       <div className="mt-1.5 flex flex-wrap items-center gap-1">
         {/* Folder badges */}
         {sliceFolders.map((col) => (
@@ -752,7 +752,7 @@ function EditableSliceRow({
           </span>
         ))}
 
-        {/* Tags */}
+        {/* Instruments */}
         {slice.tags.map((tag) => (
           <span
             key={tag.id}

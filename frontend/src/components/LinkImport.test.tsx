@@ -106,7 +106,7 @@ describe('LinkImport', () => {
     await waitFor(() => {
       expect(screen.getByText('1 imported successfully')).toBeInTheDocument()
     })
-    expect(screen.getByText('1 failed to import')).toBeInTheDocument()
+    expect(screen.getByText('1 failed')).toBeInTheDocument()
   })
 
   it('does not call onTracksAdded when all imports fail', async () => {
@@ -128,7 +128,7 @@ describe('LinkImport', () => {
     await user.click(screen.getByRole('button', { name: 'Import' }))
 
     await waitFor(() => {
-      expect(screen.getByText('1 failed to import')).toBeInTheDocument()
+      expect(screen.getByText('1 failed')).toBeInTheDocument()
     })
     expect(mockOnTracksAdded).not.toHaveBeenCalled()
   })

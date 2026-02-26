@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Info, AlertCircle } from 'lucide-react'
+import { Loader2, Info, AlertCircle, Settings, X } from 'lucide-react'
 import { getSliceFeatures, getSliceDownloadUrl } from '../api/client'
 import { WebGLScatter } from './WebGLScatter'
 import { FeatureWeightsPanel } from './FeatureWeightsPanel'
@@ -68,7 +68,7 @@ export function SampleSpaceView({
   // Feature weights state
   const [weights, setWeights] = useState<FeatureWeights>(DEFAULT_WEIGHTS)
   const [reductionMethod, setReductionMethod] = useState<ReductionMethod>('umap')
-  const [clusterMethod, setClusterMethod] = useState<ClusterMethod>('kmeans')
+  const [clusterMethod, setClusterMethod] = useState<ClusterMethod>('hdbscan')
   const [clusterCount, setClusterCount] = useState(7)
   const [dbscanEpsilon, setDbscanEpsilon] = useState(0.15)
   const [normalizationMethod, setNormalizationMethod] = useState<NormalizationMethod>('robust')
@@ -78,9 +78,8 @@ export function SampleSpaceView({
   const [selectedPoint, setSelectedPoint] = useState<SamplePoint | null>(null)
   const [_selectedIds, setSelectedIds] = useState<number[]>([])
 
-  // Sidebar state for small screens
+  // Sidebar toggle state
   const [isPanelOpen, setIsPanelOpen] = useState(false)
-  const [isSmallScreen, setIsSmallScreen] = useState(false)
 
   // Audio playback
   const audioManagerRef = useRef<AudioManager>(AudioManager.getInstance())
@@ -259,8 +258,9 @@ export function SampleSpaceView({
     return buildFeatureMatrix(filteredFeatures, weights, normalizationMethod, {
       tags: {
         enabled: true,
-        weight: 1.8,
+        weight: 0.6,
         excludeDerived: true,
+        normalization: 'unit-l2',
       },
     })
   }, [filteredFeatures, weights, normalizationMethod])
@@ -302,7 +302,7 @@ export function SampleSpaceView({
     }).filter(Boolean) as SamplePoint[]
   }, [filteredFeatures, reducedPoints, validIndices, clusters])
 
-  // Handle container resize and screen size detection
+  // Handle container resize
   useEffect(() => {
     const updateDimensions = () => {
       if (containerRef.current) {
@@ -311,12 +311,6 @@ export function SampleSpaceView({
           width: Math.max(400, rect.width),
           height: Math.max(400, rect.height),
         })
-      }
-      // Check if screen is small (less than 2/3rds of typical desktop width)
-      const nextIsSmallScreen = window.innerWidth < 1200
-      setIsSmallScreen(nextIsSmallScreen)
-      if (!nextIsSmallScreen) {
-        setIsPanelOpen(false)
       }
     }
 
@@ -423,20 +417,9 @@ export function SampleSpaceView({
   }
 
   return (
-    <div className="relative w-full h-full flex overflow-hidden">
-      {isSmallScreen && isPanelOpen && (
-        <button
-          type="button"
-          aria-label="Close controls panel"
-          className="panel-surface absolute inset-0 z-20 bg-surface-base/20"
-          onClick={() => setIsPanelOpen(false)}
-          onMouseMove={(event) => event.stopPropagation()}
-          onPointerMove={(event) => event.stopPropagation()}
-        />
-      )}
-
+    <div className="relative w-full h-full overflow-hidden">
       {/* Main Canvas Container */}
-      <div className="flex-1 relative overflow-hidden min-h-0">
+      <div className="relative h-full overflow-hidden min-h-0">
         <div
           ref={containerRef}
           className="w-full h-full bg-surface-base relative"
@@ -465,19 +448,21 @@ export function SampleSpaceView({
             height={dimensions.height}
           />
 
-          {isSmallScreen && (
+          {!isPanelOpen && (
             <button
               type="button"
               aria-controls="sample-space-controls-panel"
               aria-expanded={isPanelOpen}
-              onClick={() => setIsPanelOpen((prev) => !prev)}
+              aria-label="Open controls panel"
+              onClick={() => setIsPanelOpen(true)}
               onMouseMove={(event) => event.stopPropagation()}
               onPointerMove={(event) => event.stopPropagation()}
               onMouseDown={(event) => event.stopPropagation()}
               onPointerDown={(event) => event.stopPropagation()}
-              className="panel-surface absolute top-3 right-3 z-40 rounded-md border border-surface-border bg-surface-raised/90 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:text-white hover:bg-surface-overlay transition-colors"
+              className="panel-surface absolute top-3 right-3 z-40 rounded-md border border-surface-border bg-surface-raised/90 p-2 text-slate-200 hover:text-white hover:bg-surface-overlay transition-colors"
+              title="Open controls"
             >
-              {isPanelOpen ? 'Close Controls' : 'Open Controls'}
+              <Settings size={16} />
             </button>
           )}
 
@@ -543,20 +528,25 @@ export function SampleSpaceView({
 
       {/* Right Sidebar - Controls Panel */}
       <div
-        className={`border-l overflow-y-auto transition-all duration-300 ${
-          isSmallScreen
-            ? `absolute right-0 top-0 bottom-0 z-30 w-80 ${
-                isPanelOpen
-                  ? 'translate-x-0 bg-surface-raised border-surface-border shadow-2xl pointer-events-auto'
-                  : 'translate-x-full bg-surface-raised border-surface-border pointer-events-none'
-              }`
-            : 'w-80 relative flex-shrink-0 bg-surface-raised border-surface-border'
-        } panel-surface`}
+        className={`panel-surface absolute right-0 top-0 bottom-0 z-30 w-80 border-l border-surface-border bg-surface-raised shadow-2xl transition-transform duration-300 ${
+          isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+        }`}
         id="sample-space-controls-panel"
         onMouseMove={(event) => event.stopPropagation()}
         onPointerMove={(event) => event.stopPropagation()}
       >
-        <div className="p-4">
+        <div className="flex items-center justify-end px-3 py-2 border-b border-surface-border">
+          <button
+            type="button"
+            onClick={() => setIsPanelOpen(false)}
+            className="inline-flex items-center justify-center rounded-md border border-surface-border bg-surface-overlay p-1 text-slate-300 hover:text-white hover:bg-surface-border/70 transition-colors"
+            aria-label="Close controls panel"
+            title="Close controls"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="p-4 overflow-y-auto h-[calc(100%-45px)]">
           <FeatureWeightsPanel
             weights={weights}
             onWeightsChange={setWeights}

@@ -86,6 +86,33 @@ else
     print_ok "SESSION_SECRET configured"
 fi
 
+# Optional: Spotify credentials (needed for Spotify OAuth playlist import)
+SPOTIFY_IMPORT_ENABLED=1
+if grep -q "^ENABLE_SPOTIFY_IMPORT=" "$ENV_FILE" 2>/dev/null; then
+    SPOTIFY_IMPORT_ENABLED=$(grep "^ENABLE_SPOTIFY_IMPORT=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr '[:upper:]' '[:lower:]')
+fi
+
+if [ "$SPOTIFY_IMPORT_ENABLED" != "0" ] && [ "$SPOTIFY_IMPORT_ENABLED" != "false" ] && [ "$SPOTIFY_IMPORT_ENABLED" != "no" ] && [ "$SPOTIFY_IMPORT_ENABLED" != "off" ]; then
+    SPOTIFY_MISSING=0
+    if ! grep -q "^SPOTIFY_CLIENT_ID=.\+$" "$ENV_FILE" 2>/dev/null || \
+       grep -q "^SPOTIFY_CLIENT_ID=your" "$ENV_FILE" 2>/dev/null || \
+       grep -q "^SPOTIFY_CLIENT_ID=$" "$ENV_FILE" 2>/dev/null; then
+        SPOTIFY_MISSING=1
+    fi
+
+    if ! grep -q "^SPOTIFY_CLIENT_SECRET=.\+$" "$ENV_FILE" 2>/dev/null || \
+       grep -q "^SPOTIFY_CLIENT_SECRET=your" "$ENV_FILE" 2>/dev/null || \
+       grep -q "^SPOTIFY_CLIENT_SECRET=$" "$ENV_FILE" 2>/dev/null; then
+        SPOTIFY_MISSING=1
+    fi
+
+    if [ $SPOTIFY_MISSING -eq 1 ]; then
+        print_warning "Spotify credentials not configured (Spotify playlist OAuth import will be unavailable)"
+    else
+        print_ok "Spotify credentials configured (playlist OAuth ready)"
+    fi
+fi
+
 echo ""
 
 if [ $MISSING_CREDS -eq 1 ]; then

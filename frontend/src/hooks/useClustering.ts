@@ -179,11 +179,13 @@ export function useClustering(
           // Simpler approach: use DBSCAN with adaptive epsilon based on MST edge distribution
           const edgeWeights = mstEdges.map(e => e.weight).sort((a, b) => a - b)
           const medianEdge = edgeWeights[Math.floor(edgeWeights.length * 0.5)]
+          const mergeThresholdFactor = 1.6
 
           // Reset and rebuild with only edges below threshold
           for (let i = 0; i < n; i++) { parent[i] = i; size[i] = 1 }
           for (const edge of mstEdges) {
-            if (edge.weight <= medianEdge * 2) {
+            // Lower factor means fewer long-range merges and more local clusters.
+            if (edge.weight <= medianEdge * mergeThresholdFactor) {
               union(edge.from, edge.to)
             }
           }

@@ -65,7 +65,7 @@ router.get('/auth', (req, res) => {
   if (!SPOTIFY_CLIENT_ID) {
     return res.status(500).json({ error: 'Spotify client ID not configured' })
   }
-  const scope = 'playlist-read-private playlist-read-collaborative user-library-read'
+  const scope = 'playlist-read-private playlist-read-collaborative'
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: SPOTIFY_CLIENT_ID,

@@ -364,7 +364,7 @@ export function CustomOrderSourcePane({
               type="text"
               value={state.folderSearchQuery}
               onChange={(e) => dispatch({ type: 'SET_FOLDER_SEARCH', query: e.target.value })}
-              placeholder="Search folders or tags..."
+              placeholder="Search folders or instruments..."
               className="w-full pl-8 pr-3 py-1.5 text-sm bg-surface-base border border-surface-border rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
             />
           </div>
@@ -423,7 +423,7 @@ export function CustomOrderSourcePane({
               </div>
             )}
 
-            {/* Tags section */}
+            {/* Instruments section */}
             <div className="border-t border-surface-border">
               <button
                 className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-slate-400 uppercase tracking-wider"
@@ -431,7 +431,7 @@ export function CustomOrderSourcePane({
               >
                 {tagsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 <TagIcon size={14} className="text-slate-400" />
-                Tags
+                Instruments
               </button>
             </div>
             {tagsOpen && (
@@ -487,14 +487,14 @@ export function CustomOrderSourcePane({
                                       : 'text-slate-500 hover:text-red-300'
                                   }`}
                                   onClick={() => dispatch({ type: 'TOGGLE_EXCLUDED_SOURCE_TAG', tagId: tag.id })}
-                                  title="Exclude this tag"
+                                  title="Exclude this instrument"
                                 >
                                   <Minus size={10} />
                                 </button>
                                 <button
                                   className="p-0.5 text-slate-500 hover:text-white opacity-0 group-hover:opacity-100"
                                   onClick={() => openSampleSelect({ type: 'tag', id: tag.id, name: tag.name })}
-                                  title="Browse samples for this tag"
+                                  title="Browse samples for this instrument"
                                 >
                                   <List size={12} />
                                 </button>
@@ -522,11 +522,11 @@ export function CustomOrderSourcePane({
                   <button onClick={() => dispatch({ type: 'CLEAR_EXCLUDED_FOLDERS' })} className="text-red-300 hover:text-red-200"><X size={10} /></button>
                 </div>
                 <div className="flex items-center gap-1 bg-surface-base border border-surface-border rounded-full px-2 py-0.5">
-                  Tags {state.stagedSelection.selectedTagIds.size}
+                  Instruments {state.stagedSelection.selectedTagIds.size}
                   <button onClick={() => dispatch({ type: 'CLEAR_SELECTED_TAGS' })} className="text-slate-500 hover:text-white"><X size={10} /></button>
                 </div>
                 <div className="flex items-center gap-1 bg-surface-base border border-surface-border rounded-full px-2 py-0.5 text-red-400">
-                  Excl. tags {state.stagedSelection.excludedTagIds.size}
+                  Excl. instruments {state.stagedSelection.excludedTagIds.size}
                   <button onClick={() => dispatch({ type: 'CLEAR_EXCLUDED_TAGS' })} className="text-red-300 hover:text-red-200"><X size={10} /></button>
                 </div>
                 <div className="flex items-center gap-1 bg-surface-base border border-surface-border rounded-full px-2 py-0.5">
@@ -545,7 +545,7 @@ export function CustomOrderSourcePane({
                   disabled={!hasSelectionContent(state.stagedSelection)}
                 >
                   <ArrowRight size={14} />
-                  Copy to {activeFolder.destinationType === 'tag' ? 'tag' : 'folder'} "{activeFolder.name || 'Untitled'}"
+                  Copy to {activeFolder.destinationType === 'tag' ? 'instrument' : 'folder'} "{activeFolder.name || 'Untitled'}"
                 </button>
               )}
               {onClearSelection && (

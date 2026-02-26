@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { SliceWithTrackExtended, SamplePoint } from '../types'
 import { getSliceDownloadUrl, batchReanalyzeSamples } from '../api/client'
 import { InstrumentIcon } from './InstrumentIcon'
-import { freqToNoteName } from '../utils/musicTheory'
+import { freqToPitchDisplay } from '../utils/musicTheory'
 import { useToggleFavorite } from '../hooks/useTracks'
 
 interface SliceDetailPanelProps {
@@ -93,7 +93,7 @@ export function SliceDetailPanel({
   }
 
   const duration = sample.endTime - sample.startTime
-  const fundamentalNote = sample.fundamentalFrequency ? freqToNoteName(sample.fundamentalFrequency) : null
+  const fundamentalPitch = sample.fundamentalFrequency ? freqToPitchDisplay(sample.fundamentalFrequency) : null
 
   return (
     <div className="h-full flex flex-col bg-surface-base overflow-y-auto">
@@ -164,10 +164,13 @@ export function SliceDetailPanel({
                 <div className="text-sm text-white font-mono">{sample.keyEstimate}</div>
               </div>
             )}
-            {fundamentalNote && (
+            {fundamentalPitch && (
               <div>
                 <div className="text-xs text-slate-500">Note</div>
-                <div className="text-sm text-white font-mono">{fundamentalNote}</div>
+                <div className="text-sm text-white font-mono">
+                  {fundamentalPitch.noteWithOctave}
+                  <span className="ml-1 text-xs text-slate-400">{fundamentalPitch.compactCentsLabel}</span>
+                </div>
               </div>
             )}
             {sample.instrumentPrimary && (
@@ -188,10 +191,10 @@ export function SliceDetailPanel({
           </div>
         </div>
 
-        {/* Tags */}
+        {/* Instruments */}
         {sample.tags && sample.tags.length > 0 && (
           <div>
-            <h3 className="text-sm font-medium text-slate-400 mb-2">Tags</h3>
+            <h3 className="text-sm font-medium text-slate-400 mb-2">Instruments</h3>
             <div className="flex flex-wrap gap-1.5">
               {sample.tags.map((tag) => (
                 <button

@@ -9,7 +9,7 @@ describe('TagManager', () => {
   it('renders create tag form', () => {
     render(<TagManager />)
 
-    expect(screen.getByPlaceholderText('Tag name...')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Instrument name...')).toBeInTheDocument()
     expect(screen.getByText('Color')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument()
   })
@@ -28,7 +28,7 @@ describe('TagManager', () => {
     render(<TagManager />)
 
     await waitFor(() => {
-      expect(screen.getByText('All Tags (3)')).toBeInTheDocument()
+      expect(screen.getByText('All Instruments (3)')).toBeInTheDocument()
     })
   })
 
@@ -42,7 +42,7 @@ describe('TagManager', () => {
     render(<TagManager />)
 
     await waitFor(() => {
-      expect(screen.getByText('No tags yet. Create one above.')).toBeInTheDocument()
+      expect(screen.getByText('No instruments yet. Create one above.')).toBeInTheDocument()
     })
   })
 
@@ -50,7 +50,7 @@ describe('TagManager', () => {
     const user = userEvent.setup()
     render(<TagManager />)
 
-    const input = screen.getByPlaceholderText('Tag name...')
+    const input = screen.getByPlaceholderText('Instrument name...')
     await user.type(input, 'newtag')
 
     await user.click(screen.getByRole('button', { name: 'Create' }))
@@ -71,7 +71,7 @@ describe('TagManager', () => {
     const user = userEvent.setup()
     render(<TagManager />)
 
-    const input = screen.getByPlaceholderText('Tag name...')
+    const input = screen.getByPlaceholderText('Instrument name...')
     await user.type(input, 'test')
 
     const createButton = screen.getByRole('button', { name: 'Create' })
@@ -83,9 +83,9 @@ describe('TagManager', () => {
     render(<TagManager />)
 
     expect(screen.getByText('Preview:')).toBeInTheDocument()
-    expect(screen.getByText('Tag name')).toBeInTheDocument() // Default preview
+    expect(screen.getByText('Instrument name')).toBeInTheDocument() // Default preview
 
-    const input = screen.getByPlaceholderText('Tag name...')
+    const input = screen.getByPlaceholderText('Instrument name...')
     await user.type(input, 'preview-tag')
 
     expect(screen.getByText('preview-tag')).toBeInTheDocument()
@@ -126,7 +126,7 @@ describe('TagManager', () => {
   it('shows info section about tags', () => {
     render(<TagManager />)
 
-    expect(screen.getByText('About Tags')).toBeInTheDocument()
-    expect(screen.getByText(/Tags can be added to tracks/)).toBeInTheDocument()
+    expect(screen.getByText('About Instruments')).toBeInTheDocument()
+    expect(screen.getByText(/Instruments can be added to tracks/)).toBeInTheDocument()
   })
 })

@@ -8,6 +8,7 @@ export interface TagFeatureOptions {
   excludeDerived?: boolean
   minTagFrequency?: number
   derivedTagNames?: string[]
+  normalization?: 'none' | 'unit-l2'
 }
 
 export interface FeatureMatrixOptions {
@@ -32,72 +33,76 @@ const DEFAULT_DERIVED_TAG_NAMES = [
 
 const DEFAULT_TAG_OPTIONS: Required<TagFeatureOptions> = {
   enabled: true,
-  weight: 1.8,
+  weight: 0.6,
   excludeDerived: true,
   minTagFrequency: 1,
   derivedTagNames: DEFAULT_DERIVED_TAG_NAMES,
+  normalization: 'unit-l2',
 }
 
-// Default weights - MIR-literature-informed
+// Default weights for Space View:
+// subjective-first, non-redundant axes that are present in /slices/features.
 export const DEFAULT_WEIGHTS: FeatureWeights = {
-  spectralCentroid: 1.2,
-  spectralRolloff: 0.8,
-  spectralBandwidth: 0.8,
-  spectralContrast: 0.8,
-  spectralFlux: 0.8,
-  spectralFlatness: 0.8,
-  zeroCrossingRate: 1,
-  rmsEnergy: 0.5,
-  loudness: 0.5,
-  dynamicRange: 1,
-  attackTime: 1.3,
-  kurtosis: 1,
-  bpm: 0.3,
-  onsetCount: 1,
-  keyStrength: 1,
+  spectralCentroid: 1.5,
+  spectralRolloff: 0.9,
+  spectralBandwidth: 0,
+  spectralContrast: 1.4,
+  spectralFlux: 0,
+  spectralFlatness: 1.0,
+  zeroCrossingRate: 0.9,
+  rmsEnergy: 0.45,
+  loudness: 1.0,
+  dynamicRange: 0.9,
+  attackTime: 0.95,
+  kurtosis: 0,
+  bpm: 0.2,
+  onsetCount: 0.5,
+  keyStrength: 1.6,
   // Phase 1: Timbral features
-  dissonance: 1,
-  inharmonicity: 1,
-  spectralComplexity: 1,
-  spectralCrest: 1,
+  dissonance: 0.55,
+  inharmonicity: 0.65,
+  spectralComplexity: 0.45,
+  spectralCrest: 0,
   // Phase 1: Perceptual features
-  brightness: 0.6,
-  warmth: 0.6,
-  hardness: 0.6,
-  roughness: 0.6,
-  sharpness: 0.6,
+  brightness: 1.8,
+  warmth: 1.2,
+  hardness: 0,
+  noisiness: 1.5,
+  roughness: 1.85,
+  sharpness: 1.0,
   // Phase 2: Stereo features
-  stereoWidth: 0.3,
-  panningCenter: 0.3,
-  stereoImbalance: 0.3,
+  stereoWidth: 0.9,
+  panningCenter: 0.6,
+  stereoImbalance: 0.6,
   // Phase 2: Harmonic/Percussive features
-  harmonicPercussiveRatio: 1.2,
-  harmonicEnergy: 1,
-  percussiveEnergy: 1,
-  harmonicCentroid: 1,
-  percussiveCentroid: 1,
+  harmonicPercussiveRatio: 1.1,
+  harmonicEnergy: 0.9,
+  percussiveEnergy: 0.9,
+  harmonicCentroid: 0.9,
+  percussiveCentroid: 0.85,
   // Phase 3: Advanced Rhythm features
-  onsetRate: 1,
-  beatStrength: 1,
-  rhythmicRegularity: 1,
-  danceability: 1,
+  onsetRate: 0.9,
+  beatStrength: 0.8,
+  rhythmicRegularity: 0,
+  danceability: 0.7,
   // Phase 3: ADSR Envelope features
-  decayTime: 1,
-  sustainLevel: 1,
-  releaseTime: 1,
+  decayTime: 0.75,
+  sustainLevel: 0.65,
+  releaseTime: 0.85,
   // Phase 5: EBU R128 Loudness features
-  loudnessIntegrated: 0.5,
-  loudnessRange: 0.5,
-  loudnessMomentaryMax: 0.5,
-  truePeak: 0.5,
+  loudnessIntegrated: 1.0,
+  loudnessRange: 1.1,
+  loudnessMomentaryMax: 0.9,
+  truePeak: 0.75,
   // Phase 5: Sound Event Detection features
-  eventCount: 1,
-  eventDensity: 1,
+  eventCount: 0.8,
+  eventDensity: 0.85,
   // New analysis features
-  temporalCentroid: 1.2,
-  crestFactor: 1.1,
-  transientSpectralCentroid: 1.5,
-  transientSpectralFlatness: 1.3,
+  temporalCentroid: 0.7,
+  crestFactor: 0.75,
+  transientSpectralCentroid: 1.0,
+  transientSpectralFlatness: 0.7,
+  sampleTypeConfidence: 1.2,
 }
 
 // Feature groups for the UI
@@ -116,7 +121,7 @@ export const FEATURE_GROUPS = {
   },
   rhythm: {
     label: 'Rhythm',
-    features: ['bpm', 'onsetCount', 'onsetRate', 'beatStrength', 'rhythmicRegularity', 'danceability', 'eventCount', 'eventDensity'],
+    features: ['bpm', 'onsetCount', 'onsetRate', 'beatStrength', 'rhythmicRegularity', 'danceability', 'eventCount', 'eventDensity', 'sampleTypeConfidence'],
   },
   tonal: {
     label: 'Tonal',
@@ -128,7 +133,7 @@ export const FEATURE_GROUPS = {
   },
   perceptual: {
     label: 'Perceptual (Advanced)',
-    features: ['brightness', 'warmth', 'hardness', 'roughness', 'sharpness'],
+    features: ['brightness', 'warmth', 'hardness', 'noisiness', 'roughness', 'sharpness'],
   },
   stereo: {
     label: 'Stereo (Advanced)',
@@ -156,7 +161,7 @@ export const FEATURE_LABELS: Record<keyof FeatureWeights, string> = {
   spectralContrast: 'Tonal/Noisy',
   spectralFlux: 'Spectral Change',
   spectralFlatness: 'Noise-like',
-  zeroCrossingRate: 'Noisiness',
+  zeroCrossingRate: 'Noisiness (ZCR)',
   rmsEnergy: 'Volume',
   loudness: 'Loudness',
   dynamicRange: 'Dynamic Range',
@@ -164,7 +169,7 @@ export const FEATURE_LABELS: Record<keyof FeatureWeights, string> = {
   kurtosis: 'Peakiness',
   bpm: 'Tempo',
   onsetCount: 'Rhythmic Density',
-  keyStrength: 'Tonality',
+  keyStrength: 'Tonality (Contrast)',
   // Phase 1: Timbral features
   spectralCrest: 'Spectral Peak',
   dissonance: 'Dissonance',
@@ -174,7 +179,8 @@ export const FEATURE_LABELS: Record<keyof FeatureWeights, string> = {
   brightness: 'Perceived Brightness',
   warmth: 'Warmth',
   hardness: 'Hardness',
-  roughness: 'Roughness',
+  noisiness: 'Noisiness (Contrast)',
+  roughness: 'Saturation (Composite)',
   sharpness: 'Sharpness',
   // Phase 2: Stereo features
   stereoWidth: 'Stereo Width',
@@ -208,6 +214,7 @@ export const FEATURE_LABELS: Record<keyof FeatureWeights, string> = {
   crestFactor: 'Crest Factor',
   transientSpectralCentroid: 'Transient Brightness',
   transientSpectralFlatness: 'Transient Noisiness',
+  sampleTypeConfidence: 'Sample Type Confidence',
 }
 
 function normalizeTagName(name: string): string {
@@ -221,10 +228,14 @@ function normalizeTagName(name: string): string {
 function buildTagDimensions(
   samples: Array<AudioFeatures & { tags?: TagLike[] }>,
   tagOptions?: TagFeatureOptions
-): { activeTags: string[]; sampleTagSets: Set<string>[]; tagWeight: number } {
+): {
+  activeTags: string[]
+  sampleTagSets: Set<string>[]
+  sampleTagValues: number[]
+} {
   const opts = { ...DEFAULT_TAG_OPTIONS, ...tagOptions }
   if (!opts.enabled) {
-    return { activeTags: [], sampleTagSets: [], tagWeight: opts.weight }
+    return { activeTags: [], sampleTagSets: [], sampleTagValues: [] }
   }
 
   const derivedTagSet = new Set(
@@ -252,7 +263,29 @@ function buildTagDimensions(
     .map(([tag]) => tag)
     .sort()
 
-  return { activeTags, sampleTagSets, tagWeight: opts.weight }
+  const activeTagSet = new Set(activeTags)
+  const sampleTagValues = sampleTagSets.map((tagSet) => {
+    let activeCount = 0
+    for (const tag of tagSet) {
+      if (activeTagSet.has(tag)) {
+        activeCount += 1
+      }
+    }
+
+    if (activeCount === 0) {
+      return 0
+    }
+
+    if (opts.normalization === 'unit-l2') {
+      // Keep total tag-vector magnitude stable so tag quantity does not
+      // dominate distances; overlap/content drives similarity instead.
+      return opts.weight / Math.sqrt(activeCount)
+    }
+
+    return opts.weight
+  })
+
+  return { activeTags, sampleTagSets, sampleTagValues }
 }
 
 // Normalize a value to 0-1 range using min-max scaling
@@ -263,12 +296,99 @@ function normalize(value: number, min: number, max: number): number {
 
 function robustNormalize(value: number, median: number, iqr: number): number {
   if (iqr === 0) return 0.5
-  return Math.max(0, Math.min(1, 0.5 + (value - median) / (iqr * 2)))
+  // Logistic squash around median to reduce outlier-driven spreading.
+  const scaled = (value - median) / (iqr * 1.5)
+  const logistic = 1 / (1 + Math.exp(-scaled))
+  return 0.05 + logistic * 0.9
 }
 
 function zscoreNormalize(value: number, mean: number, std: number): number {
   if (std === 0) return 0.5
   return Math.max(0, Math.min(1, 0.5 + (value - mean) / (std * 6)))
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(1, value))
+}
+
+function logistic(value: number): number {
+  return 1 / (1 + Math.exp(-value))
+}
+
+function contrastScore(primary: number, opposing: number, sharpness = 6): number {
+  return logistic((primary - opposing) * sharpness)
+}
+
+function getNoiseEvidence(sample: AudioFeatures): number | null {
+  let weightedSum = 0
+  let totalWeight = 0
+
+  const add = (value: number | null | undefined, weight: number) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return
+    weightedSum += clamp01(value) * weight
+    totalWeight += weight
+  }
+
+  // Prioritize subjective noisiness but stabilize with neighboring proxies.
+  add(sample.noisiness, 0.45)
+  add(sample.roughness, 0.2)
+  add(sample.spectralFlatness, 0.2)
+  add(sample.zeroCrossingRate, 0.15)
+
+  return totalWeight > 0 ? weightedSum / totalWeight : null
+}
+
+function getTonalEvidence(sample: AudioFeatures): number | null {
+  const cues: number[] = []
+
+  if (typeof sample.keyStrength === 'number' && Number.isFinite(sample.keyStrength)) {
+    cues.push(clamp01(sample.keyStrength))
+  }
+
+  if (
+    typeof sample.harmonicPercussiveRatio === 'number' &&
+    Number.isFinite(sample.harmonicPercussiveRatio)
+  ) {
+    const hpr = Math.max(0, sample.harmonicPercussiveRatio)
+    cues.push(clamp01(hpr / (1 + hpr)))
+  }
+
+  if (
+    typeof sample.harmonicEnergy === 'number' &&
+    Number.isFinite(sample.harmonicEnergy) &&
+    typeof sample.percussiveEnergy === 'number' &&
+    Number.isFinite(sample.percussiveEnergy)
+  ) {
+    const harmonic = Math.max(0, sample.harmonicEnergy)
+    const percussive = Math.max(0, sample.percussiveEnergy)
+    const total = harmonic + percussive
+    if (total > 0) {
+      cues.push(clamp01(harmonic / total))
+    }
+  }
+
+  if (cues.length === 0) return null
+  return cues.reduce((sum, value) => sum + value, 0) / cues.length
+}
+
+function getSaturationEvidence(sample: AudioFeatures): number | null {
+  let weightedSum = 0
+  let totalWeight = 0
+
+  const add = (value: number | null | undefined, weight: number) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return
+    weightedSum += clamp01(value) * weight
+    totalWeight += weight
+  }
+
+  // Saturation/texture cues: roughness first, reinforced by harmonic impurity.
+  add(sample.roughness, 0.5)
+  add(sample.dissonance, 0.2)
+  add(sample.inharmonicity, 0.2)
+  add(sample.spectralComplexity, 0.1)
+
+  return totalWeight > 0 ? weightedSum / totalWeight : null
 }
 
 // Extract a single feature value from AudioFeatures
@@ -303,7 +423,12 @@ function getFeatureValue(sample: AudioFeatures, feature: keyof FeatureWeights): 
     case 'onsetCount':
       return sample.onsetCount
     case 'keyStrength':
-      return sample.keyStrength
+      {
+        const tonalEvidence = getTonalEvidence(sample)
+        if (tonalEvidence === null) return null
+        const noiseEvidence = getNoiseEvidence(sample) ?? 0
+        return contrastScore(tonalEvidence, noiseEvidence)
+      }
     // Phase 1: Timbral features
     case 'spectralCrest':
       return sample.spectralCrest ?? null
@@ -320,8 +445,15 @@ function getFeatureValue(sample: AudioFeatures, feature: keyof FeatureWeights): 
       return sample.warmth ?? null
     case 'hardness':
       return sample.hardness ?? null
+    case 'noisiness':
+      {
+        const noiseEvidence = getNoiseEvidence(sample)
+        if (noiseEvidence === null) return null
+        const tonalEvidence = getTonalEvidence(sample) ?? 0
+        return contrastScore(noiseEvidence, tonalEvidence)
+      }
     case 'roughness':
-      return sample.roughness ?? null
+      return getSaturationEvidence(sample)
     case 'sharpness':
       return sample.sharpness ?? null
     // Phase 2: Stereo features
@@ -381,6 +513,8 @@ function getFeatureValue(sample: AudioFeatures, feature: keyof FeatureWeights): 
       return sample.transientSpectralCentroid ?? null
     case 'transientSpectralFlatness':
       return sample.transientSpectralFlatness ?? null
+    case 'sampleTypeConfidence':
+      return sample.sampleTypeConfidence ?? null
     default:
       return null
   }
@@ -397,7 +531,7 @@ export function buildFeatureMatrix(
 
   // Only use features with non-zero weights
   const activeFeatures = featureKeys.filter((k) => weights[k] > 0)
-  const { activeTags, sampleTagSets, tagWeight } = buildTagDimensions(samples, options.tags)
+  const { activeTags, sampleTagSets, sampleTagValues } = buildTagDimensions(samples, options.tags)
 
   if (activeFeatures.length === 0 && activeTags.length === 0) {
     return { matrix: [], validIndices: [] }
@@ -469,9 +603,10 @@ export function buildFeatureMatrix(
 
     if (activeTags.length > 0) {
       const tagSet = sampleTagSets[i] ?? new Set<string>()
+      const tagValue = sampleTagValues[i] ?? 0
       for (const tag of activeTags) {
         const hasTag = tagSet.has(tag)
-        row.push(hasTag ? tagWeight : 0)
+        row.push(hasTag ? tagValue : 0)
         if (hasTag) hasAnyValue = true
       }
     }

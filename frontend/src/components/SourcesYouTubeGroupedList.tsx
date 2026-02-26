@@ -1,6 +1,11 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { ChevronDown, ChevronRight, Loader2, Scissors, Trash2 } from 'lucide-react'
-import { SourcesSampleListRow } from './SourcesSampleListRow'
+import {
+  SourcesSampleListRow,
+  DEFAULT_SOURCES_LIST_COLUMN_WIDTHS,
+  DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY,
+  type SourcesListColumnVisibility,
+} from './SourcesSampleListRow'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
 import type { SliceWithTrackExtended, SourceTree } from '../types'
@@ -21,6 +26,7 @@ interface VideoGroup {
 
 interface SourcesYouTubeGroupedListProps {
   samples: SliceWithTrackExtended[]
+  selectedYouTubeTrackId?: number | null
   selectedId: number | null
   selectedIds: Set<number>
   onSelect: (id: number) => void
@@ -42,12 +48,88 @@ interface SourcesYouTubeGroupedListProps {
 
 const DEFAULT_LIST_ROW_HEIGHT_PX = 46
 const LIST_ROW_OVERSCAN = 4
-const MAX_RENDERED_LIST_ROWS = 80
+const MIN_RENDERED_LIST_ROWS = 20
+const MIN_VIRTUALIZED_ROW_HEIGHT_PX = Math.max(22, Math.floor(DEFAULT_LIST_ROW_HEIGHT_PX * 0.5))
+const MAX_VIRTUALIZED_ROW_HEIGHT_PX = DEFAULT_LIST_ROW_HEIGHT_PX * 3
+const COLUMN_VISIBILITY_STORAGE_KEY = 'sources-list-column-visibility-v1'
+const CONTROLS_COLUMN_WIDTH = Math.max(72, DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.actions)
+const OPTIONAL_COLUMN_KEYS: Array<keyof SourcesListColumnVisibility> = [
+  'tags',
+  'artist',
+  'album',
+  'year',
+  'albumArtist',
+  'genre',
+  'trackNumber',
+  'discNumber',
+  'tagBpm',
+  'musicalKey',
+  'isrc',
+  'bpm',
+  'key',
+  'scale',
+  'envelope',
+  'brightness',
+  'noisiness',
+  'warmth',
+  'hardness',
+  'sharpness',
+  'loudness',
+  'sampleRate',
+  'channels',
+  'format',
+  'polyphony',
+  'dateAdded',
+  'dateCreated',
+  'dateModified',
+  'path',
+]
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
+function getRowMinWidth(columnVisibility: SourcesListColumnVisibility): number {
+  let width = 0
+
+  width += 24 // checkbox
+  width += CONTROLS_COLUMN_WIDTH
+  width += 16 // instrument icon
+  width += DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.name
+  width += DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.duration
+
+  for (const key of OPTIONAL_COLUMN_KEYS) {
+    if (!columnVisibility[key]) continue
+    width += DEFAULT_SOURCES_LIST_COLUMN_WIDTHS[key]
+  }
+
+  // Includes row padding and inter-column gaps.
+  width += 220
+
+  return width
+}
+
+function loadColumnVisibility(): SourcesListColumnVisibility {
+  if (typeof window === 'undefined') {
+    return DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY
+  }
+
+  try {
+    const raw = window.localStorage.getItem(COLUMN_VISIBILITY_STORAGE_KEY)
+    if (!raw) return DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY
+    const parsed = JSON.parse(raw) as Partial<SourcesListColumnVisibility>
+    return {
+      ...DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY,
+      ...parsed,
+      envelope: parsed.envelope ?? DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY.envelope,
+      loudness: parsed.loudness ?? DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY.loudness,
+    }
+  } catch {
+    return DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY
+  }
+}
+
 export function SourcesYouTubeGroupedList({
   samples,
+  selectedYouTubeTrackId = null,
   selectedId,
   selectedIds,
   onSelect,
@@ -69,12 +151,19 @@ export function SourcesYouTubeGroupedList({
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const listBodyRef = useRef<HTMLDivElement | null>(null)
+  const columnHeaderRef = useRef<HTMLDivElement | null>(null)
   const groupedRowsRef = useRef<Record<number, HTMLDivElement | null>>({})
   const dragPreviewRef = useRef<HTMLElement | null>(null)
   const [expandedVideos, setExpandedVideos] = useState<Set<number>>(new Set())
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
   const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null)
+  const [columnHeaderHeight, setColumnHeaderHeight] = useState(0)
+  const [columnVisibility] = useState<SourcesListColumnVisibility>(loadColumnVisibility)
+  const rowMinWidth = useMemo(
+    () => getRowMinWidth(columnVisibility),
+    [columnVisibility],
+  )
 
   const preparePlaybackForSample = (sample: SliceWithTrackExtended) =>
     prepareSamplePreviewPlayback(sample, tuneTargetNote)
@@ -90,11 +179,21 @@ export function SourcesYouTubeGroupedList({
     }
   }, [])
 
+  const scopedSamples =
+    selectedYouTubeTrackId === null
+      ? samples
+      : samples.filter((sample) => sample.trackId === selectedYouTubeTrackId)
+
   // Group samples by video - use sourceTree if available to show all videos
   const videoGroups: VideoGroup[] = (() => {
     if (sourceTree?.youtube) {
+      const scopedVideos =
+        selectedYouTubeTrackId === null
+          ? sourceTree.youtube
+          : sourceTree.youtube.filter((video) => video.id === selectedYouTubeTrackId)
+
       // Create groups from source tree to include videos with 0 samples
-      const samplesByTrack = samples.reduce((acc, sample) => {
+      const samplesByTrack = scopedSamples.reduce((acc, sample) => {
         if (!acc[sample.trackId]) {
           acc[sample.trackId] = []
         }
@@ -102,7 +201,7 @@ export function SourcesYouTubeGroupedList({
         return acc
       }, {} as Record<number, SliceWithTrackExtended[]>)
 
-      return sourceTree.youtube.map(video => {
+      return scopedVideos.map(video => {
         const videoSamples = samplesByTrack[video.id] || []
         // Try to get track info from first sample if available
         const firstSample = videoSamples[0]
@@ -119,7 +218,7 @@ export function SourcesYouTubeGroupedList({
 
     // Fallback to old behavior if sourceTree is not available
     return Object.values(
-      samples.reduce((acc, sample) => {
+      scopedSamples.reduce((acc, sample) => {
         const trackId = sample.trackId
         if (!acc[trackId]) {
           acc[trackId] = {
@@ -183,7 +282,7 @@ export function SourcesYouTubeGroupedList({
         resizeObserver.disconnect()
       }
     }
-  }, [])
+  }, [isLoading, videoGroups.length])
 
   useEffect(() => {
     const listBody = listBodyRef.current
@@ -206,6 +305,46 @@ export function SourcesYouTubeGroupedList({
     // Group expand/collapse changes layout; force a fresh row-height measurement.
     setMeasuredRowHeight(null)
   }, [expandedVideos, samples.length])
+
+  useEffect(() => {
+    const headerNode = columnHeaderRef.current
+    if (!headerNode) return
+
+    let frameId: number | null = null
+    let resizeObserver: ResizeObserver | null = null
+
+    const measureHeader = () => {
+      const height = Math.round(headerNode.getBoundingClientRect().height)
+      setColumnHeaderHeight((current) => (current === height ? current : height))
+    }
+
+    measureHeader()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measureHeader)
+      return () => {
+        window.removeEventListener('resize', measureHeader)
+      }
+    }
+
+    resizeObserver = new ResizeObserver(() => {
+      if (frameId !== null) return
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null
+        measureHeader()
+      })
+    })
+    resizeObserver.observe(headerNode)
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+      }
+    }
+  }, [])
 
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -395,7 +534,18 @@ export function SourcesYouTubeGroupedList({
   // Determine if select-all checkbox should be indeterminate
   const selectAllIndeterminate = selectedIds.size > 0 && selectedIds.size < samples.length
   const selectAllChecked = selectedIds.size === samples.length && samples.length > 0
-  const rowHeight = measuredRowHeight ?? DEFAULT_LIST_ROW_HEIGHT_PX
+  const measuredOrDefaultRowHeight = measuredRowHeight ?? DEFAULT_LIST_ROW_HEIGHT_PX
+  const rowHeight = clamp(
+    measuredOrDefaultRowHeight,
+    MIN_VIRTUALIZED_ROW_HEIGHT_PX,
+    MAX_VIRTUALIZED_ROW_HEIGHT_PX,
+  )
+  const safeViewportRowHeight = Math.max(1, Math.min(rowHeight, DEFAULT_LIST_ROW_HEIGHT_PX))
+  const minRowsToFillViewport =
+    viewportHeight > 0
+      ? Math.ceil(viewportHeight / safeViewportRowHeight) + LIST_ROW_OVERSCAN * 2
+      : 0
+  const renderedRowBudget = Math.max(MIN_RENDERED_LIST_ROWS, minRowsToFillViewport)
 
   const getVirtualWindow = (itemCount: number, groupNode: HTMLDivElement | null) => {
     if (itemCount === 0) {
@@ -407,13 +557,25 @@ export function SourcesYouTubeGroupedList({
       }
     }
 
+    const buildRowWindow = (targetRow: number) => {
+      const maxStartRow = Math.max(0, itemCount - renderedRowBudget)
+      const startRow = clamp(targetRow, 0, maxStartRow)
+      const endRowExclusive = Math.min(itemCount, startRow + renderedRowBudget)
+      return {
+        startIndex: startRow,
+        endIndex: endRowExclusive,
+        topSpacer: startRow * rowHeight,
+        bottomSpacer: Math.max(0, itemCount - endRowExclusive) * rowHeight,
+      }
+    }
+
     if (!groupNode || viewportHeight <= 0 || rowHeight <= 0) {
-      const fallbackEndIndex = Math.min(itemCount, MAX_RENDERED_LIST_ROWS)
+      // Avoid blank regions while viewport metrics are unavailable.
       return {
         startIndex: 0,
-        endIndex: fallbackEndIndex,
+        endIndex: itemCount,
         topSpacer: 0,
-        bottomSpacer: Math.max(0, itemCount - fallbackEndIndex) * rowHeight,
+        bottomSpacer: 0,
       }
     }
 
@@ -423,45 +585,22 @@ export function SourcesYouTubeGroupedList({
 
     const rawStartRow = Math.floor(visibleTop / rowHeight) - LIST_ROW_OVERSCAN
     const rawEndRowExclusive = Math.ceil(visibleBottom / rowHeight) + LIST_ROW_OVERSCAN
+
+    if (rawEndRowExclusive <= 0) {
+      return buildRowWindow(0)
+    }
+
+    if (rawStartRow >= itemCount) {
+      return buildRowWindow(itemCount - renderedRowBudget)
+    }
+
     const startRow = clamp(rawStartRow, 0, itemCount)
     const endRowExclusive = clamp(rawEndRowExclusive, 0, itemCount)
-
     if (startRow >= endRowExclusive) {
-      if (rawEndRowExclusive <= 0) {
-        const fallbackEndIndex = Math.min(itemCount, MAX_RENDERED_LIST_ROWS)
-        return {
-          startIndex: 0,
-          endIndex: fallbackEndIndex,
-          topSpacer: 0,
-          bottomSpacer: Math.max(0, itemCount - fallbackEndIndex) * rowHeight,
-        }
-      }
-
-      if (rawStartRow >= itemCount) {
-        const fallbackStartRow = Math.max(0, itemCount - MAX_RENDERED_LIST_ROWS)
-        return {
-          startIndex: fallbackStartRow,
-          endIndex: itemCount,
-          topSpacer: fallbackStartRow * rowHeight,
-          bottomSpacer: 0,
-        }
-      }
-
-      return {
-        startIndex: startRow,
-        endIndex: startRow,
-        topSpacer: startRow * rowHeight,
-        bottomSpacer: Math.max(0, itemCount - startRow) * rowHeight,
-      }
+      return buildRowWindow(startRow)
     }
 
-    const cappedEndRowExclusive = Math.min(endRowExclusive, startRow + MAX_RENDERED_LIST_ROWS)
-    return {
-      startIndex: startRow,
-      endIndex: cappedEndRowExclusive,
-      topSpacer: startRow * rowHeight,
-      bottomSpacer: Math.max(0, itemCount - cappedEndRowExclusive) * rowHeight,
-    }
+    return buildRowWindow(startRow)
   }
 
   useEffect(() => {
@@ -515,7 +654,7 @@ export function SourcesYouTubeGroupedList({
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="flex min-h-0 flex-col h-full overflow-hidden">
       {/* Header row */}
       <div className="sticky top-0 bg-surface-raised border-b border-surface-border px-4 py-2 flex-shrink-0 z-10">
         <div className="flex items-center gap-2 sm:gap-3">
@@ -547,7 +686,120 @@ export function SourcesYouTubeGroupedList({
       </div>
 
       {/* List items grouped by video */}
-      <div ref={listBodyRef} className="flex-1 overflow-y-auto">
+      <div ref={listBodyRef} className="flex-1 min-h-0 overflow-y-auto">
+        <div
+          ref={columnHeaderRef}
+          className="sticky top-0 z-[5] border-b border-surface-border bg-surface-raised"
+          style={{
+            width: 'max-content',
+            minWidth: rowMinWidth,
+          }}
+        >
+          <div
+            className="px-3 py-1.5"
+            style={{
+              width: 'max-content',
+              minWidth: rowMinWidth,
+            }}
+          >
+            <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] uppercase tracking-wide text-slate-500">
+              <div className="w-5 flex-shrink-0" aria-hidden />
+              <div className="flex-shrink-0 text-center" style={{ width: CONTROLS_COLUMN_WIDTH }}>Controls</div>
+              <div className="w-4 flex-shrink-0 text-center">Inst</div>
+              <div className="flex-shrink-0 min-w-0 pl-1" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.name }}>Name</div>
+
+              {columnVisibility.tags && (
+                <div className="flex-shrink-0 pl-1" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.tags }}>Instruments</div>
+              )}
+              {columnVisibility.artist && (
+                <div className="flex-shrink-0 min-w-0" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.artist }}>Artist</div>
+              )}
+              {columnVisibility.album && (
+                <div className="flex-shrink-0 min-w-0" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.album }}>Album</div>
+              )}
+              {columnVisibility.year && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.year }}>Year</div>
+              )}
+              {columnVisibility.albumArtist && (
+                <div className="flex-shrink-0 min-w-0" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.albumArtist }}>Alb Artist</div>
+              )}
+              {columnVisibility.genre && (
+                <div className="flex-shrink-0 min-w-0" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.genre }}>Genre</div>
+              )}
+              {columnVisibility.trackNumber && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.trackNumber }}>Trk</div>
+              )}
+              {columnVisibility.discNumber && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.discNumber }}>Disc</div>
+              )}
+              {columnVisibility.tagBpm && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.tagBpm }}>Det BPM</div>
+              )}
+              {columnVisibility.musicalKey && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.musicalKey }}>Det Key</div>
+              )}
+              {columnVisibility.isrc && (
+                <div className="flex-shrink-0 min-w-0" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.isrc }}>ISRC</div>
+              )}
+              {columnVisibility.bpm && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.bpm }}>BPM</div>
+              )}
+              {columnVisibility.key && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.key }}>Fund</div>
+              )}
+              {columnVisibility.scale && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.scale }}>Scale</div>
+              )}
+              {columnVisibility.envelope && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.envelope }}>Env</div>
+              )}
+              {columnVisibility.brightness && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.brightness }}>Bright</div>
+              )}
+              {columnVisibility.noisiness && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.noisiness }}>Noisy</div>
+              )}
+              {columnVisibility.warmth && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.warmth }}>Warmth</div>
+              )}
+              {columnVisibility.hardness && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.hardness }}>Hard</div>
+              )}
+              {columnVisibility.sharpness && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.sharpness }}>Sharp</div>
+              )}
+              {columnVisibility.loudness && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.loudness }}>Loud</div>
+              )}
+              {columnVisibility.sampleRate && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.sampleRate }}>SR</div>
+              )}
+              {columnVisibility.channels && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.channels }}>Ch</div>
+              )}
+              {columnVisibility.format && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.format }}>Fmt</div>
+              )}
+              {columnVisibility.polyphony && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.polyphony }}>Poly</div>
+              )}
+              {columnVisibility.dateAdded && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.dateAdded }}>Added</div>
+              )}
+              {columnVisibility.dateCreated && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.dateCreated }}>Created</div>
+              )}
+              {columnVisibility.dateModified && (
+                <div className="flex-shrink-0 text-center" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.dateModified }}>Mod</div>
+              )}
+              {columnVisibility.path && (
+                <div className="flex-shrink-0 min-w-0" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.path }}>Path</div>
+              )}
+              <div className="flex-shrink-0 text-right" style={{ width: DEFAULT_SOURCES_LIST_COLUMN_WIDTHS.duration }}>Duration</div>
+            </div>
+          </div>
+        </div>
+
         {videoGroups.map(group => {
           const isExpanded = expandedVideos.has(group.trackId)
           const groupVirtualWindow = isExpanded
@@ -587,9 +839,19 @@ export function SourcesYouTubeGroupedList({
           }
 
           return (
-            <div key={group.trackId} className="border-b border-surface-border">
+            <div
+              key={group.trackId}
+              className="relative border-b border-surface-border"
+              style={{
+                width: 'max-content',
+                minWidth: rowMinWidth,
+              }}
+            >
               {/* Video header */}
-              <div className="flex items-center gap-3 p-3 bg-surface-raised hover:bg-surface-base transition-colors">
+              <div
+                className="sticky z-20 flex items-center gap-3 border-b border-surface-border bg-surface-raised p-3 transition-colors hover:bg-surface-base"
+                style={{ top: columnHeaderHeight > 0 ? columnHeaderHeight : 32 }}
+              >
                 <button
                   onClick={() => group.sliceCount > 0 && toggleVideoExpanded(group.trackId)}
                   className="flex items-center gap-3 flex-1"
@@ -649,6 +911,7 @@ export function SourcesYouTubeGroupedList({
                 <div
                   ref={(el) => { groupedRowsRef.current[group.trackId] = el }}
                   className="bg-surface-base"
+                  style={{ minWidth: rowMinWidth }}
                 >
                   {groupVirtualWindow && groupVirtualWindow.topSpacer > 0 && (
                     <div aria-hidden="true" style={{ height: `${groupVirtualWindow.topSpacer}px` }} />
@@ -674,6 +937,7 @@ export function SourcesYouTubeGroupedList({
                         onDragStart={handleDragStart(sample)}
                         onDragEnd={handleDragEnd}
                         playMode={playMode}
+                        columnVisibility={columnVisibility}
                       />
                     ))}
                   </div>

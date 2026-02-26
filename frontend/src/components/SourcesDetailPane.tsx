@@ -244,9 +244,9 @@ export function SourcesDetailPane({
           )}
         </div>
 
-        {/* Tags */}
+        {/* Instruments */}
         <div>
-          <label className="text-xs font-medium text-slate-400 block mb-2">Tags</label>
+          <label className="text-xs font-medium text-slate-400 block mb-2">Instruments</label>
           <div className="flex flex-wrap gap-1.5">
             {sample.tags.map(tag => (
               <span

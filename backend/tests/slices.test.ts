@@ -5,6 +5,7 @@ import { createTestTrack, createTestTrackWithAudio, createTestSlice } from './he
 import fs from 'fs'
 import path from 'path'
 import type { Express } from 'express'
+import { convertAudioFile } from '../src/services/ffmpeg.js'
 
 // Mock ffmpeg to avoid actual audio processing
 vi.mock('../src/services/ffmpeg.js', () => ({
@@ -19,6 +20,7 @@ vi.mock('../src/services/ffmpeg.js', () => ({
     const extension = path.extname(inputPath).replace(/^\./, '').toLowerCase() || 'mp3'
     return {
       sampleRate: 44100,
+      bitDepth: 16,
       channels: 2,
       format: extension,
       modifiedAt: new Date().toISOString(),
@@ -34,6 +36,7 @@ describe('Slices API', () => {
     resetDatabase()
     const { createApp } = await import('../src/app.js')
     app = createApp({ dataDir: TEST_DATA_DIR })
+    vi.mocked(convertAudioFile).mockClear()
   })
 
   describe('GET /api/tracks/:trackId/slices', () => {
@@ -260,6 +263,33 @@ describe('Slices API', () => {
       expect(res.body.error).toBe('sliceIds array required')
     })
 
+    it('returns 400 for invalid sampleRate', async () => {
+      const res = await request(app)
+        .post('/api/slices/batch-convert')
+        .send({ sliceIds: [1], targetFormat: 'wav', sampleRate: 7999 })
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toContain('sampleRate must be an integer')
+    })
+
+    it('returns 400 for invalid bitDepth', async () => {
+      const res = await request(app)
+        .post('/api/slices/batch-convert')
+        .send({ sliceIds: [1], targetFormat: 'wav', bitDepth: 20 })
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toContain('bitDepth must be one of')
+    })
+
+    it('returns 400 when bitDepth is used with unsupported target formats', async () => {
+      const res = await request(app)
+        .post('/api/slices/batch-convert')
+        .send({ sliceIds: [1], targetFormat: 'mp3', bitDepth: 24 })
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toContain('bitDepth is only supported')
+    })
+
     it('converts selected slices and updates file path + modified flag', async () => {
       const track = await createTestTrack(app)
       const slice = await createTestSlice(track.id, { name: 'Convert Me' })
@@ -277,11 +307,18 @@ describe('Slices API', () => {
 
       const res = await request(app)
         .post('/api/slices/batch-convert')
-        .send({ sliceIds: [slice.id], targetFormat: 'wav' })
+        .send({
+          sliceIds: [slice.id],
+          targetFormat: 'wav',
+          sampleRate: 48000,
+          bitDepth: 24,
+        })
 
       expect(res.status).toBe(200)
       expect(res.body).toMatchObject({
         targetFormat: 'wav',
+        sampleRate: 48000,
+        bitDepth: 24,
         total: 1,
         converted: 1,
         skipped: 0,
@@ -303,6 +340,53 @@ describe('Slices API', () => {
       expect(persistedSlice.sampleModified).toBe(1)
       expect(fs.existsSync(persistedSlice.filePath)).toBe(true)
       expect(fs.existsSync(originalPath)).toBe(false)
+      expect(convertAudioFile).toHaveBeenCalledWith(
+        originalPath,
+        expect.stringContaining(`${path.sep}slices${path.sep}`),
+        'wav',
+        { sampleRate: 48000, bitDepth: 24 },
+      )
+    })
+
+    it('supports quality-only conversion when target format is unchanged', async () => {
+      const track = await createTestTrack(app)
+      const slice = await createTestSlice(track.id, { name: 'Quality Upgrade' })
+
+      const slicesDir = path.join(TEST_DATA_DIR, 'slices')
+      const originalPath = path.join(slicesDir, 'quality-upgrade.wav')
+      fs.writeFileSync(originalPath, Buffer.from('audio-source-data'))
+
+      const db = await getAppDb()
+      db.prepare('UPDATE slices SET file_path = ? WHERE id = ?').run(originalPath, slice.id)
+      db.prepare(`
+        INSERT INTO audio_features (slice_id, duration, analysis_version, created_at, file_format)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(slice.id, 1.0, 'test', new Date().toISOString(), 'wav')
+
+      const res = await request(app)
+        .post('/api/slices/batch-convert')
+        .send({
+          sliceIds: [slice.id],
+          targetFormat: 'wav',
+          sampleRate: 48000,
+        })
+
+      expect(res.status).toBe(200)
+      expect(res.body).toMatchObject({
+        targetFormat: 'wav',
+        sampleRate: 48000,
+        bitDepth: null,
+        total: 1,
+        converted: 1,
+        skipped: 0,
+        failed: 0,
+      })
+      expect(convertAudioFile).toHaveBeenCalledWith(
+        originalPath,
+        expect.stringContaining(`${path.sep}slices${path.sep}`),
+        'wav',
+        { sampleRate: 48000, bitDepth: undefined },
+      )
     })
   })
 
@@ -499,6 +583,47 @@ describe('Slices API', () => {
       expect(res.body.total).toBe(2)
       const returnedNames = res.body.samples.map((sample: { name: string }) => sample.name).sort()
       expect(returnedNames).toEqual(['Kick', 'Snare'])
+    })
+
+    it('filters by density using fallback metrics when event density is missing', async () => {
+      const track = await createTestTrack(app, { status: 'ready' })
+      const lowDensitySlice = await createTestSlice(track.id, {
+        name: 'Low Density',
+        startTime: 1,
+        endTime: 3,
+      })
+      const highDensitySlice = await createTestSlice(track.id, {
+        name: 'High Density',
+        startTime: 1,
+        endTime: 3,
+      })
+
+      const db = await getAppDb()
+      const now = new Date().toISOString()
+
+      db.prepare(`
+        INSERT INTO audio_features (
+          slice_id, duration, analysis_version, created_at, event_count, event_density, onset_rate
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(lowDensitySlice.id, 2, 'test', now, 2, null, null)
+
+      db.prepare(`
+        INSERT INTO audio_features (
+          slice_id, duration, analysis_version, created_at, event_count, event_density, onset_rate
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(highDensitySlice.id, 2, 'test', now, null, null, 6)
+
+      const res = await request(app)
+        .get('/api/sources/samples')
+        .query({ densityMin: '0.5' })
+
+      expect(res.status).toBe(200)
+      expect(res.body.total).toBe(1)
+      expect(res.body.samples[0]).toMatchObject({
+        id: highDensitySlice.id,
+        name: 'High Density',
+      })
+      expect(res.body.samples[0].dimensionNormalized?.density).toBeCloseTo(1, 5)
     })
   })
 

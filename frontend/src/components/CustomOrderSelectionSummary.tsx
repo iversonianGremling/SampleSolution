@@ -92,7 +92,7 @@ export function CustomOrderSelectionSummary({ state, folders, tags, slices }: Pr
         <div>
           <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
             <TagIcon size={12} />
-            Tags ({selectedTags.length})
+            Instruments ({selectedTags.length})
           </div>
           {renderList(selectedTags)}
         </div>

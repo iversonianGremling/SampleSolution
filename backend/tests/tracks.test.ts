@@ -149,6 +149,83 @@ describe('Tracks API', () => {
       expect(snaresNode?.sampleCount).toBe(1)
       expect(acousticNode?.sampleCount).toBe(1)
     })
+
+    it('returns streaming source counts separately from local samples', async () => {
+      const db = await getAppDb()
+      const now = new Date().toISOString()
+
+      const insertTrack = db.prepare(`
+        INSERT INTO tracks (
+          youtube_id, title, description, thumbnail_url, duration, status, source, folder_path, relative_path, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      const insertSlice = db.prepare(`
+        INSERT INTO slices (track_id, name, start_time, end_time, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `)
+
+      const scTrack = insertTrack.run(
+        `sc_${Date.now()}`,
+        'SoundCloud source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        null,
+        null,
+        now
+      )
+      const spotifyTrack = insertTrack.run(
+        `spotify_${Date.now()}`,
+        'Spotify source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        null,
+        null,
+        now
+      )
+      const bandcampTrack = insertTrack.run(
+        `bc_${Date.now()}`,
+        'Bandcamp source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        null,
+        null,
+        now
+      )
+      const localTrack = insertTrack.run(
+        `local-tree-${Date.now()}`,
+        'Local source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        null,
+        null,
+        now
+      )
+
+      insertSlice.run(scTrack.lastInsertRowid as number, 'SC Slice', 0, 1, now)
+      insertSlice.run(spotifyTrack.lastInsertRowid as number, 'Spotify Slice', 0, 1, now)
+      insertSlice.run(bandcampTrack.lastInsertRowid as number, 'Bandcamp Slice', 0, 1, now)
+      insertSlice.run(localTrack.lastInsertRowid as number, 'Local Slice', 0, 1, now)
+
+      const res = await request(app).get('/api/sources/tree')
+
+      expect(res.status).toBe(200)
+      expect(res.body.local?.count).toBe(1)
+      expect(res.body.streaming?.soundcloud?.count).toBe(1)
+      expect(res.body.streaming?.spotify?.count).toBe(1)
+      expect(res.body.streaming?.bandcamp?.count).toBe(1)
+    })
   })
 
   describe('DELETE /api/sources', () => {
@@ -232,6 +309,66 @@ describe('Tracks API', () => {
       const deletedId = Number(localStandalone.lastInsertRowid)
       const deletedTrack = db.prepare('SELECT id FROM tracks WHERE id = ?').get(deletedId) as { id: number } | undefined
       expect(deletedTrack).toBeUndefined()
+    })
+
+    it('deletes only SoundCloud imports for soundcloud scope', async () => {
+      const db = await getAppDb()
+      const now = new Date().toISOString()
+      const insertTrack = db.prepare(`
+        INSERT INTO tracks (
+          youtube_id, title, description, thumbnail_url, duration, status, source, folder_path, relative_path, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+
+      insertTrack.run(
+        `sc_${Date.now()}`,
+        'SoundCloud Source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        null,
+        null,
+        now
+      )
+      insertTrack.run(
+        `spotify_${Date.now()}`,
+        'Spotify Source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        null,
+        null,
+        now
+      )
+      insertTrack.run(
+        `local-delete-${Date.now()}`,
+        'Local Source',
+        '',
+        '',
+        1,
+        'ready',
+        'local',
+        null,
+        null,
+        now
+      )
+
+      const res = await request(app)
+        .delete('/api/sources')
+        .send({ scope: 'soundcloud' })
+
+      expect(res.status).toBe(200)
+      expect(res.body.success).toBe(true)
+      expect(res.body.deletedTracks).toBe(1)
+
+      const remainingTitles = (
+        db.prepare('SELECT title FROM tracks ORDER BY title').all() as Array<{ title: string }>
+      ).map((row) => row.title)
+      expect(remainingTitles).toEqual(['Local Source', 'Spotify Source'])
     })
 
     it('accepts scope from query string when delete request body is missing', async () => {

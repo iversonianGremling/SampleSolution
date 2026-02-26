@@ -8,7 +8,8 @@ import type { SliceWithTrackExtended } from '../types'
 import { createManagedAudio, releaseManagedAudio } from '../services/globalAudioVolume'
 import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
 import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
-import { freqToNoteName } from '../utils/musicTheory'
+import { freqToNoteName, freqToPitchDisplay } from '../utils/musicTheory'
+import type { BulkRenameHighlightRange } from '../utils/bulkRename'
 
 type SortField =
   | 'name'
@@ -46,7 +47,7 @@ type SortField =
 type SortOrder = 'asc' | 'desc'
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
-type DuplicatePairMatchType = 'exact' | 'content' | 'file'
+type DuplicatePairMatchType = 'exact' | 'content' | 'file' | 'near-duplicate'
 
 interface DuplicatePairCardMeta {
   pairId: string
@@ -56,6 +57,7 @@ interface DuplicatePairCardMeta {
   selectedForDelete: boolean
   selectedDeleteSampleId: number | null
   canDelete: boolean
+  canDeletePartner: boolean
   matchType: DuplicatePairMatchType
   similarityPercent: number
 }
@@ -77,9 +79,10 @@ interface SourcesSampleGridProps {
   tuneTargetNote?: string | null
   tunePlaybackMode?: TunePlaybackMode
   scaleDegreeGroups?: Map<string, SliceWithTrackExtended[]> | null
-  bulkRenamePreviewById?: Map<number, { nextName: string; hasChange: boolean }>
+  bulkRenamePreviewById?: Map<number, { nextName: string; hasChange: boolean; highlightRanges: BulkRenameHighlightRange[] }>
   duplicatePairMetaBySampleId?: Map<number, DuplicatePairCardMeta>
   onToggleDuplicateDeleteTarget?: (sampleId: number) => void
+  onKeepDuplicateSample?: (sampleId: number) => void
 }
 
 const GRID_GAP_PX = 10
@@ -100,7 +103,7 @@ const QUICK_SORT_OPTIONS: Array<{ field: SortField; label: string }> = [
 ]
 
 const MORE_SORT_OPTIONS: Array<{ field: SortField; label: string }> = [
-  { field: 'tags', label: 'Tags' },
+  { field: 'tags', label: 'Instruments' },
   { field: 'artist', label: 'Artist' },
   { field: 'album', label: 'Album' },
   { field: 'year', label: 'Year' },
@@ -109,8 +112,8 @@ const MORE_SORT_OPTIONS: Array<{ field: SortField; label: string }> = [
   { field: 'composer', label: 'Composer' },
   { field: 'trackNumber', label: 'Track #' },
   { field: 'discNumber', label: 'Disc #' },
-  { field: 'tagBpm', label: 'Tag BPM' },
-  { field: 'musicalKey', label: 'Tag Key' },
+  { field: 'tagBpm', label: 'Detected BPM' },
+  { field: 'musicalKey', label: 'Detected Key' },
   { field: 'isrc', label: 'ISRC' },
   { field: 'scale', label: 'Scale' },
   { field: 'envelope', label: 'Envelope' },
@@ -179,6 +182,16 @@ function getPathDisplay(sample: SliceWithTrackExtended): string | null {
 }
 
 function getKeyDisplay(sample: SliceWithTrackExtended): string | null {
+  return (
+    (sample.fundamentalFrequency
+      ? freqToPitchDisplay(sample.fundamentalFrequency)?.compactLabel ?? null
+      : null) ||
+    sample.keyEstimate ||
+    null
+  )
+}
+
+function getKeySortValue(sample: SliceWithTrackExtended): string | null {
   return (sample.fundamentalFrequency ? freqToNoteName(sample.fundamentalFrequency) : null) || sample.keyEstimate || null
 }
 
@@ -191,7 +204,7 @@ function getSortValue(sample: SliceWithTrackExtended, field: SortField): string 
     case 'bpm':
       return sample.bpm ?? null
     case 'key':
-      return getKeyDisplay(sample)?.toLowerCase() ?? null
+      return getKeySortValue(sample)?.toLowerCase() ?? null
     case 'dateAdded':
       return parseDate(sample.dateAdded || sample.createdAt)
     case 'tags':
@@ -253,6 +266,44 @@ function getSortValue(sample: SliceWithTrackExtended, field: SortField): string 
   }
 }
 
+function renderHighlightedRenameText(
+  value: string,
+  ranges: BulkRenameHighlightRange[],
+): ReactNode {
+  if (ranges.length === 0) return value
+
+  const orderedRanges = [...ranges]
+    .filter((range) => range.end > range.start)
+    .sort((a, b) => a.start - b.start)
+
+  if (orderedRanges.length === 0) return value
+
+  const fragments: ReactNode[] = []
+  let cursor = 0
+
+  orderedRanges.forEach((range, index) => {
+    const start = Math.max(cursor, Math.min(range.start, value.length))
+    const end = Math.max(start, Math.min(range.end, value.length))
+    if (start > cursor) {
+      fragments.push(value.slice(cursor, start))
+    }
+    if (end > start) {
+      fragments.push(
+        <span key={`bulk-rename-highlight-${index}`} className="text-sky-300">
+          {value.slice(start, end)}
+        </span>,
+      )
+    }
+    cursor = end
+  })
+
+  if (cursor < value.length) {
+    fragments.push(value.slice(cursor))
+  }
+
+  return fragments
+}
+
 function FadeInOnMount({ children }: { children: ReactNode }) {
   return (
     <div className="animate-fade-in motion-reduce:animate-none">
@@ -264,6 +315,7 @@ function FadeInOnMount({ children }: { children: ReactNode }) {
 function getDuplicateMatchLabel(matchType: DuplicatePairMatchType): string {
   if (matchType === 'exact') return 'Fingerprint'
   if (matchType === 'content') return 'Content'
+  if (matchType === 'near-duplicate') return 'Near-duplicate'
   return 'File'
 }
 
@@ -284,9 +336,10 @@ export function SourcesSampleGrid({
   tuneTargetNote = null,
   tunePlaybackMode: _tunePlaybackMode = 'tape',
   scaleDegreeGroups = null,
-  bulkRenamePreviewById = new Map<number, { nextName: string; hasChange: boolean }>(),
+  bulkRenamePreviewById = new Map<number, { nextName: string; hasChange: boolean; highlightRanges: BulkRenameHighlightRange[] }>(),
   duplicatePairMetaBySampleId = new Map<number, DuplicatePairCardMeta>(),
   onToggleDuplicateDeleteTarget,
+  onKeepDuplicateSample,
 }: SourcesSampleGridProps) {
   const [playingId, setPlayingId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -308,7 +361,8 @@ export function SourcesSampleGrid({
   const dragPreviewRef = useRef<HTMLElement | null>(null)
   const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [infoOverlaySampleId, setInfoOverlaySampleId] = useState<number | null>(null)
-  const isDuplicatePairMode = duplicatePairMetaBySampleId.size > 0
+  const isDuplicatePairMode =
+    Boolean(onToggleDuplicateDeleteTarget || onKeepDuplicateSample) && duplicatePairMetaBySampleId.size > 0
 
   const preparePlaybackForSample = (sample: SliceWithTrackExtended) =>
     prepareSamplePreviewPlayback(sample, tuneTargetNote)
@@ -640,13 +694,13 @@ export function SourcesSampleGrid({
     }
 
     if (!gridNode || viewportHeight <= 0 || rowHeight <= 0) {
-      const fallbackEndIndex = Math.min(itemCount, safeColumnCount * maxRenderedRows)
-      const fallbackRenderedRows = Math.ceil(fallbackEndIndex / safeColumnCount)
+      // If we cannot place the virtual window yet, render all items to avoid blank
+      // regions caused by stale/unknown container measurements.
       return {
         startIndex: 0,
-        endIndex: fallbackEndIndex,
+        endIndex: itemCount,
         topSpacer: 0,
-        bottomSpacer: rowHeight > 0 ? Math.max(0, totalRows - fallbackRenderedRows) * rowHeight : 0,
+        bottomSpacer: 0,
       }
     }
 
@@ -1013,7 +1067,7 @@ export function SourcesSampleGrid({
         const isInfoOverlayOpen = infoOverlaySampleId === sample.id
         const renamePreview = bulkRenamePreviewById.get(sample.id)
         const hasRenamePreview = Boolean(renamePreview?.hasChange)
-        const duplicatePairMeta = duplicatePairMetaBySampleId.get(sample.id)
+        const duplicatePairMeta = isDuplicatePairMode ? duplicatePairMetaBySampleId.get(sample.id) : undefined
         const duplicateRoleClass = duplicatePairMeta
           ? duplicatePairMeta.selectedForDelete
             ? 'bg-red-500/20 text-red-100'
@@ -1028,11 +1082,14 @@ export function SourcesSampleGrid({
           : null
         const duplicateCanToggleDelete =
           Boolean(duplicatePairMeta && duplicatePairMeta.canDelete && onToggleDuplicateDeleteTarget)
-        const duplicateActionLabel = duplicatePairMeta
-          ? duplicatePairMeta.selectedForDelete
-            ? 'Keep both'
-            : 'Delete this'
-          : ''
+        const duplicateCanKeepThis =
+          Boolean(duplicatePairMeta && duplicatePairMeta.canDeletePartner && onKeepDuplicateSample)
+        const duplicateKeepThisSelected =
+          Boolean(
+            duplicatePairMeta &&
+            duplicatePairMeta.selectedDeleteSampleId === duplicatePairMeta.partnerSampleId,
+          )
+        const duplicateDeleteThisSelected = Boolean(duplicatePairMeta?.selectedForDelete)
         const bpmDisplay = typeof sample.bpm === 'number' && Number.isFinite(sample.bpm)
           ? `${Math.round(sample.bpm)}`
           : 'n/a'
@@ -1211,7 +1268,7 @@ export function SourcesSampleGrid({
                     <span className="text-white/55">Audio</span>
                     <span className="truncate text-white/80">{formatDisplay} · {formatSampleRate(sample.sampleRate)} · {channelsDisplay}</span>
                     <span className="text-white/55">Added</span>
-                    <span className="truncate text-white/80">{addedDisplay} · {sample.tags.length} tag{sample.tags.length === 1 ? '' : 's'}</span>
+                    <span className="truncate text-white/80">{addedDisplay} · {sample.tags.length} instrument{sample.tags.length === 1 ? '' : 's'}</span>
                   </div>
                 </div>
               </div>
@@ -1224,24 +1281,44 @@ export function SourcesSampleGrid({
                       <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 font-medium ${duplicateRoleClass}`}>
                         Pair {duplicatePairMeta.pairIndex} • {duplicateRoleLabel}
                       </span>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          if (!duplicateCanToggleDelete) return
-                          onToggleDuplicateDeleteTarget?.(sample.id)
-                        }}
-                        disabled={!duplicateCanToggleDelete}
-                        className={`inline-flex items-center rounded border px-1.5 py-0.5 font-medium transition-colors ${
-                          !duplicatePairMeta.canDelete
-                            ? 'border-surface-border text-slate-500 cursor-not-allowed'
-                            : duplicatePairMeta.selectedForDelete
-                              ? 'border-red-500/40 bg-red-500/20 text-red-100 hover:bg-red-500/25'
-                              : 'border-red-500/35 text-red-200 hover:bg-red-500/15'
-                        }`}
-                      >
-                        {duplicatePairMeta.canDelete ? duplicateActionLabel : 'Protected'}
-                      </button>
+                      <div className="ml-auto flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            if (!duplicateCanKeepThis) return
+                            onKeepDuplicateSample?.(sample.id)
+                          }}
+                          disabled={!duplicateCanKeepThis}
+                          className={`inline-flex h-5 items-center justify-center whitespace-nowrap rounded border px-2 text-[10px] font-medium transition-colors ${
+                            !duplicatePairMeta.canDeletePartner
+                              ? 'border-surface-border text-slate-500 cursor-not-allowed'
+                              : duplicateKeepThisSelected
+                                ? 'border-emerald-500/45 bg-emerald-500/20 text-emerald-100'
+                                : 'border-emerald-500/35 text-emerald-200 hover:bg-emerald-500/15'
+                          }`}
+                        >
+                          Keep
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            if (!duplicateCanToggleDelete) return
+                            onToggleDuplicateDeleteTarget?.(sample.id)
+                          }}
+                          disabled={!duplicateCanToggleDelete}
+                          className={`inline-flex h-5 items-center justify-center whitespace-nowrap rounded border px-2 text-[10px] font-medium transition-colors ${
+                            !duplicatePairMeta.canDelete
+                              ? 'border-surface-border text-slate-500 cursor-not-allowed'
+                              : duplicateDeleteThisSelected
+                                ? 'border-red-500/40 bg-red-500/20 text-red-100 hover:bg-red-500/25'
+                                : 'border-red-500/35 text-red-200 hover:bg-red-500/15'
+                          }`}
+                        >
+                          {duplicatePairMeta.canDelete ? 'Delete' : 'Protected'}
+                        </button>
+                      </div>
                     </div>
                     <div className="text-[10px] text-slate-500 truncate">
                       {getDuplicateMatchLabel(duplicatePairMeta.matchType)} {duplicatePairMeta.similarityPercent}%
@@ -1254,7 +1331,7 @@ export function SourcesSampleGrid({
                       {sample.name}
                     </p>
                     <p className="text-sm font-medium text-accent-primary truncate" title={renamePreview!.nextName}>
-                      {renamePreview!.nextName}
+                      {renderHighlightedRenameText(renamePreview!.nextName, renamePreview!.highlightRanges)}
                     </p>
                   </div>
                 ) : (
@@ -1263,7 +1340,7 @@ export function SourcesSampleGrid({
                   </p>
                 )}
 
-                {/* Tags preview */}
+                {/* Instruments preview */}
                 {sample.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1 items-center">
                     {sample.tags.slice(0, 2).map(tag => (

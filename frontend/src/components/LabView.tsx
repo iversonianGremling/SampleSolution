@@ -19,7 +19,7 @@ import {
   type LabPitchMode,
   type LabSettings,
 } from '../services/LabAudioEngine'
-import { subscribeGlobalAudioVolume } from '../services/globalAudioVolume'
+import { PANIC_STOP_AUDIO_EVENT, subscribeGlobalAudioVolume } from '../services/globalAudioVolume'
 import { VstKnob } from './lab/VstKnob'
 import { Led } from './lab/Led'
 import { FxModule } from './lab/FxModule'
@@ -461,6 +461,15 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
     setIsPreparingPreview(false)
     stopPlayheadAnimation()
   }, [stopPlayheadAnimation])
+
+  useEffect(() => {
+    const handlePanicStop = () => {
+      stopPreview()
+    }
+
+    window.addEventListener(PANIC_STOP_AUDIO_EVENT, handlePanicStop)
+    return () => window.removeEventListener(PANIC_STOP_AUDIO_EVENT, handlePanicStop)
+  }, [stopPreview])
 
   const handleSampleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -1334,6 +1343,20 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
                                 </button>
                               )
                             })}
+                            <button
+                              type="button"
+                              onClick={() => updateSettings('preserveFormants', !settings.preserveFormants)}
+                              disabled={settings.pitchMode === 'tape'}
+                              className="px-1.5 py-0.5 rounded text-[8px] tracking-wider uppercase transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                              style={{
+                                background: settings.preserveFormants ? '#10b98133' : '#1a1c22',
+                                color: settings.preserveFormants ? '#6ee7b7' : '#4a4e58',
+                                border: `1px solid ${settings.preserveFormants ? '#34d399' : '#1e2028'}`,
+                              }}
+                              title="Preserve vocal formants when using Granular/HQ pitch modes"
+                            >
+                              Formants
+                            </button>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">

@@ -23,8 +23,8 @@ const OTHER_SORT_OPTIONS: Array<{ value: SortField; label: string }> = [
   { value: 'composer', label: 'Composer' },
   { value: 'trackNumber', label: 'Track #' },
   { value: 'discNumber', label: 'Disc #' },
-  { value: 'tagBpm', label: 'Tag BPM' },
-  { value: 'musicalKey', label: 'Tag key' },
+  { value: 'tagBpm', label: 'Detected BPM' },
+  { value: 'musicalKey', label: 'Detected key' },
   { value: 'isrc', label: 'ISRC' },
   { value: 'similarity', label: 'Similarity' },
 ]

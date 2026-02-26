@@ -300,7 +300,7 @@ export function CustomSplitSampleSelectPanel({
       : context?.type === 'collection'
       ? `Samples in ${context.name}`
       : context?.type === 'tag'
-      ? `Samples tagged ${context.name}`
+      ? `Samples with instrument ${context.name}`
       : 'Pick a source'
 
   if (!context) return null
@@ -353,7 +353,7 @@ export function CustomSplitSampleSelectPanel({
                 filteredCount={samples.length}
               />
               <div className="flex items-center gap-2">
-                <label className="text-xs text-slate-500">Tag category</label>
+                <label className="text-xs text-slate-500">Instrument category</label>
                 <select
                   className="text-xs bg-surface-base border border-surface-border rounded px-2 py-1 text-slate-200"
                   value={tagCategory}

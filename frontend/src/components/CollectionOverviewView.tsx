@@ -89,7 +89,7 @@ export function CollectionOverviewView({ overview, tab }: CollectionOverviewView
           <StatCard label="Samples" value={overview.totalSamples.toLocaleString()} />
           <StatCard label="Tracks" value={overview.totalTracks.toLocaleString()} />
           <StatCard label="Folders" value={overview.totalFolders.toLocaleString()} />
-          <StatCard label="Tags" value={overview.totalTags.toLocaleString()} />
+          <StatCard label="Instruments" value={overview.totalTags.toLocaleString()} />
           <StatCard label="Favorites" value={overview.favoriteSamples.toLocaleString()} />
           <StatCard label="Modified" value={overview.modifiedSamples.toLocaleString()} />
           <StatCard label="Total Time" value={formatDuration(overview.totalDurationSec)} />
@@ -97,7 +97,7 @@ export function CollectionOverviewView({ overview, tab }: CollectionOverviewView
         </div>
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-          <TopMetricList title="Top Tags" items={topTagItems} />
+          <TopMetricList title="Top Instruments" items={topTagItems} />
           <TopMetricList title="Top Instruments" items={overview.topInstruments} />
           <TopMetricList title="Top Keys" items={overview.topKeys} />
         </div>

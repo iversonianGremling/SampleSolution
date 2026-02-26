@@ -24,9 +24,29 @@ const OFFSET_KNOB_SIZE = 40
 const ADVANCED_KNOB_SIZE = 34
 
 export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
-  const { pads, padFxSettings, setPadFxSettings, clearPadFx } = useDrumRack()
-  const settings = padFxSettings.get(padIndex) ?? DEFAULT_LAB_SETTINGS
+  const { pads, padFxSettings, setPadFxSettings, clearPadFx, globalFxSettings } = useDrumRack()
+  const baseSettings = useMemo(() => ({
+    ...DEFAULT_LAB_SETTINGS,
+    fxOrder: [...DEFAULT_LAB_SETTINGS.fxOrder],
+    // Store per-pad pitch as an offset from the current global pitch.
+    pitchSemitones: 0,
+    pitchMode: globalFxSettings.pitchMode,
+    preserveFormants: globalFxSettings.preserveFormants,
+    fadeIn: globalFxSettings.fadeIn,
+    fadeOut: globalFxSettings.fadeOut,
+  }), [
+    globalFxSettings.fadeIn,
+    globalFxSettings.fadeOut,
+    globalFxSettings.pitchMode,
+    globalFxSettings.preserveFormants,
+  ])
+  const settings = padFxSettings.get(padIndex) ?? baseSettings
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const displayedPitchSemitones = clamp(
+    settings.pitchSemitones + globalFxSettings.pitchSemitones,
+    -24,
+    24,
+  )
 
   const sample = pads[padIndex]?.slice
   const sampleDuration = sample ? Math.max(0, sample.endTime - sample.startTime) : 0
@@ -95,12 +115,12 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
             <div className="grid grid-cols-2 gap-1 place-items-center">
               <VstKnob
                 label="Pitch"
-                value={settings.pitchSemitones}
+                value={displayedPitchSemitones}
                 min={-24}
                 max={24}
                 step={0.1}
-                defaultValue={DEFAULT_LAB_SETTINGS.pitchSemitones}
-                onChange={(v) => update('pitchSemitones', v)}
+                defaultValue={globalFxSettings.pitchSemitones}
+                onChange={(v) => update('pitchSemitones', v - globalFxSettings.pitchSemitones)}
                 format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}st`}
                 color="#06b6d4"
                 size={MINI_KNOB_SIZE}
@@ -119,6 +139,19 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
                 disabled={settings.pitchMode === 'tape'}
               />
             </div>
+            <button
+              type="button"
+              onClick={() => update('preserveFormants', !settings.preserveFormants)}
+              disabled={settings.pitchMode === 'tape'}
+              className={`mt-1.5 w-full rounded border px-1.5 py-1 text-[9px] uppercase tracking-wider transition-colors ${
+                settings.preserveFormants
+                  ? 'border-emerald-400/70 bg-emerald-500/15 text-emerald-200'
+                  : 'border-surface-border bg-surface-base text-cyan-300/80'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
+              title="Preserve vocal formants when using Granular/HQ pitch modes"
+            >
+              Preserve Formants
+            </button>
           </div>
 
           <div className="rounded-md border border-emerald-500/25 bg-emerald-500/5 p-2">

@@ -15,8 +15,37 @@ import hashlib
 
 warnings.filterwarnings('ignore')
 
-# Debug mode - set DEBUG_ANALYSIS=1 environment variable to enable detailed timing logs
-DEBUG_MODE = os.environ.get('DEBUG_ANALYSIS', '0') == '1'
+def env_flag(name, default=False):
+    """Parse common truthy env var values."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+# Runtime modes controlled by environment variables
+DEBUG_MODE = env_flag('DEBUG_ANALYSIS', False)
+SAFE_MODE = env_flag('AUDIO_ANALYSIS_SAFE_MODE', False)
+DISABLE_ESSENTIA = SAFE_MODE or env_flag('AUDIO_ANALYSIS_DISABLE_ESSENTIA', False)
+DISABLE_TENSORFLOW = SAFE_MODE or env_flag('AUDIO_ANALYSIS_DISABLE_TENSORFLOW', False)
+DISABLE_FINGERPRINT = SAFE_MODE or env_flag('AUDIO_ANALYSIS_DISABLE_FINGERPRINT', False)
+
+# Native numeric libraries can over-subscribe CPU threads and destabilize
+# concurrent analyses under load; keep defaults conservative unless explicitly set.
+for env_name in (
+    'OMP_NUM_THREADS',
+    'OPENBLAS_NUM_THREADS',
+    'MKL_NUM_THREADS',
+    'NUMEXPR_NUM_THREADS',
+    'VECLIB_MAXIMUM_THREADS',
+    'BLIS_NUM_THREADS',
+    'NUMBA_NUM_THREADS',
+):
+    os.environ.setdefault(env_name, '1')
+
+# In safe mode, keep numba from JIT-compiling code paths that can segfault on
+# incompatible binary combos.
+if SAFE_MODE:
+    os.environ.setdefault('NUMBA_DISABLE_JIT', '1')
 
 def debug_log(message):
     """Print debug message if debug mode is enabled"""
@@ -113,30 +142,42 @@ def safe_onset_detect(y=None, sr=22050, onset_envelope=None, hop_length=512,
     return onset_frames
 
 
-try:
-    import essentia
-    import essentia.standard as es
-except ImportError:
-    # Essentia is optional for basic analysis
+if not DISABLE_ESSENTIA:
+    try:
+        import essentia
+        import essentia.standard as es
+    except ImportError:
+        # Essentia is optional for analysis
+        essentia = None
+        es = None
+else:
     essentia = None
+    es = None
 
 # TensorFlow imports (Phase 4)
-try:
-    import tensorflow as tf
-    import tensorflow_hub as hub
-    # Suppress TensorFlow warnings
-    tf.get_logger().setLevel('ERROR')
-    import os
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-except ImportError:
+if not DISABLE_TENSORFLOW:
+    try:
+        import tensorflow as tf
+        import tensorflow_hub as hub
+        # Suppress TensorFlow warnings
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        tf.get_logger().setLevel('ERROR')
+    except ImportError:
+        tf = None
+        hub = None
+else:
     tf = None
     hub = None
 
 # Acoustid/Chromaprint imports (Phase 6)
-try:
-    import acoustid
-    import chromaprint
-except ImportError:
+if not DISABLE_FINGERPRINT:
+    try:
+        import acoustid
+        import chromaprint
+    except ImportError:
+        acoustid = None
+        chromaprint = None
+else:
     acoustid = None
     chromaprint = None
 
@@ -166,6 +207,8 @@ def analyze_audio(audio_path, analysis_level='advanced', filename=None):
     """
     start_time = time.time()
     debug_log(f"=== Starting audio analysis: {audio_path} (level: {analysis_level}) ===")
+    if SAFE_MODE:
+        debug_log("Safe mode enabled: skipping Essentia/TensorFlow/Chromaprint-backed stages")
 
     try:
         # Load audio
@@ -341,10 +384,20 @@ def analyze_audio(audio_path, analysis_level='advanced', filename=None):
             debug_log(f"Phase 3: ADSR envelope [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(adsr_features)
 
-            # Phase 4: ML-based instrument classification (YAMNet)
+            # Phase 4: ML-based instrument classification (PANNs CNN14 or YAMNet)
             step_start = time.time()
-            ml_instrument_features = extract_instrument_ml(audio_path, y, sr)
-            debug_log(f"Phase 4: YAMNet instrument classification [{(time.time()-step_start)*1000:.0f}ms]")
+            if USE_YAMNET:
+                ml_instrument_features = extract_instrument_ml(audio_path, y, sr)
+                debug_log(f"Phase 4: YAMNet instrument classification [{(time.time()-step_start)*1000:.0f}ms]")
+            else:
+                ml_instrument_features = extract_instrument_ml_panns(audio_path, y, sr)
+                debug_log(f"Phase 4: PANNs CNN14 instrument classification [{(time.time()-step_start)*1000:.0f}ms]")
+                # If PANNs failed (not installed), fall back to YAMNet
+                if ml_instrument_features.get('instrument_classes') is None:
+                    debug_log("PANNs unavailable, falling back to YAMNet")
+                    step_start = time.time()
+                    ml_instrument_features = extract_instrument_ml(audio_path, y, sr)
+                    debug_log(f"Phase 4: YAMNet fallback [{(time.time()-step_start)*1000:.0f}ms]")
             features.update(ml_instrument_features)
 
             # Phase 4: Genre/mood classification (heuristics + YAMNet)
@@ -1478,6 +1531,134 @@ def extract_instrument_ml(audio_path, y, sr):
     return features
 
 
+USE_YAMNET = env_flag('AUDIO_ANALYSIS_USE_YAMNET', False)
+
+_panns_model = None
+_panns_labels = None
+
+def load_panns_model():
+    """
+    Load PANNs CNN14 model for audio classification and embedding extraction.
+    Returns: (model, labels) or (None, None) on failure.
+    """
+    global _panns_model, _panns_labels
+
+    if _panns_model is not None:
+        debug_log("PANNs model already cached")
+        return _panns_model, _panns_labels
+
+    try:
+        load_start = time.time()
+        debug_log("Loading PANNs CNN14 model...")
+        print("Loading PANNs CNN14 model... (this may take a few seconds on first run)", file=sys.stderr)
+
+        from panns_inference import AudioTagging
+        _panns_model = AudioTagging(checkpoint_path=None, device='cpu')
+
+        # AudioSet 527 class labels
+        import panns_inference
+        labels_path = os.path.join(os.path.dirname(panns_inference.__file__), 'class_labels_indices.csv')
+        _panns_labels = []
+        if os.path.exists(labels_path):
+            import csv
+            with open(labels_path) as f:
+                reader = csv.reader(f)
+                next(reader)  # skip header
+                for row in reader:
+                    if len(row) >= 3:
+                        _panns_labels.append(row[2].strip())
+                    else:
+                        _panns_labels.append(f"class_{len(_panns_labels)}")
+        else:
+            # Fallback: use numbered labels
+            _panns_labels = [f"class_{i}" for i in range(527)]
+
+        print(f"PANNs CNN14 model loaded ({len(_panns_labels)} classes) [{(time.time()-load_start)*1000:.0f}ms]", file=sys.stderr)
+        return _panns_model, _panns_labels
+    except ImportError as e:
+        debug_log(f"PANNs not available (missing panns_inference package): {e}")
+        print(f"Warning: PANNs not available, falling back to YAMNet: {e}", file=sys.stderr)
+        return None, None
+    except Exception as e:
+        debug_log(f"PANNs loading failed: {e}")
+        print(f"Warning: Failed to load PANNs model: {e}", file=sys.stderr)
+        return None, None
+
+
+def extract_instrument_ml_panns(audio_path, y, sr):
+    """
+    Extract instrument/audio classification and embeddings using PANNs CNN14.
+    Returns dict with instrument_classes, ml_embeddings, ml_embedding_model.
+    """
+    features = {
+        'instrument_classes': None,
+        'ml_embeddings': None,
+        'ml_embedding_model': None,
+    }
+
+    try:
+        model, labels = load_panns_model()
+        if model is None or labels is None:
+            debug_log("PANNs not available, skipping")
+            return features
+
+        # PANNs expects 32kHz mono audio
+        resample_start = time.time()
+        if sr != 32000:
+            y_32k = librosa.resample(y, orig_sr=sr, target_sr=32000)
+            debug_log(f"  Resampled audio to 32kHz [{(time.time()-resample_start)*1000:.0f}ms]")
+        else:
+            y_32k = y
+
+        # Run inference — expects [batch, samples] shape
+        waveform = y_32k[np.newaxis, :].astype(np.float32)
+        inference_start = time.time()
+        debug_log(f"  Running PANNs inference on {waveform.shape[1]} samples...")
+        clipwise_output, embedding = model.inference(waveform)
+        debug_log(f"  PANNs inference done [{(time.time()-inference_start)*1000:.0f}ms]")
+
+        # clipwise_output shape: [1, 527]  — class predictions
+        # embedding shape: [1, 2048]        — 2048-dim embeddings
+        predictions = clipwise_output[0]
+        emb = embedding[0]
+
+        # Extract top instrument predictions
+        instrument_keywords = [
+            'drum', 'percussion', 'bass', 'guitar', 'piano', 'keyboard', 'organ',
+            'synth', 'violin', 'cello', 'flute', 'trumpet', 'saxophone', 'horn',
+            'singing', 'vocal', 'voice', 'speech', 'rap', 'choir',
+            'clap', 'snap', 'cymbal', 'hi-hat', 'snare', 'kick',
+            'bell', 'gong', 'harmonica', 'banjo', 'ukulele', 'harp',
+            'marimba', 'xylophone', 'vibraphone', 'tambourine',
+            'sound effect', 'noise', 'explosion', 'whoosh',
+        ]
+
+        sorted_indices = np.argsort(predictions)[::-1]
+        instrument_predictions = []
+        for idx in sorted_indices[:50]:
+            confidence = float(predictions[idx])
+            if confidence < 0.05:
+                break
+            class_name = labels[idx] if idx < len(labels) else f"class_{idx}"
+            class_lower = class_name.lower()
+            if any(kw in class_lower for kw in instrument_keywords):
+                instrument_predictions.append({
+                    'class': class_name,
+                    'confidence': confidence
+                })
+                if len(instrument_predictions) >= 10:
+                    break
+
+        features['instrument_classes'] = instrument_predictions
+        features['ml_embeddings'] = emb.tolist()
+        features['ml_embedding_model'] = 'panns_cnn14'
+
+    except Exception as e:
+        print(f"Warning: PANNs inference failed: {e}", file=sys.stderr)
+
+    return features
+
+
 def extract_genre_ml(y, sr, spectral_features=None, energy_features=None, tempo_features=None, yamnet_instruments=None, hpss_ratio=None, is_one_shot=False):
     """
     Extract genre and mood classification using audio feature heuristics (Phase 4)
@@ -2217,116 +2398,18 @@ def classify_percussion_subtype(transient_centroid, transient_flatness, crest_fa
 
 def generate_tags(features):
     """
-    Convert numeric features to semantic tags
+    Convert numeric features to instrument tags only.
+    Type/character/general tags have been removed — oneshot/loop is now a DB column,
+    and character/energy tags are redundant with numeric features.
     """
     tags = []
 
-    # Type tags (mutually exclusive — prefer one-shot if both are set)
-    if features['is_one_shot']:
-        tags.append('one-shot')
-    elif features['is_loop']:
-        tags.append('loop')
-
-    # BPM tags (only for loops with detected tempo)
-    if features['bpm'] is not None and features['is_loop']:
-        bpm = features['bpm']
-
-        # Tempo categories
-        if bpm < 80:
-            tags.extend(['slow', '60-80bpm'])
-        elif bpm < 100:
-            tags.extend(['downtempo', '80-100bpm'])
-        elif bpm < 120:
-            tags.extend(['midtempo', '100-120bpm'])
-        elif bpm < 140:
-            tags.extend(['uptempo', '120-140bpm'])
-        else:
-            tags.extend(['fast', '140+bpm'])
-
-    # Energy/dynamics tags
-    onset_strength = features.get('onset_strength', features['rms_energy'])
-    dynamic_range = features['dynamic_range']
-
-    # Punch tag only; softness is derived from hardness-related fields.
-    if features['is_one_shot'] and onset_strength > 0.1:
-        tags.append('punchy')
-
-    # Dynamics
-    if dynamic_range > 30:
-        tags.append('dynamic')
-    elif dynamic_range < 10:
-        tags.append('compressed')
-
-    # Instrument tags (high confidence only)
+    # Instrument tags from heuristic predictions (high confidence only)
     for pred in features.get('instrument_predictions', []):
         if pred['confidence'] > 0.55:
             tags.append(pred['name'])
 
-    # Perceptual tags are intentionally omitted for brightness/noisiness/warmth/hardness
-    # because these dimensions are already available as numeric fields.
-    if features.get('roughness') is not None:
-        roughness = features['roughness']
-        if roughness > 0.6:
-            tags.append('rough')
-
-    if features.get('sharpness') is not None:
-        sharpness = features['sharpness']
-        if sharpness > 0.7:
-            tags.append('sharp')
-
-    # Timbral tags (Phase 1)
-    if features.get('dissonance') is not None and features['dissonance'] > 0.6:
-        tags.append('dissonant')
-
-    if features.get('spectral_complexity') is not None and features['spectral_complexity'] > 0.7:
-        tags.append('complex')
-
-    # Stereo tags (Phase 2)
-    if features.get('stereo_width') is not None:
-        stereo_width = features['stereo_width']
-        if stereo_width > 0.6:
-            tags.append('wide-stereo')
-        elif stereo_width < 0.2:
-            tags.append('mono')
-
-    # Harmonic/Percussive tags (Phase 2)
-    if features.get('harmonic_percussive_ratio') is not None:
-        hp_ratio = features['harmonic_percussive_ratio']
-        if hp_ratio > 3.0:
-            tags.append('harmonic')
-        elif hp_ratio < 0.3:
-            tags.append('percussive')
-
-    # Rhythm tags (Phase 3)
-    if features.get('danceability') is not None:
-        danceability = features['danceability']
-        if danceability > 0.7:
-            tags.append('danceable')
-        elif danceability < 0.3:
-            tags.append('non-danceable')
-
-    if features.get('rhythmic_regularity') is not None:
-        regularity = features['rhythmic_regularity']
-        if regularity > 0.7:
-            tags.append('rhythmic')
-        elif regularity < 0.3:
-            tags.append('irregular')
-
-    # Envelope tags (Phase 3)
-    if features.get('envelope_type') is not None:
-        envelope_type = features['envelope_type']
-        if envelope_type == 'percussive':
-            tags.append('percussive-envelope')
-        elif envelope_type == 'plucked':
-            tags.append('plucked')
-        elif envelope_type == 'sustained':
-            tags.append('sustained')
-        elif envelope_type == 'pad':
-            tags.append('pad')
-
-    # ML Instrument tags (Phase 4)
-    # Use ML predictions instead of heuristics if available
-    # Blocklist for tag generation (same as extraction, prevents junk tags)
+    # ML Instrument tags (Phase 4) — only instrument classifications
     tag_blocklist = {
         'music', 'singing', 'song', 'speech', 'tender music', 'sad music',
         'happy music', 'music of asia', 'music of africa', 'music of latin america',
@@ -2339,47 +2422,105 @@ def generate_tags(features):
     }
     if features.get('instrument_classes') is not None:
         for instrument in features['instrument_classes']:
-            if instrument['confidence'] >= 0.6:  # 60% threshold
-                # Clean up class name for tagging
+            if instrument['confidence'] >= 0.6:
                 class_name = instrument['class'].lower()
-                # Remove common prefixes/suffixes
                 class_name = class_name.replace('musical instrument, ', '')
                 class_name = class_name.replace('music, ', '')
-                # Skip blocklisted generic classes and malformed entries
                 if class_name in tag_blocklist or '/m/' in class_name:
                     continue
                 tags.append(class_name)
 
-    # Genre tags (Phase 4)
-    if features.get('genre_primary') is not None:
-        tags.append(features['genre_primary'].lower())
+    # Return unique tags (preserving order)
+    return list(dict.fromkeys(tags))
 
-    if features.get('genre_classes') is not None:
-        for genre in features['genre_classes']:
-            if genre['confidence'] >= 0.6:  # 60% threshold
-                tags.append(genre['genre'].lower())
 
-    # Mood tags (Phase 4)
-    if features.get('mood_classes') is not None:
-        for mood in features['mood_classes']:
-            if mood['confidence'] >= 0.6:  # 60% threshold
-                tags.append(mood['mood'].lower())
+def worker_loop():
+    """
+    Persistent worker mode: reads newline-delimited JSON from stdin, writes
+    newline-delimited JSON to stdout.
 
-    # Loudness tags are intentionally omitted because loudness is stored as numeric fields.
+    Protocol:
+      → {"id": "req-1", "cmd": "analyze", "audio_path": "...", "level": "advanced", "filename": "..."}
+      ← {"id": "req-1", "result": {...}}
+      ← {"id": "req-1", "error": "..."}
 
-    # Event Detection tags (Phase 5)
-    if features.get('event_density') is not None:
-        event_density = features['event_density']
-        # Events per second
-        if event_density > 5:
-            tags.append('event-dense')
-        elif event_density > 2:
-            tags.append('multi-event')
-        elif event_density < 0.5:
-            tags.append('single-event')
+    Special commands:
+      → {"id": "x", "cmd": "ping"}        ← {"id": "x", "result": "pong"}
+      → {"id": "x", "cmd": "shutdown"}    ← {"id": "x", "result": "bye"} then exit
+    """
+    # Signal that all imports are done and worker is ready
+    sys.stdout.write(json.dumps({"status": "ready"}) + "\n")
+    sys.stdout.flush()
 
-    # Return unique tags
-    return list(dict.fromkeys(tags))  # Preserve order while removing duplicates
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+
+        req_id = None
+        try:
+            request = json.loads(line)
+            req_id = request.get("id", None)
+            cmd = request.get("cmd", "analyze")
+
+            if cmd == "ping":
+                response = {"id": req_id, "result": "pong"}
+                sys.stdout.write(json.dumps(response) + "\n")
+                sys.stdout.flush()
+                continue
+
+            if cmd == "shutdown":
+                response = {"id": req_id, "result": "bye"}
+                sys.stdout.write(json.dumps(response) + "\n")
+                sys.stdout.flush()
+                break
+
+            if cmd == "analyze":
+                audio_path = request.get("audio_path")
+                level = request.get("level", "advanced")
+                filename = request.get("filename", None)
+
+                if not audio_path:
+                    response = {"id": req_id, "error": "Missing audio_path"}
+                    sys.stdout.write(json.dumps(response) + "\n")
+                    sys.stdout.flush()
+                    continue
+
+                if not os.path.exists(audio_path):
+                    response = {"id": req_id, "error": f"File not found: {audio_path}"}
+                    sys.stdout.write(json.dumps(response) + "\n")
+                    sys.stdout.flush()
+                    continue
+
+                if not os.path.isfile(audio_path):
+                    response = {"id": req_id, "error": f"Path is not a file: {audio_path}"}
+                    sys.stdout.write(json.dumps(response) + "\n")
+                    sys.stdout.flush()
+                    continue
+
+                try:
+                    result = analyze_audio(audio_path, analysis_level=level, filename=filename)
+                    response = {"id": req_id, "result": result}
+                except Exception as e:
+                    response = {"id": req_id, "error": str(e)}
+
+                sys.stdout.write(json.dumps(response) + "\n")
+                sys.stdout.flush()
+                continue
+
+            # Unknown command
+            response = {"id": req_id, "error": f"Unknown command: {cmd}"}
+            sys.stdout.write(json.dumps(response) + "\n")
+            sys.stdout.flush()
+
+        except json.JSONDecodeError as e:
+            response = {"id": req_id, "error": f"Invalid JSON: {str(e)}"}
+            sys.stdout.write(json.dumps(response) + "\n")
+            sys.stdout.flush()
+        except Exception as e:
+            response = {"id": req_id, "error": f"Worker error: {str(e)}"}
+            sys.stdout.write(json.dumps(response) + "\n")
+            sys.stdout.flush()
 
 
 def main():
@@ -2387,16 +2528,24 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='Analyze audio file features')
-    parser.add_argument('audio_file', help='Path to audio file')
+    parser.add_argument('audio_file', nargs='?', default=None, help='Path to audio file')
     parser.add_argument('--level', choices=['advanced'],
                         default='advanced', help='Analysis level (default: advanced)')
     parser.add_argument('--filename', default=None,
                         help='Original filename (used for sample type detection hints)')
+    parser.add_argument('--worker', action='store_true',
+                        help='Run in persistent worker mode (JSON stdin/stdout)')
 
     args = parser.parse_args()
 
+    if args.worker:
+        worker_loop()
+        return
+
+    if not args.audio_file:
+        parser.error('audio_file is required (unless using --worker mode)')
+
     # Validate file exists and is readable
-    import os
     if not os.path.exists(args.audio_file):
         print(json.dumps({"error": f"File not found: {args.audio_file}"}))
         sys.exit(1)

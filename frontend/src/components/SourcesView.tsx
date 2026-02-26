@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect, type Dispatch, type SetStateAction } from 'react'
+import { useState, useMemo, useRef, useEffect, type Dispatch, type KeyboardEvent, type SetStateAction } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   X,
@@ -14,9 +14,10 @@ import {
   List,
   Sparkles,
   ChevronRight,
-  ChevronDown,
   Layers3,
   FlaskConical,
+  Pencil,
+  Plus,
   Trash2,
 } from 'lucide-react'
 import { SourcesTree } from './SourcesTree'
@@ -26,10 +27,12 @@ import { SourcesSampleList } from './SourcesSampleList'
 import { SourcesYouTubeGroupedGrid } from './SourcesYouTubeGroupedGrid'
 import { SourcesYouTubeGroupedList } from './SourcesYouTubeGroupedList'
 import { SourcesBatchActions } from './SourcesBatchActions'
+import { SampleBulkEditModal, type SampleBulkEditRequest } from './SampleBulkEditModal'
 import { EditingModal } from './EditingModal'
 import { SampleSpaceView } from './SampleSpaceView'
 import { CustomOrderModal } from './CustomOrderModal'
 import { BulkRenamePanel } from './BulkRenamePanel'
+import { CustomCheckbox } from './CustomCheckbox'
 import { ResizableDivider } from './ResizableDivider'
 import { SourcesAudioFilter, AudioFilterState } from './SourcesAudioFilter'
 import { SourcesDimensionFilter, type DimensionCategory } from './SourcesDimensionFilter'
@@ -63,9 +66,19 @@ import {
   useCreateImportedFolder,
   useDeleteSource,
 } from '../hooks/useTracks'
-import type { SourceScope, SliceWithTrackExtended } from '../types'
-import { downloadBatchSlicesZip, getDuplicateSlices, importLibrary } from '../api/client'
-import type { DuplicateGroup, LibraryImportOptions } from '../api/client'
+import type { SourceScope, SliceWithTrackExtended, Tag } from '../types'
+import {
+  downloadBatchSlicesZip,
+  deleteTag as deleteTagRequest,
+  getDuplicateSlices,
+  importLibrary,
+  mergeTags as mergeTagsRequest,
+  updateTag as updateTagRequest,
+  updateSlice as updateSliceRequest,
+  addTagToSlice as addTagToSliceRequest,
+  removeTagFromSlice as removeTagFromSliceRequest,
+} from '../api/client'
+import type { DuplicateGroup, LibraryImportOptions, UpdateSlicePayload } from '../api/client'
 import {
   getRelatedKeys,
   getRelatedNotes,
@@ -82,6 +95,8 @@ import {
 } from '../utils/tunePlaybackMode'
 import {
   buildFilterRuleEvaluationContext,
+  getFilterRuleField,
+  getFilterRuleOperators,
   matchesFilterRuleQuery,
   type FilterRule,
   type FilterRuleSuggestionMap,
@@ -97,10 +112,19 @@ import {
   type SampleSearchScope,
 } from '../utils/sampleSearch'
 import {
+  hydratePersistedSettingFromElectron,
+  readPersistedSetting,
+  writePersistedSetting,
+} from '../utils/persistentSettings'
+import {
   applyBulkRenameRules,
   DEFAULT_BULK_RENAME_RULES,
+  getBulkRenameReplacementHighlightRanges,
+  matchesBulkRenameSearchText,
+  type BulkRenameHighlightRange,
   type BulkRenameRules,
 } from '../utils/bulkRename'
+import { matchesStereoChannelMode as matchesStereoChannelModeFilter } from '../utils/stereoChannelMode'
 import type { CollectionOverview, WorkspaceState, WorkspaceTab } from '../types/workspace'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
@@ -150,6 +174,7 @@ interface DuplicatePairRenderMeta {
   selectedForDelete: boolean
   selectedDeleteSampleId: number | null
   canDelete: boolean
+  canDeletePartner: boolean
   matchType: DuplicateGroup['matchType']
   similarityPercent: number
 }
@@ -157,6 +182,14 @@ interface DuplicatePairRenderMeta {
 interface BulkRenamePreviewEntry {
   nextName: string
   hasChange: boolean
+  highlightRanges: BulkRenameHighlightRange[]
+}
+
+interface ActiveFilterListItem {
+  id: string
+  label: string
+  tab: FilterDockTab
+  onRemove: () => void
 }
 
 interface LoudnessPreset {
@@ -175,6 +208,80 @@ const LOUDNESS_PRESETS: ReadonlyArray<LoudnessPreset> = [
   { id: 'loud', label: 'Loud', min: -14, max: -6 },
   { id: 'extreme', label: 'Extreme', min: -6, max: 0 },
 ]
+const SOURCES_VIEW_PREFERENCES_STORAGE_KEY = 'sources-view-preferences-v1'
+const SEARCH_SCOPES = new Set<SampleSearchScope>([
+  'all',
+  'name',
+  'tags',
+  'custom',
+  'artists',
+  'collections',
+])
+const VIEW_MODES = new Set<'grid' | 'list' | 'space'>(['grid', 'list', 'space'])
+const CUSTOM_SEARCH_FIELDS = new Set<SampleSearchCustomField>([
+  'sample_name',
+  'track_title',
+  'tags',
+  'artist',
+  'album',
+  'album_artist',
+  'genre',
+  'composer',
+  'collection',
+  'path',
+])
+
+interface SourcesViewPreferences {
+  viewMode: 'grid' | 'list' | 'space'
+  searchScope: SampleSearchScope
+  customSearchFields: SampleSearchCustomField[]
+}
+
+function normalizeCustomSearchFields(
+  fields: unknown,
+): SampleSearchCustomField[] {
+  if (!Array.isArray(fields)) return DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS
+  const next: SampleSearchCustomField[] = []
+  for (const field of fields) {
+    if (typeof field !== 'string') continue
+    if (!CUSTOM_SEARCH_FIELDS.has(field as SampleSearchCustomField)) continue
+    if (next.includes(field as SampleSearchCustomField)) continue
+    next.push(field as SampleSearchCustomField)
+  }
+  return next
+}
+
+function parseSourcesViewPreferences(raw: string | null): SourcesViewPreferences | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as {
+      viewMode?: unknown
+      searchScope?: unknown
+      customSearchFields?: unknown
+    }
+    return {
+      viewMode: VIEW_MODES.has(parsed.viewMode as 'grid' | 'list' | 'space')
+        ? (parsed.viewMode as 'grid' | 'list' | 'space')
+        : 'grid',
+      searchScope: SEARCH_SCOPES.has(parsed.searchScope as SampleSearchScope)
+        ? (parsed.searchScope as SampleSearchScope)
+        : 'all',
+      customSearchFields: normalizeCustomSearchFields(parsed.customSearchFields),
+    }
+  } catch {
+    return null
+  }
+}
+
+function loadSourcesViewPreferences(): SourcesViewPreferences {
+  return (
+    parseSourcesViewPreferences(readPersistedSetting(SOURCES_VIEW_PREFERENCES_STORAGE_KEY)) ?? {
+      viewMode: 'grid',
+      searchScope: 'all',
+      customSearchFields: DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS,
+    }
+  )
+}
 
 function getViewportWidth(): number {
   if (typeof window === 'undefined') return DEFAULT_VIEWPORT_WIDTH
@@ -189,6 +296,13 @@ function getDuplicateMatchTypeLabel(matchType: DuplicateGroup['matchType']): str
   if (matchType === 'exact') return 'Exact fingerprint'
   if (matchType === 'content') return 'Exact file content'
   return 'File identity'
+}
+
+function handleCheckboxTileKeyDown(event: KeyboardEvent<HTMLDivElement>, onToggle: () => void) {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    onToggle()
+  }
 }
 
 function getSampleFormat(sample: DuplicateGroup['samples'][number]): string {
@@ -234,17 +348,52 @@ function formatSampleQuality(sample: DuplicateGroup['samples'][number]): string 
   return parts.length > 0 ? parts.join(' / ') : 'quality unknown'
 }
 
-function normalizeTagCategory(category: string | null | undefined): string {
-  const normalized = (category || 'general').trim().toLowerCase()
-  return normalized.length > 0 ? normalized : 'general'
+function normalizeTagName(value: string | null | undefined): string {
+  return (value || '').trim().toLowerCase()
 }
 
-function formatTagCategoryLabel(categoryKey: string): string {
-  return categoryKey
-    .split(/[\s_-]+/)
-    .filter((segment) => segment.length > 0)
-    .map((segment) => segment[0].toUpperCase() + segment.slice(1))
-    .join(' ')
+function isOneShotName(value: string | null | undefined): boolean {
+  const normalized = normalizeTagName(value)
+  return normalized === 'oneshot' || normalized === 'one-shot' || normalized === 'one shot'
+}
+
+function isLoopName(value: string | null | undefined): boolean {
+  const normalized = normalizeTagName(value)
+  return normalized === 'loop' || normalized === 'loops'
+}
+
+function isSampleTypeTag(tag: Pick<Tag, 'name' | 'category'>): boolean {
+  return normalizeTagCategory(tag.category) === 'sample-type' || isOneShotName(tag.name) || isLoopName(tag.name)
+}
+
+function matchesOneShotType(sample: SliceWithTrackExtended): boolean {
+  if (isOneShotName(sample.sampleType)) {
+    return true
+  }
+
+  return (sample.tags || []).some((tag) => isOneShotName(tag.name))
+}
+
+function matchesLoopType(sample: SliceWithTrackExtended): boolean {
+  if (isLoopName(sample.sampleType)) {
+    return true
+  }
+
+  return (sample.tags || []).some((tag) => isLoopName(tag.name))
+}
+
+function normalizeTagCategory(category: string | null | undefined): string {
+  const normalized = (category || 'instrument').trim().toLowerCase()
+  if (
+    normalized === 'sample-type' ||
+    normalized === 'sample type' ||
+    normalized === 'sample_type' ||
+    normalized === 'type'
+  ) {
+    return 'sample-type'
+  }
+  if (normalized === 'instrument' || normalized === 'filename') return normalized
+  return 'instrument'
 }
 
 function pickSampleToKeep(
@@ -306,11 +455,11 @@ interface SourcesViewProps {
   bulkRenameMode?: boolean
   bulkRenameRules?: BulkRenameRules
   onBulkRenameRulesChange: Dispatch<SetStateAction<BulkRenameRules>>
-  onOpenAddSource?: () => void
   onWorkspaceTabChange?: (tab: WorkspaceTab) => void
   onWorkspaceStateChange?: (state: WorkspaceState | null) => void
   onCollectionOverviewChange?: (overview: CollectionOverview) => void
   onVisibleSamplesChange?: (samples: SliceWithTrackExtended[]) => void
+  onSelectedSamplesChange?: (samples: SliceWithTrackExtended[]) => void
   onSamplesLoadingChange?: (isLoading: boolean) => void
 }
 
@@ -323,39 +472,45 @@ export function SourcesView({
   bulkRenameMode = false,
   bulkRenameRules = DEFAULT_BULK_RENAME_RULES,
   onBulkRenameRulesChange,
-  onOpenAddSource,
   onWorkspaceTabChange,
   onWorkspaceStateChange,
   onCollectionOverviewChange,
   onVisibleSamplesChange,
+  onSelectedSamplesChange,
   onSamplesLoadingChange,
 }: SourcesViewProps) {
+  const [initialSourcesViewPreferences] = useState<SourcesViewPreferences>(() => loadSourcesViewPreferences())
+
   // State
   const [currentScope, setCurrentScope] = useState<SourceScope>({ type: 'all' })
   const [selectedTags, setSelectedTags] = useState<number[]>([])
+  const [sampleTypeFilter, setSampleTypeFilter] = useState<'one-shot' | 'loop' | null>(null)
   const [selectedFolderIds, setSelectedFolderIds] = useState<number[]>([])
   const [excludedTags] = useState<number[]>([])
   const [excludedFolderIds, setExcludedFolderIds] = useState<number[]>([])
   const [queryRules, setQueryRules] = useState<FilterRule[]>([])
   const [activeFilterDockTab, setActiveFilterDockTab] = useState<FilterDockTab>('categories')
   const [isFilterDockOpen, setIsFilterDockOpen] = useState(true)
+  const [isEnabledFiltersListOpen, setIsEnabledFiltersListOpen] = useState(false)
   const [activeDimensionCategory, setActiveDimensionCategory] = useState<DimensionCategory>('spectral')
   const [tagFilterSearchQuery, setTagFilterSearchQuery] = useState('')
-  const [activeTagCategory, setActiveTagCategory] = useState<string>('all')
-  const [isTagCategoryMoreOpen, setIsTagCategoryMoreOpen] = useState(false)
-  const [tagCategoryStripWidth, setTagCategoryStripWidth] = useState(0)
   const [searchQuery, setSearchQuery] = useState('')
-  const [searchScope, setSearchScope] = useState<SampleSearchScope>('all')
+  const [searchScope, setSearchScope] = useState<SampleSearchScope>(initialSourcesViewPreferences.searchScope)
   const [customSearchFields, setCustomSearchFields] = useState<SampleSearchCustomField[]>(
-    DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS,
+    initialSourcesViewPreferences.customSearchFields,
   )
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
   const [selectedSampleId, setSelectedSampleId] = useState<number | null>(null)
   const isBulkRenameMode = bulkRenameMode
   const previousSelectedSampleBeforeBulkRenameRef = useRef<number | null>(null)
   const wasBulkRenameModeRef = useRef(isBulkRenameMode)
-  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'space'>('grid')
+  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'space'>(initialSourcesViewPreferences.viewMode)
+  const [isSourcesViewPreferencesReady, setIsSourcesViewPreferencesReady] = useState(
+    () => typeof window === 'undefined' || !window.electron?.getSetting
+  )
   const [selectedSampleIds, setSelectedSampleIds] = useState<Set<number>>(new Set())
+  const [showBulkEditModal, setShowBulkEditModal] = useState(false)
+  const [isBulkEditSubmitting, setIsBulkEditSubmitting] = useState(false)
   const [editingTrackId, setEditingTrackId] = useState<number | null>(null)
   const [showCustomOrder, setShowCustomOrder] = useState(false)
   const [showLibraryImportModal, setShowLibraryImportModal] = useState(false)
@@ -365,7 +520,9 @@ export function SourcesView({
   const [isTreeSidebarTransitioning, setIsTreeSidebarTransitioning] = useState(false)
   const [isTreeSidebarLocked] = useState(() => getViewportWidth() >= 1024)
   const [isTreeSidebarCollapsed, setIsTreeSidebarCollapsed] = useState(false)
-  const { confirm, alert: showAlert, dialogNode } = useAppDialog()
+  const [draggingTagId, setDraggingTagId] = useState<number | null>(null)
+  const [dragOverTagId, setDragOverTagId] = useState<number | null>(null)
+  const { confirm, alert: showAlert, prompt, choose, dialogNode } = useAppDialog()
 
   // Similarity mode state
   const [similarityMode, setSimilarityMode] = useState<{
@@ -391,8 +548,7 @@ export function SourcesView({
   const [duplicateModeFilter, setDuplicateModeFilter] = useState<DuplicateModeFilter>('all-duplicates')
   const duplicateModePreviousSelectionRef = useRef<Set<number> | null>(null)
   const duplicateModePreviousSampleRef = useRef<number | null>(null)
-  const tagCategoryStripRef = useRef<HTMLDivElement | null>(null)
-  const tagCategoryMoreRef = useRef<HTMLDivElement | null>(null)
+  const duplicateModeExitVersionRef = useRef(0)
   const [tunePlaybackMode, setTunePlaybackMode] = useState<TunePlaybackMode>(() => getTunePlaybackMode())
   const queryClient = useQueryClient()
   const mainPanelRef = useRef<HTMLDivElement>(null)
@@ -468,10 +624,62 @@ export function SourcesView({
   }, [])
 
   useEffect(() => {
+    if (typeof window === 'undefined' || !window.electron?.getSetting) {
+      setIsSourcesViewPreferencesReady(true)
+      return
+    }
+
+    let cancelled = false
+
+    const hydrateSourcesViewPreferences = async () => {
+      const raw = await hydratePersistedSettingFromElectron(SOURCES_VIEW_PREFERENCES_STORAGE_KEY)
+      if (cancelled) return
+
+      const parsed = parseSourcesViewPreferences(raw)
+      if (parsed) {
+        setViewMode(parsed.viewMode)
+        setSearchScope(parsed.searchScope)
+        setCustomSearchFields(parsed.customSearchFields)
+      }
+
+      setIsSourcesViewPreferencesReady(true)
+    }
+
+    void hydrateSourcesViewPreferences()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isSourcesViewPreferencesReady) return
+    writePersistedSetting(
+      SOURCES_VIEW_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({
+        viewMode,
+        searchScope,
+        customSearchFields,
+      }),
+    )
+  }, [
+    isSourcesViewPreferencesReady,
+    viewMode,
+    searchScope,
+    customSearchFields,
+  ])
+
+  useEffect(() => {
     const handleResize = () => setViewportWidth(window.innerWidth)
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  useEffect(() => {
+    if (!isFilterDockOpen) {
+      setIsEnabledFiltersListOpen(false)
+    }
+  }, [isFilterDockOpen])
 
   useEffect(() => {
     const el = mainPanelRef.current
@@ -502,8 +710,6 @@ export function SourcesView({
     selectedEnvelopeTypes: [],
     minBrightness: 0,
     maxBrightness: 1,
-    minHarmonicity: 0,
-    maxHarmonicity: 1,
     minNoisiness: 0,
     maxNoisiness: 1,
     minAttack: 0,
@@ -514,12 +720,15 @@ export function SourcesView({
     maxSaturation: 1,
     minSurface: 0,
     maxSurface: 1,
+    minRhythmic: 0,
+    maxRhythmic: 1,
     minDensity: 0,
     maxDensity: 1,
     minAmbience: 0,
     maxAmbience: 1,
     minStereoWidth: 0,
     maxStereoWidth: 1,
+    stereoChannelMode: 'all',
     minDepth: 0,
     maxDepth: 1,
     minWarmth: 0,
@@ -559,6 +768,10 @@ export function SourcesView({
     }
     return notes
   }, [audioFilter.selectedNotes, audioFilter.relatedNotesLevels])
+  const backendTagFilterIds = useMemo(
+    () => selectedTags.filter((tagId) => tagId > 0),
+    [selectedTags],
+  )
 
   // Data queries
   const { data: collections = [] } = useCollections()
@@ -573,7 +786,7 @@ export function SourcesView({
   }
   const { data: samplesData, isLoading: isSamplesLoading } = useScopedSamples(
     currentScope,
-    selectedTags,
+    backendTagFilterIds,
     '',
     showFavoritesOnly,
     {
@@ -593,8 +806,6 @@ export function SourcesView({
       minSimilarity: similarityMode?.enabled ? similarityMode.minSimilarity : undefined,
       brightnessMin: toDimensionMin(audioFilter.minBrightness),
       brightnessMax: toDimensionMax(audioFilter.maxBrightness),
-      harmonicityMin: toDimensionMin(audioFilter.minHarmonicity),
-      harmonicityMax: toDimensionMax(audioFilter.maxHarmonicity),
       noisinessMin: toDimensionMin(audioFilter.minNoisiness),
       noisinessMax: toDimensionMax(audioFilter.maxNoisiness),
       attackMin: toDimensionMin(audioFilter.minAttack),
@@ -605,6 +816,8 @@ export function SourcesView({
       saturationMax: toDimensionMax(audioFilter.maxSaturation),
       surfaceMin: toDimensionMin(audioFilter.minSurface),
       surfaceMax: toDimensionMax(audioFilter.maxSurface),
+      rhythmicMin: toDimensionMin(audioFilter.minRhythmic),
+      rhythmicMax: toDimensionMax(audioFilter.maxRhythmic),
       densityMin: toDimensionMin(audioFilter.minDensity),
       densityMax: toDimensionMax(audioFilter.maxDensity),
       ambienceMin: toDimensionMin(audioFilter.minAmbience),
@@ -726,6 +939,32 @@ export function SourcesView({
     return Array.from(formats.values()).sort((a, b) => a.localeCompare(b))
   }, [duplicateData])
 
+  const myFolderScopeFolderIds = useMemo(() => {
+    if (currentScope.type !== 'my-folder') return null
+
+    const childrenByParent = new Map<number, number[]>()
+    for (const folder of allFolders) {
+      if (folder.parentId === null) continue
+      const siblings = childrenByParent.get(folder.parentId) || []
+      siblings.push(folder.id)
+      childrenByParent.set(folder.parentId, siblings)
+    }
+
+    const descendantIds = new Set<number>([currentScope.folderId])
+    const queue = [currentScope.folderId]
+    while (queue.length > 0) {
+      const nextParentId = queue.shift() as number
+      const childIds = childrenByParent.get(nextParentId) || []
+      for (const childId of childIds) {
+        if (descendantIds.has(childId)) continue
+        descendantIds.add(childId)
+        queue.push(childId)
+      }
+    }
+
+    return descendantIds
+  }, [allFolders, currentScope])
+
   const currentScopeSampleIds = useMemo(() => {
     const ids = new Set<number>()
     const collectionFolderIds =
@@ -739,7 +978,8 @@ export function SourcesView({
 
     for (const sample of overviewBaseSamples) {
       if (currentScope.type === 'my-folder') {
-        if ((sample.folderIds ?? []).includes(currentScope.folderId)) {
+        const itemFolderIds = sample.folderIds ?? []
+        if (myFolderScopeFolderIds && itemFolderIds.some((id) => myFolderScopeFolderIds.has(id))) {
           ids.add(sample.id)
         }
         continue
@@ -757,7 +997,7 @@ export function SourcesView({
     }
 
     return ids
-  }, [overviewBaseSamples, currentScope, allFolders])
+  }, [overviewBaseSamples, currentScope, allFolders, myFolderScopeFolderIds])
 
   const duplicatePairs = useMemo<DuplicatePair[]>(() => {
     if (!duplicateData) return []
@@ -955,6 +1195,11 @@ export function SourcesView({
 
     return protectedIds.size
   }, [duplicatePairDecisions, duplicateProtectFavorites])
+  const hasDuplicateGroups = (duplicateData?.total ?? 0) > 0
+  const isDuplicatePanelCompact = !hasDuplicateGroups
+  const duplicatePanelHeight = isDuplicatePanelCompact
+    ? 'auto'
+    : `min(100%, ${advancedFilterPanel.size}px)`
 
   useEffect(() => {
     if (!isDuplicateModeActive) return
@@ -989,7 +1234,9 @@ export function SourcesView({
 
   const matchesScopeFallback = (sample: SliceWithTrackExtended) => {
     if (currentScope.type === 'my-folder') {
-      return (sample.folderIds ?? []).includes(currentScope.folderId)
+      const itemFolderIds = sample.folderIds ?? []
+      if (!myFolderScopeFolderIds || myFolderScopeFolderIds.size === 0) return false
+      return itemFolderIds.some((id) => myFolderScopeFolderIds.has(id))
     }
 
     if (currentScope.type === 'collection') {
@@ -1003,14 +1250,32 @@ export function SourcesView({
 
   const overviewSamples = useMemo(
     () => overviewBaseSamples.filter((sample) => matchesScopeFallback(sample)),
-    [overviewBaseSamples, currentScope, scopeCollectionFolderIds],
+    [overviewBaseSamples, currentScope, scopeCollectionFolderIds, myFolderScopeFolderIds],
   )
+
+  const showOnlyOneShotType = sampleTypeFilter === 'one-shot'
+  const showOnlyLoopType = sampleTypeFilter === 'loop'
+
+  const samplesForTagCounts = useMemo(() => {
+    return allSamples.filter((sample) => {
+      const isOneShot = matchesOneShotType(sample)
+      const isLoop = matchesLoopType(sample)
+
+      if (showOnlyOneShotType) {
+        return isOneShot
+      }
+      if (showOnlyLoopType) {
+        return isLoop
+      }
+      return true
+    })
+  }, [allSamples, showOnlyLoopType, showOnlyOneShotType])
 
   const tagCounts = useMemo(() => {
     const counts: Record<number, number> = {}
     const countsByName: Record<string, number> = {}
 
-    for (const sample of allSamples) {
+    for (const sample of samplesForTagCounts) {
       for (const tag of sample.tags || []) {
         counts[tag.id] = (counts[tag.id] || 0) + 1
         const key = tag.name.toLowerCase()
@@ -1019,12 +1284,20 @@ export function SourcesView({
     }
 
     return { counts, countsByName }
-  }, [allSamples])
+  }, [samplesForTagCounts])
 
   // Filter samples by duration and advanced features
   const samples = useMemo(() => {
     const isRangeActive = (min: number | undefined, max: number | undefined) =>
       (min ?? 0) > 0 || (max ?? 1) < 1
+
+    const normalizeDimensionValue = (value: number | null | undefined) => {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return null
+      if (value >= 0 && value <= 1) return value
+      // Some legacy payloads can report ambience on a 0-100 scale.
+      if (value > 1 && value <= 100) return value / 100
+      return Math.max(0, Math.min(1, value))
+    }
 
     const matchesNormalizedRange = (
       value: number | null | undefined,
@@ -1050,6 +1323,8 @@ export function SourcesView({
       return true
     }
 
+    const stereoChannelMode = audioFilter.stereoChannelMode ?? 'all'
+
     return allSamples.filter(sample => {
       if (!matchesScopeFallback(sample)) return false
 
@@ -1066,11 +1341,27 @@ export function SourcesView({
         return false
       }
 
+      const isOneShot = matchesOneShotType(sample)
+      const isLoop = matchesLoopType(sample)
+      if (showOnlyOneShotType) {
+        if (!isOneShot) {
+          return false
+        }
+      } else if (showOnlyLoopType && !isLoop) {
+        return false
+      }
+
       const applyFolderFilters =
         currentScope.type === 'all' ||
         currentScope.type === 'youtube' ||
         currentScope.type === 'youtube-video' ||
         currentScope.type === 'local' ||
+        currentScope.type === 'soundcloud' ||
+        currentScope.type === 'soundcloud-track' ||
+        currentScope.type === 'spotify' ||
+        currentScope.type === 'spotify-track' ||
+        currentScope.type === 'bandcamp' ||
+        currentScope.type === 'bandcamp-track' ||
         currentScope.type === 'library'
 
       // Included folder filter (AND logic)
@@ -1128,7 +1419,6 @@ export function SourcesView({
       const normalizedWarmth = normalizedSubjective?.warmth ?? sample.warmth
       const normalizedHardness = normalizedSubjective?.hardness ?? sample.hardness
       const normalizedBrightness = normalizedDimensions?.brightness ?? normalizedSubjective?.brightness ?? sample.brightness
-      const normalizedHarmonicity = normalizedDimensions?.harmonicity
       const normalizedNoisiness =
         normalizedDimensions?.noisiness ??
         normalizedSubjective?.noisiness ??
@@ -1138,10 +1428,15 @@ export function SourcesView({
       const normalizedDynamics = normalizedDimensions?.dynamics
       const normalizedSaturation = normalizedDimensions?.saturation ?? sample.roughness
       const normalizedSurface = normalizedDimensions?.surface ?? sample.roughness
+      const normalizedRhythmic = normalizedDimensions?.rhythmic ?? sample.rhythmicRegularity
       const normalizedDensity = normalizedDimensions?.density
-      const normalizedAmbience = normalizedDimensions?.ambience
+      const normalizedAmbience = normalizeDimensionValue(normalizedDimensions?.ambience)
       const normalizedStereoWidth = normalizedDimensions?.stereoWidth
       const normalizedDepth = normalizedDimensions?.depth
+
+      if (!matchesStereoChannelModeFilter(stereoChannelMode, sample, normalizedStereoWidth)) {
+        return false
+      }
 
       if (!matchesNormalizedRange(normalizedBrightness, audioFilter.minBrightness, audioFilter.maxBrightness)) {
         return false
@@ -1150,9 +1445,6 @@ export function SourcesView({
         return false
       }
       if (!matchesNormalizedRange(normalizedHardness, audioFilter.minHardness, audioFilter.maxHardness)) {
-        return false
-      }
-      if (!matchesNormalizedRange(normalizedHarmonicity, audioFilter.minHarmonicity, audioFilter.maxHarmonicity)) {
         return false
       }
       if (!matchesNormalizedRange(normalizedNoisiness, audioFilter.minNoisiness, audioFilter.maxNoisiness)) {
@@ -1168,6 +1460,9 @@ export function SourcesView({
         return false
       }
       if (!matchesNormalizedRange(normalizedSurface, audioFilter.minSurface, audioFilter.maxSurface)) {
+        return false
+      }
+      if (!matchesNormalizedRange(normalizedRhythmic, audioFilter.minRhythmic, audioFilter.maxRhythmic)) {
         return false
       }
       if (!matchesNormalizedRange(normalizedDensity, audioFilter.minDensity, audioFilter.maxDensity)) {
@@ -1210,6 +1505,8 @@ export function SourcesView({
     ruleEvaluationContext,
     isDuplicateModeActive,
     duplicateModeTargetIds,
+    showOnlyOneShotType,
+    showOnlyLoopType,
   ])
 
   const duplicatePairRender = useMemo(() => {
@@ -1245,6 +1542,7 @@ export function SourcesView({
         selectedForDelete: pair.selectedDeleteSampleRole === 'keep',
         selectedDeleteSampleId: pair.selectedDeleteSampleId,
         canDelete: pair.canDeleteKeepSample,
+        canDeletePartner: pair.canDeleteDuplicateSample,
         matchType: pair.matchType,
         similarityPercent,
       })
@@ -1257,6 +1555,7 @@ export function SourcesView({
         selectedForDelete: pair.selectedDeleteSampleRole === 'duplicate',
         selectedDeleteSampleId: pair.selectedDeleteSampleId,
         canDelete: pair.canDeleteDuplicateSample,
+        canDeletePartner: pair.canDeleteKeepSample,
         matchType: pair.matchType,
         similarityPercent,
       })
@@ -1276,7 +1575,10 @@ export function SourcesView({
 
   const displaySamples = duplicatePairRender.orderedSamples
   const duplicatePairMetaBySampleId = duplicatePairRender.pairMetaBySampleId
-  const hasDuplicatePairRender = duplicatePairMetaBySampleId.size > 0
+  const hasDuplicatePairRender = isDuplicateModeActive && duplicatePairMetaBySampleId.size > 0
+  const isBulkActionsTabActive = activeFilterDockTab === 'bulkActions'
+  const isBulkRenamePreviewActive = isBulkRenameMode || isBulkActionsTabActive
+  const bulkRenameSearchText = bulkRenameRules.searchText.trim()
   const duplicatePairDecisionBySampleId = useMemo(() => {
     const bySampleId = new Map<number, DuplicatePairDecision>()
     duplicatePairDecisions.forEach((pair) => {
@@ -1296,20 +1598,44 @@ export function SourcesView({
 
   const bulkRenamePreview = useMemo(() => {
     const byId = new Map<number, BulkRenamePreviewEntry>()
-    if (!isBulkRenameMode) {
+    if (!isBulkRenamePreviewActive) {
       return { byId, changedCount: 0 }
     }
 
+    const selectedOrMatchedSamplesForBulkRename = displaySamples.filter((sample) =>
+      selectedSampleIds.has(sample.id) || matchesBulkRenameSearchText(sample.name, bulkRenameRules),
+    )
+
     let changedCount = 0
-    displaySamples.forEach((sample, index) => {
+    selectedOrMatchedSamplesForBulkRename.forEach((sample, index) => {
       const nextName = applyBulkRenameRules(sample.name, bulkRenameRules, index)
       const hasChange = nextName !== sample.name
       if (hasChange) changedCount += 1
-      byId.set(sample.id, { nextName, hasChange })
+      byId.set(sample.id, {
+        nextName,
+        hasChange,
+        highlightRanges: hasChange
+          ? getBulkRenameReplacementHighlightRanges(nextName, bulkRenameRules)
+          : [],
+      })
     })
 
     return { byId, changedCount }
-  }, [isBulkRenameMode, bulkRenameRules, displaySamples])
+  }, [isBulkRenamePreviewActive, bulkRenameRules, displaySamples, selectedSampleIds])
+
+  const renderedSamples = useMemo(() => {
+    if (!isBulkRenamePreviewActive || bulkRenameSearchText.length === 0) {
+      return displaySamples
+    }
+
+    return displaySamples.filter((sample) => matchesBulkRenameSearchText(sample.name, bulkRenameRules))
+  }, [
+    isBulkRenamePreviewActive,
+    bulkRenameSearchText,
+    bulkRenameRules.caseSensitive,
+    displaySamples,
+    bulkRenameRules,
+  ])
 
   // Scale degree grouping
   const scaleDegreeGroups = useMemo(() => {
@@ -1336,21 +1662,27 @@ export function SourcesView({
     return groups
   }, [samples, audioFilter.groupByScaleDegree, audioFilter.selectedKeys])
 
-  const currentViewSampleIds = useMemo(
-    () => new Set(displaySamples.map((sample) => sample.id)),
-    [displaySamples],
+  const selectedSamplesInCurrentView = useMemo(() => {
+    if (selectedSampleIds.size === 0) return [] as SliceWithTrackExtended[]
+    return displaySamples.filter((sample) => selectedSampleIds.has(sample.id))
+  }, [displaySamples, selectedSampleIds])
+  const selectedSampleIdsInCurrentView = useMemo(
+    () => new Set(selectedSamplesInCurrentView.map((sample) => sample.id)),
+    [selectedSamplesInCurrentView],
   )
-  const selectedSampleIdsInCurrentView = useMemo(() => {
-    if (selectedSampleIds.size === 0) return new Set<number>()
-    return new Set(
-      Array.from(selectedSampleIds).filter((id) => currentViewSampleIds.has(id)),
-    )
-  }, [selectedSampleIds, currentViewSampleIds])
+  const selectedSampleIdsInRenderedView = useMemo(
+    () => new Set(renderedSamples.filter((sample) => selectedSampleIds.has(sample.id)).map((sample) => sample.id)),
+    [renderedSamples, selectedSampleIds],
+  )
+
+  useEffect(() => {
+    onSelectedSamplesChange?.(selectedSamplesInCurrentView)
+  }, [onSelectedSamplesChange, selectedSamplesInCurrentView])
 
   const selectedSample = useMemo<SliceWithTrackExtended | null>(() => {
-    if (!selectedSampleId) return null
-    return displaySamples.find(s => s.id === selectedSampleId) || null
-  }, [selectedSampleId, displaySamples])
+    if (selectedSampleId === null) return null
+    return allSamples.find((sample) => sample.id === selectedSampleId) || null
+  }, [selectedSampleId, allSamples])
 
   useEffect(() => {
     if (isBulkRenameMode === wasBulkRenameModeRef.current) return
@@ -1394,15 +1726,33 @@ export function SourcesView({
   // Keep Space view aligned with the exact list/grid dataset.
   // This avoids double-filtering mismatches when some optional fields are not
   // present in /slices/features payloads.
-  const spaceViewSliceIds = useMemo(() => displaySamples.map((sample) => sample.id), [displaySamples])
+  const spaceViewSliceIds = useMemo(() => renderedSamples.map((sample) => sample.id), [renderedSamples])
 
-  // Clear selected sample if it's no longer in the list
+  // Clear selected sample if it's no longer in the current scoped dataset.
+  // Keep the similarity reference sample selected even when the backend excludes
+  // it from similarity result rows.
   useEffect(() => {
-    if (selectedSampleId && !selectedSample && displaySamples.length > 0) {
+    if (selectedSampleId === null) return
+    const keepSimilarityReferenceSelected =
+      similarityMode?.enabled === true &&
+      similarityMode.referenceSampleId === selectedSampleId &&
+      currentScopeSampleIds.has(selectedSampleId)
+
+    if (!selectedSample && allSamples.length > 0) {
+      if (keepSimilarityReferenceSelected) {
+        return
+      }
       setSelectedSampleId(null)
       onWorkspaceStateChange?.(null)
     }
-  }, [selectedSampleId, selectedSample, displaySamples.length, onWorkspaceStateChange])
+  }, [
+    selectedSampleId,
+    selectedSample,
+    allSamples.length,
+    onWorkspaceStateChange,
+    similarityMode,
+    currentScopeSampleIds,
+  ])
 
   // Handlers
   const handleScopeChange = (scope: SourceScope) => {
@@ -1459,6 +1809,10 @@ export function SourcesView({
     updateSlice.mutate({ id: sliceId, data: { name } })
   }
 
+  const handleUpdateSample = (sliceId: number, data: UpdateSlicePayload) => {
+    updateSlice.mutate({ id: sliceId, data })
+  }
+
   const handleFilterBySimilarity = (sampleId: number, sampleName: string) => {
     setSimilarityMode({
       enabled: true,
@@ -1473,6 +1827,21 @@ export function SourcesView({
     createTagFromFolder.mutate({ folderId, name, color })
   }
 
+  const handleSelectInstrumentTagFromTree = (tagId: number) => {
+    setCurrentScope({ type: 'all' })
+    setSelectedTags((prev) => (prev.length === 1 && prev[0] === tagId ? [] : [tagId]))
+    setSelectedFolderIds([])
+    setExcludedFolderIds([])
+    setSelectedSampleId(null)
+    setActiveFilterDockTab('categories')
+    setIsFilterDockOpen(true)
+    onWorkspaceStateChange?.(null)
+  }
+
+  const handleClearInstrumentSelectionFromTree = () => {
+    setSelectedTags([])
+  }
+
   const handleCreateImportedFolder = async (parentPath: string, name: string) => {
     await createImportedFolder.mutateAsync({ parentPath, name })
   }
@@ -1484,30 +1853,7 @@ export function SourcesView({
       .replace(/\/+$/, '')
       .toLowerCase()
 
-  const getSourceFolderDisplayName = (value: string) => {
-    const normalized = value.replace(/\\+/g, '/').replace(/\/+$/, '')
-    const segments = normalized.split('/').filter(Boolean)
-    return segments[segments.length - 1] || value
-  }
-
   const currentScopeDeleteAction = useMemo(() => {
-    if (currentScope.type === 'local') {
-      return {
-        scope: 'local',
-        label: 'all local sample sources',
-        buttonLabel: 'Delete Local Sources',
-      }
-    }
-
-    if (currentScope.type === 'folder') {
-      const folderName = getSourceFolderDisplayName(currentScope.path)
-      return {
-        scope: `folder:${currentScope.path}`,
-        label: `imported folder "${folderName}"`,
-        buttonLabel: `Delete Folder Source: ${folderName}`,
-      }
-    }
-
     if (currentScope.type === 'library') {
       const libraryName =
         sourceTree?.libraries?.find((library) => library.id === currentScope.libraryId)?.name ||
@@ -1580,7 +1926,7 @@ export function SourcesView({
     if (payload.mode === 'replace') {
       const firstConfirmed = await confirm({
         title: 'Replace Library',
-        message: 'This will replace your current library metadata (tracks, slices, tags, folders, and collections). Continue?',
+        message: 'This will replace your current library metadata (tracks, slices, instruments, folders, and collections). Continue?',
         confirmText: 'Continue',
         cancelText: 'Cancel',
         isDestructive: true,
@@ -1707,6 +2053,148 @@ export function SourcesView({
     })
   }
 
+  const getApiErrorMessage = (error: unknown, fallback: string) => {
+    if (!error || typeof error !== 'object') {
+      return fallback
+    }
+
+    const responseData = (error as { response?: { data?: { error?: unknown } } }).response?.data
+    const errorMessage = responseData?.error
+    if (typeof errorMessage === 'string' && errorMessage.trim().length > 0) {
+      return errorMessage.trim()
+    }
+
+    if (error instanceof Error && error.message.trim().length > 0) {
+      return error.message
+    }
+
+    return fallback
+  }
+
+  const invalidateTagRelatedQueries = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['tags'] }),
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] }),
+      queryClient.invalidateQueries({ queryKey: ['slices'] }),
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] }),
+      queryClient.invalidateQueries({ queryKey: ['tracks'] }),
+    ])
+  }
+
+  const handleRenameTag = (tag: Tag) => {
+    void (async () => {
+      const nextName = await prompt({
+        title: 'Rename Instrument',
+        message: `Rename "${tag.name}" to:`,
+        defaultValue: tag.name,
+        placeholder: 'Instrument name',
+        confirmText: 'Save',
+        cancelText: 'Cancel',
+        validate: (value) => {
+          const normalized = value.trim().toLowerCase()
+          if (!normalized) return 'Name required'
+          if (normalized === tag.name.toLowerCase()) return 'Name unchanged'
+          const alreadyExists = allTags.some(
+            (candidate) => candidate.id !== tag.id && candidate.name.toLowerCase() === normalized,
+          )
+          if (alreadyExists) return 'Instrument already exists'
+          return null
+        },
+      })
+
+      if (nextName === null) return
+
+      const normalizedName = nextName.trim()
+      if (!normalizedName || normalizedName.toLowerCase() === tag.name.toLowerCase()) return
+
+      try {
+        await updateTagRequest(tag.id, { name: normalizedName })
+        await invalidateTagRelatedQueries()
+      } catch (error) {
+        await showAlert({
+          title: 'Rename Failed',
+          message: getApiErrorMessage(error, 'Failed to rename instrument.'),
+          isDestructive: true,
+        })
+      }
+    })()
+  }
+
+  const handleDeleteTag = (tag: Tag) => {
+    void (async () => {
+      const confirmed = await confirm({
+        title: 'Delete Instrument',
+        message: `Delete "${tag.name}"? This removes it from all tracks and samples.`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        isDestructive: true,
+      })
+      if (!confirmed) return
+
+      try {
+        await deleteTagRequest(tag.id)
+        setSelectedTags((prev) => prev.filter((tagId) => tagId !== tag.id))
+        if (draggingTagId === tag.id) {
+          setDraggingTagId(null)
+          setDragOverTagId(null)
+        }
+        await invalidateTagRelatedQueries()
+      } catch (error) {
+        await showAlert({
+          title: 'Delete Failed',
+          message: getApiErrorMessage(error, 'Failed to delete instrument.'),
+          isDestructive: true,
+        })
+      }
+    })()
+  }
+
+  const handleMergeTags = (sourceTagId: number, targetTagId: number) => {
+    if (!Number.isInteger(sourceTagId) || !Number.isInteger(targetTagId) || sourceTagId === targetTagId) {
+      return
+    }
+
+    const sourceTag = allTags.find((tag) => tag.id === sourceTagId)
+    const targetTag = allTags.find((tag) => tag.id === targetTagId)
+    if (!sourceTag || !targetTag) return
+
+    void (async () => {
+      const keepOriginalChoice = await choose<'yes' | 'no'>({
+        title: 'Merge Instruments',
+        message: `Merge "${sourceTag.name}" into "${targetTag.name}"? Do you want to keep the original tag?`,
+        options: [
+          { value: 'yes', label: 'Yes' },
+          { value: 'no', label: 'No', isDestructive: true },
+        ],
+        cancelText: 'Cancel',
+      })
+
+      if (keepOriginalChoice === null) return
+
+      const shouldDeleteSourceTag = keepOriginalChoice === 'no'
+
+      try {
+        await mergeTagsRequest({
+          sourceTagId,
+          targetTagId,
+          deleteSourceTag: shouldDeleteSourceTag,
+        })
+
+        if (shouldDeleteSourceTag) {
+          setSelectedTags((prev) => prev.filter((tagId) => tagId !== sourceTagId))
+        }
+
+        await invalidateTagRelatedQueries()
+      } catch (error) {
+        await showAlert({
+          title: 'Merge Failed',
+          message: getApiErrorMessage(error, 'Failed to merge instruments.'),
+          isDestructive: true,
+        })
+      }
+    })()
+  }
+
   const computePitchForSample = (sample: SliceWithTrackExtended, tuneNote: string | null): number => {
     if (!tuneNote) return 0
     const sourceNote =
@@ -1728,6 +2216,7 @@ export function SourcesView({
     onAddToFolder: handleAddToFolder,
     onRemoveFromFolder: handleRemoveFromFolder,
     onUpdateName: handleUpdateName,
+    onUpdateSample: handleUpdateSample,
     onTagClick: handleTagClick,
     onSelectSample: handleSampleSelect,
     onFilterBySimilarity: handleFilterBySimilarity,
@@ -1738,9 +2227,13 @@ export function SourcesView({
   })
 
   const handleSampleSelect = (id: number) => {
-    setSelectedSampleId(id)
     const sample = samples.find(s => s.id === id) ?? allSamples.find(s => s.id === id)
-    if (sample && onWorkspaceStateChange) {
+    if (!sample) {
+      return
+    }
+
+    setSelectedSampleId(id)
+    if (onWorkspaceStateChange) {
       onWorkspaceStateChange(buildWorkspaceState(sample, tuneTargetNote))
     }
   }
@@ -1776,9 +2269,9 @@ export function SourcesView({
     setSelectedSampleIds((prev) => {
       const next = new Set(prev)
       if (allCurrentViewSelected) {
-        currentViewSampleIds.forEach((id) => next.delete(id))
+        samples.forEach((sample) => next.delete(sample.id))
       } else {
-        currentViewSampleIds.forEach((id) => next.add(id))
+        samples.forEach((sample) => next.add(sample.id))
       }
       return next
     })
@@ -1818,6 +2311,9 @@ export function SourcesView({
   const handleExitDuplicateMode = () => {
     if (!isDuplicateModeActive) return
 
+    // Invalidate any in-flight "find duplicates" request from re-enabling mode after manual exit.
+    duplicateModeExitVersionRef.current += 1
+
     const previousSelection = duplicateModePreviousSelectionRef.current
     const previousSelectedSampleId = duplicateModePreviousSampleRef.current
     const hasSelectionInMode = selectedSampleIds.size > 0
@@ -1842,8 +2338,12 @@ export function SourcesView({
   }
 
   const handleFindDuplicates = () => {
+    const exitVersionAtStart = duplicateModeExitVersionRef.current
     void (async () => {
       const result = await refetchDuplicates()
+      if (duplicateModeExitVersionRef.current !== exitVersionAtStart) {
+        return
+      }
       const total = result.data?.total ?? 0
       if (total > 0) {
         enterDuplicateMode()
@@ -1878,24 +2378,39 @@ export function SourcesView({
     })
   }
 
-  const handleToggleDuplicateDeleteTarget = (pair: DuplicatePairDecision, target: 'keep' | 'duplicate') => {
+  const handleSetDuplicateDeleteTarget = (pair: DuplicatePairDecision, target: 'keep' | 'duplicate') => {
     if (target === 'keep' && !pair.canDeleteKeepSample) return
     if (target === 'duplicate' && !pair.canDeleteDuplicateSample) return
 
     const targetSampleId = target === 'keep' ? pair.keepSample.id : pair.duplicateSample.id
-    const nextChoice = pair.selectedDeleteSampleId === targetSampleId ? null : targetSampleId
-    setDuplicatePairDeleteChoice(pair, nextChoice)
+    setDuplicatePairDeleteChoice(pair, targetSampleId)
   }
 
   const handleToggleDuplicateDeleteTargetBySampleId = (sampleId: number) => {
     const pair = duplicatePairDecisionBySampleId.get(sampleId)
     if (!pair) return
     if (sampleId === pair.keepSample.id) {
-      handleToggleDuplicateDeleteTarget(pair, 'keep')
+      handleSetDuplicateDeleteTarget(pair, 'keep')
       return
     }
     if (sampleId === pair.duplicateSample.id) {
-      handleToggleDuplicateDeleteTarget(pair, 'duplicate')
+      handleSetDuplicateDeleteTarget(pair, 'duplicate')
+    }
+  }
+
+  const handleKeepDuplicateSampleBySampleId = (sampleId: number) => {
+    const pair = duplicatePairDecisionBySampleId.get(sampleId)
+    if (!pair) return
+
+    if (sampleId === pair.keepSample.id) {
+      if (!pair.canDeleteDuplicateSample) return
+      setDuplicatePairDeleteChoice(pair, pair.duplicateSample.id)
+      return
+    }
+
+    if (sampleId === pair.duplicateSample.id) {
+      if (!pair.canDeleteKeepSample) return
+      setDuplicatePairDeleteChoice(pair, pair.keepSample.id)
     }
   }
 
@@ -2007,6 +2522,88 @@ export function SourcesView({
     })()
   }
 
+  const applyBulkTagUpdateForSample = async (
+    sample: SliceWithTrackExtended,
+    tagRequest: NonNullable<SampleBulkEditRequest['tags']>,
+  ) => {
+    const currentTagIds = new Set(sample.tags.map((tag) => tag.id))
+    const requestedTagIds = new Set(tagRequest.tagIds)
+    const tagIdsToAdd: number[] = []
+    const tagIdsToRemove: number[] = []
+
+    if (tagRequest.mode === 'replace' || tagRequest.mode === 'add') {
+      requestedTagIds.forEach((tagId) => {
+        if (!currentTagIds.has(tagId)) {
+          tagIdsToAdd.push(tagId)
+        }
+      })
+    }
+
+    if (tagRequest.mode === 'replace') {
+      currentTagIds.forEach((tagId) => {
+        if (!requestedTagIds.has(tagId)) {
+          tagIdsToRemove.push(tagId)
+        }
+      })
+    } else if (tagRequest.mode === 'remove') {
+      requestedTagIds.forEach((tagId) => {
+        if (currentTagIds.has(tagId)) {
+          tagIdsToRemove.push(tagId)
+        }
+      })
+    }
+
+    await Promise.all([
+      ...tagIdsToAdd.map((tagId) => addTagToSliceRequest(sample.id, tagId)),
+      ...tagIdsToRemove.map((tagId) => removeTagFromSliceRequest(sample.id, tagId)),
+    ])
+  }
+
+  const handleBulkEditSubmit = async (request: SampleBulkEditRequest) => {
+    const ids = Array.from(selectedSampleIdsInCurrentView)
+    if (ids.length === 0) return
+
+    const hasPatch = Object.keys(request.patch).length > 0
+    const sampleById = new Map(allSamples.map((sample) => [sample.id, sample]))
+
+    setIsBulkEditSubmitting(true)
+    try {
+      if (hasPatch) {
+        await Promise.all(
+          ids.map((id) => updateSliceRequest(id, request.patch)),
+        )
+      }
+
+      if (request.tags) {
+        for (const id of ids) {
+          const sample = sampleById.get(id)
+          if (!sample) continue
+          await applyBulkTagUpdateForSample(sample, request.tags)
+        }
+      }
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['allSlices'] }),
+        queryClient.invalidateQueries({ queryKey: ['slices'] }),
+        queryClient.invalidateQueries({ queryKey: ['scopedSamples'] }),
+        queryClient.invalidateQueries({ queryKey: ['tags'] }),
+      ])
+
+      setSelectedSampleIds(new Set())
+      setShowBulkEditModal(false)
+    } catch (error) {
+      console.error('Failed to apply bulk sample edits:', error)
+      await showAlert({
+        title: 'Bulk Edit Failed',
+        message: error instanceof Error ? error.message : 'Failed to apply selected edits.',
+        isDestructive: true,
+      })
+      throw error
+    } finally {
+      setIsBulkEditSubmitting(false)
+    }
+  }
+
   const handleBatchDownload = (ids: number[]) => {
     if (ids.length === 0) return
 
@@ -2087,6 +2684,27 @@ export function SourcesView({
         return video?.title || 'YouTube Video'
       case 'local':
         return 'Local Samples'
+      case 'soundcloud':
+        return 'SoundCloud'
+      case 'soundcloud-track':
+        return (
+          sourceTree?.streaming?.soundcloud?.tracks?.find((track) => track.id === currentScope.trackId)?.title ||
+          'SoundCloud Track'
+        )
+      case 'spotify':
+        return 'Spotify'
+      case 'spotify-track':
+        return (
+          sourceTree?.streaming?.spotify?.tracks?.find((track) => track.id === currentScope.trackId)?.title ||
+          'Spotify Track'
+        )
+      case 'bandcamp':
+        return 'Bandcamp'
+      case 'bandcamp-track':
+        return (
+          sourceTree?.streaming?.bandcamp?.tracks?.find((track) => track.id === currentScope.trackId)?.title ||
+          'Bandcamp Track'
+        )
       case 'folder':
         return currentScope.path.split('/').pop() || 'Folder'
       case 'library':
@@ -2108,6 +2726,37 @@ export function SourcesView({
   const scopeLabel = getScopeLabel()
   const searchScopeDescriptor = getSampleSearchScopeDescriptor(searchScope, customSearchFields)
   const searchScopeHint = getSampleSearchScopeHint(searchScope, customSearchFields)
+  const totalSamplesInSourceTree = useMemo(() => {
+    if (!sourceTree) return 0
+
+    const youtubeCount = (sourceTree.youtube ?? []).reduce(
+      (sum, track) => sum + Number(track.sliceCount || 0),
+      0,
+    )
+    const localCount = Number(sourceTree.local?.count || 0)
+    const soundcloudCount = Number(sourceTree.streaming?.soundcloud?.count || 0)
+    const spotifyCount = Number(sourceTree.streaming?.spotify?.count || 0)
+    const bandcampCount = Number(sourceTree.streaming?.bandcamp?.count || 0)
+    const importedFolderCount = (sourceTree.folders ?? []).reduce(
+      (sum, folder) => sum + Number(folder.sampleCount || 0),
+      0,
+    )
+    const libraryCount = (sourceTree.libraries ?? []).reduce(
+      (sum, library) => sum + Number(library.sampleCount || 0),
+      0,
+    )
+
+    return (
+      youtubeCount +
+      localCount +
+      soundcloudCount +
+      spotifyCount +
+      bandcampCount +
+      importedFolderCount +
+      libraryCount
+    )
+  }, [sourceTree])
+  const showEmptyDatabaseWelcome = Boolean(sourceTree) && !isTreeLoading && !isSamplesLoading && totalSamplesInSourceTree === 0
   const selectAllChecked = selectedSampleIdsInCurrentView.size === samples.length && samples.length > 0
   const selectAllIndeterminate =
     selectedSampleIdsInCurrentView.size > 0 && selectedSampleIdsInCurrentView.size < samples.length
@@ -2155,189 +2804,59 @@ export function SourcesView({
   const getTagUsageCount = (tag: { id: number; name: string }) =>
     tagCounts.counts[tag.id] ?? tagCounts.countsByName[tag.name.toLowerCase()] ?? 0
 
-  const tagCategoryTabs = useMemo(() => {
-    const stats = new Map<string, { key: string; label: string; total: number; matching: number; selected: number }>()
+  const filterableTags = useMemo(
+    () => allTags.filter((tag) => !isSampleTypeTag(tag)),
+    [allTags],
+  )
 
-    for (const tag of allTags) {
-      const usageCount = getTagUsageCount(tag)
-      if (usageCount <= 0) {
-        continue
-      }
+  const instrumentTagsForTree = useMemo(
+    () =>
+      filterableTags.filter((tag) => normalizeTagCategory(tag.category) === 'instrument'),
+    [filterableTags],
+  )
 
-      const key = normalizeTagCategory(tag.category)
-      const existing = stats.get(key) ?? {
-        key,
-        label: formatTagCategoryLabel(key),
-        total: 0,
-        matching: 0,
-        selected: 0,
-      }
-      existing.total += 1
-      if (!normalizedTagFilterSearch || tag.name.toLowerCase().includes(normalizedTagFilterSearch)) {
-        existing.matching += 1
-      }
-      if (selectedTags.includes(tag.id)) {
-        existing.selected += 1
-      }
-      stats.set(key, existing)
-    }
+  const instrumentTagCountsForTree = useMemo(() => {
+    const counts: Record<number, number> = {}
 
-    const categories = Array.from(stats.values()).sort((a, b) => a.label.localeCompare(b.label))
-    const matchingAll = categories.reduce((sum, category) => sum + category.matching, 0)
-    const selectedAll = categories.reduce((sum, category) => sum + category.selected, 0)
-    const totalAll = categories.reduce((sum, category) => sum + category.total, 0)
-
-    return [
-      {
-        key: 'all',
-        label: 'All',
-        total: totalAll,
-        matching: matchingAll,
-        selected: selectedAll,
-      },
-      ...categories,
-    ]
-  }, [allTags, getTagUsageCount, normalizedTagFilterSearch, selectedTags])
-
-  useEffect(() => {
-    if (activeTagCategory === 'all') return
-    if (!tagCategoryTabs.some((category) => category.key === activeTagCategory)) {
-      setActiveTagCategory('all')
-    }
-  }, [activeTagCategory, tagCategoryTabs])
-
-  const { inlineTagCategories, overflowTagCategories } = useMemo(() => {
-    if (tagCategoryTabs.length <= 1) {
-      return {
-        inlineTagCategories: tagCategoryTabs,
-        overflowTagCategories: [] as typeof tagCategoryTabs,
+    for (const sample of overviewSamples) {
+      for (const tag of sample.tags || []) {
+        if (normalizeTagCategory(tag.category) !== 'instrument' || isSampleTypeTag(tag)) continue
+        counts[tag.id] = (counts[tag.id] || 0) + 1
       }
     }
 
-    if (tagCategoryStripWidth <= 0) {
-      const fallbackInline = tagCategoryTabs.slice(0, 3)
-      return {
-        inlineTagCategories: fallbackInline,
-        overflowTagCategories: tagCategoryTabs.slice(fallbackInline.length),
+    // Ensure all instrument tags are visible even when usage is zero in current scope.
+    for (const tag of instrumentTagsForTree) {
+      if (counts[tag.id] === undefined) {
+        counts[tag.id] = tagCounts.counts[tag.id] ?? tagCounts.countsByName[tag.name.toLowerCase()] ?? 0
       }
     }
 
-    const minButtonWidth = 68
-    const maxButtonWidth = 124
-    const moreButtonWidth = 78
-    const gapWidth = 6
-    const stripSafetyPadding = 4
-    let usedWidth = 0
-    const inline: typeof tagCategoryTabs = []
+    return counts
+  }, [overviewSamples, instrumentTagsForTree, tagCounts.counts, tagCounts.countsByName])
 
-    for (let index = 0; index < tagCategoryTabs.length; index += 1) {
-      const category = tagCategoryTabs[index]
-      const remainingCategories = tagCategoryTabs.length - (index + 1)
-      const reserveForMore = remainingCategories > 0 ? moreButtonWidth + gapWidth : 0
-      const nextGap = inline.length > 0 ? gapWidth : 0
-      const estimatedButtonWidth = Math.max(
-        minButtonWidth,
-        Math.min(
-          maxButtonWidth,
-          Math.round(
-            category.label.length * 7.2 +
-            (category.matching > 999 ? 56 : category.matching > 99 ? 50 : category.matching > 9 ? 44 : 38),
-          ),
-        ),
-      )
+  const sampleTypeCounts = useMemo(() => {
+    let oneShot = 0
+    let loop = 0
 
-      if (
-        usedWidth +
-        nextGap +
-        estimatedButtonWidth +
-        reserveForMore >
-        tagCategoryStripWidth - stripSafetyPadding
-      ) {
-        break
-      }
-
-      inline.push(category)
-      usedWidth += nextGap + estimatedButtonWidth
-    }
-
-    if (inline.length === 0) {
-      inline.push(tagCategoryTabs[0])
-    }
-
-    let overflow = tagCategoryTabs.slice(inline.length)
-
-    if (
-      overflow.length > 0 &&
-      inline.length > 0 &&
-      !inline.some((category) => category.key === activeTagCategory)
-    ) {
-      const activeOverflowIndex = overflow.findIndex((category) => category.key === activeTagCategory)
-      if (activeOverflowIndex >= 0) {
-        const replacedCategory = inline[inline.length - 1]
-        inline[inline.length - 1] = overflow[activeOverflowIndex]
-        overflow = [
-          replacedCategory,
-          ...overflow.slice(0, activeOverflowIndex),
-          ...overflow.slice(activeOverflowIndex + 1),
-        ]
-      }
+    for (const sample of allSamples) {
+      if (!matchesScopeFallback(sample)) continue
+      if (matchesOneShotType(sample)) oneShot += 1
+      if (matchesLoopType(sample)) loop += 1
     }
 
     return {
-      inlineTagCategories: inline,
-      overflowTagCategories: overflow,
+      oneShot,
+      loop,
     }
-  }, [activeTagCategory, tagCategoryStripWidth, tagCategoryTabs])
-
-  useEffect(() => {
-    if (activeFilterDockTab !== 'categories') {
-      setIsTagCategoryMoreOpen(false)
-    }
-  }, [activeFilterDockTab])
-
-  useEffect(() => {
-    if (!isTagCategoryMoreOpen) return
-
-    const handlePointerDownOutsideMoreMenu = (event: PointerEvent) => {
-      const moreMenu = tagCategoryMoreRef.current
-      if (!moreMenu) return
-      if (moreMenu.contains(event.target as Node)) return
-      setIsTagCategoryMoreOpen(false)
-    }
-
-    document.addEventListener('pointerdown', handlePointerDownOutsideMoreMenu)
-    return () => document.removeEventListener('pointerdown', handlePointerDownOutsideMoreMenu)
-  }, [isTagCategoryMoreOpen])
-
-  useEffect(() => {
-    if (activeFilterDockTab !== 'categories') return
-    const stripElement = tagCategoryStripRef.current
-    if (!stripElement) return
-
-    const updateWidth = () => setTagCategoryStripWidth(stripElement.clientWidth)
-    updateWidth()
-
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateWidth)
-      return () => window.removeEventListener('resize', updateWidth)
-    }
-
-    const observer = new ResizeObserver(() => {
-      updateWidth()
-    })
-    observer.observe(stripElement)
-    return () => observer.disconnect()
-  }, [activeFilterDockTab, tagCategoryTabs.length])
+  }, [allSamples, currentScope, scopeCollectionFolderIds, myFolderScopeFolderIds])
 
   const visibleTagTiles = useMemo(() => {
-    const source = allTags.filter((tag) => {
+    const source = filterableTags.filter((tag) => {
       if (getTagUsageCount(tag) <= 0) {
         return false
       }
       if (normalizedTagFilterSearch && !tag.name.toLowerCase().includes(normalizedTagFilterSearch)) {
-        return false
-      }
-      if (activeTagCategory !== 'all' && normalizeTagCategory(tag.category) !== activeTagCategory) {
         return false
       }
       return true
@@ -2352,20 +2871,133 @@ export function SourcesView({
       if (aCount !== bCount) return bCount - aCount
       return a.name.localeCompare(b.name)
     })
-  }, [activeTagCategory, allTags, getTagUsageCount, normalizedTagFilterSearch, selectedTags, tagCounts.counts, tagCounts.countsByName])
+  }, [filterableTags, getTagUsageCount, normalizedTagFilterSearch, selectedTags, tagCounts.counts, tagCounts.countsByName])
 
-  const activeFilterCount = useMemo(() => {
-    let count = 0
+  const activeFilters = useMemo<ActiveFilterListItem[]>(() => {
+    const items: ActiveFilterListItem[] = []
     const isRangeActive = (min: number | undefined, max: number | undefined) =>
       (min ?? 0) > 0 || (max ?? 1) < 1
-    count += selectedTags.length
-    count += queryRules.filter((rule) => rule.value.trim().length > 0).length
-    if (minDuration > 0 || maxDuration < 300) count += 1
-    if (minLoudness > -60 || maxLoudness < 0) count += 1
-    if (audioFilter.minBpm > 0 || audioFilter.maxBpm < 300) count += 1
-    if ((audioFilter.selectedNotes || []).length > 0) count += 1
-    if (audioFilter.selectedKeys.length > 0) count += 1
-    if (audioFilter.selectedEnvelopeTypes.length > 0) count += 1
+    const clampFilterLabel = (value: string, maxChars = 40) =>
+      value.length > maxChars ? `${value.slice(0, maxChars - 3)}...` : value
+    const joinFilterValues = (values: string[]) => clampFilterLabel(values.join(', '))
+    const formatRangeValue = (value: number | undefined, digits = 2) => (Number(value ?? 0)).toFixed(digits)
+    const tagNameById = new Map(allTags.map((tag) => [tag.id, tag.name]))
+
+    for (const tagId of selectedTags) {
+      items.push({
+        id: `tag-${tagId}`,
+        label: `Instrument: ${tagNameById.get(tagId) || `Tag #${tagId}`}`,
+        tab: 'categories',
+        onRemove: () => setSelectedTags((prev) => prev.filter((id) => id !== tagId)),
+      })
+    }
+
+    if (sampleTypeFilter !== null) {
+      items.push({
+        id: `sample-type-${sampleTypeFilter}`,
+        label: sampleTypeFilter === 'one-shot' ? 'Type: One-shot' : 'Type: Loop',
+        tab: 'categories',
+        onRemove: () => setSampleTypeFilter(null),
+      })
+    }
+
+    if (isBulkRenamePreviewActive && bulkRenameSearchText.length > 0) {
+      const matchModeLabel = bulkRenameRules.matchRegex ? 'regex' : 'text'
+      const caseModeLabel = bulkRenameRules.caseSensitive ? 'case-sensitive' : 'case-insensitive'
+      const replaceModeLabel = bulkRenameRules.replaceMatches ? 'replace on' : 'replace off'
+      items.push({
+        id: 'bulk-rename-find-text',
+        label: `Bulk Find (${matchModeLabel}, ${caseModeLabel}, ${replaceModeLabel}): ${clampFilterLabel(bulkRenameSearchText)}`,
+        tab: 'bulkActions',
+        onRemove: () =>
+          onBulkRenameRulesChange((prev) => ({
+            ...prev,
+            searchText: '',
+          })),
+      })
+    }
+
+    for (const rule of queryRules) {
+      const ruleValue = rule.value.trim()
+      if (ruleValue.length === 0) continue
+      const fieldLabel = getFilterRuleField(rule.field).label
+      const operatorLabel =
+        getFilterRuleOperators(rule.field).find((operator) => operator.id === rule.operator)?.label || rule.operator
+      items.push({
+        id: `rule-${rule.id}`,
+        label: `Rule: ${fieldLabel} ${operatorLabel} ${clampFilterLabel(ruleValue)}`,
+        tab: 'advanced',
+        onRemove: () => setQueryRules((prev) => prev.filter((entry) => entry.id !== rule.id)),
+      })
+    }
+
+    if (minDuration > 0 || maxDuration < 300) {
+      items.push({
+        id: 'duration',
+        label: `Duration: ${minDuration.toFixed(1)}s - ${maxDuration.toFixed(1)}s`,
+        tab: 'features',
+        onRemove: () => {
+          setMinDuration(0)
+          setMaxDuration(300)
+        },
+      })
+    }
+
+    if (minLoudness > -60 || maxLoudness < 0) {
+      items.push({
+        id: 'loudness',
+        label: `Loudness: ${minLoudness.toFixed(1)} dB - ${maxLoudness.toFixed(1)} dB`,
+        tab: 'dimensions',
+        onRemove: () => {
+          setMinLoudness(-60)
+          setMaxLoudness(0)
+        },
+      })
+    }
+
+    if (audioFilter.minBpm > 0 || audioFilter.maxBpm < 300) {
+      items.push({
+        id: 'bpm',
+        label: `BPM: ${audioFilter.minBpm.toFixed(1)} - ${audioFilter.maxBpm.toFixed(1)}`,
+        tab: 'features',
+        onRemove: () => setAudioFilter((prev) => ({ ...prev, minBpm: 0, maxBpm: 300 })),
+      })
+    }
+
+    if ((audioFilter.selectedNotes || []).length > 0) {
+      items.push({
+        id: 'notes',
+        label: `Notes: ${joinFilterValues(audioFilter.selectedNotes || [])}`,
+        tab: 'features',
+        onRemove: () =>
+          setAudioFilter((prev) => ({ ...prev, selectedNotes: [], relatedNotesLevels: [] })),
+      })
+    }
+
+    if (audioFilter.selectedKeys.length > 0) {
+      items.push({
+        id: 'keys',
+        label: `Keys: ${joinFilterValues(audioFilter.selectedKeys)}`,
+        tab: 'features',
+        onRemove: () =>
+          setAudioFilter((prev) => ({
+            ...prev,
+            selectedKeys: [],
+            relatedKeysLevels: [],
+            groupByScaleDegree: false,
+          })),
+      })
+    }
+
+    if (audioFilter.selectedEnvelopeTypes.length > 0) {
+      items.push({
+        id: 'envelope',
+        label: `Envelope: ${joinFilterValues(audioFilter.selectedEnvelopeTypes)}`,
+        tab: 'features',
+        onRemove: () => setAudioFilter((prev) => ({ ...prev, selectedEnvelopeTypes: [] })),
+      })
+    }
+
     if (
       audioFilter.dateAddedFrom ||
       audioFilter.dateAddedTo ||
@@ -2374,23 +3006,177 @@ export function SourcesView({
       audioFilter.dateUpdatedFrom ||
       audioFilter.dateUpdatedTo
     ) {
-      count += 1
+      const dateSegments: string[] = []
+      if (audioFilter.dateAddedFrom || audioFilter.dateAddedTo) {
+        dateSegments.push(`Added ${audioFilter.dateAddedFrom || '...'} to ${audioFilter.dateAddedTo || '...'}`)
+      }
+      if (audioFilter.dateCreatedFrom || audioFilter.dateCreatedTo) {
+        dateSegments.push(`Created ${audioFilter.dateCreatedFrom || '...'} to ${audioFilter.dateCreatedTo || '...'}`)
+      }
+      if (audioFilter.dateUpdatedFrom || audioFilter.dateUpdatedTo) {
+        dateSegments.push(`Updated ${audioFilter.dateUpdatedFrom || '...'} to ${audioFilter.dateUpdatedTo || '...'}`)
+      }
+      items.push({
+        id: 'dates',
+        label: `Dates: ${clampFilterLabel(dateSegments.join(' | '), 64)}`,
+        tab: 'features',
+        onRemove: () =>
+          setAudioFilter((prev) => ({
+            ...prev,
+            dateAddedFrom: '',
+            dateAddedTo: '',
+            dateCreatedFrom: '',
+            dateCreatedTo: '',
+            dateUpdatedFrom: '',
+            dateUpdatedTo: '',
+          })),
+      })
     }
-    if (isRangeActive(audioFilter.minBrightness, audioFilter.maxBrightness)) count += 1
-    if (isRangeActive(audioFilter.minWarmth, audioFilter.maxWarmth)) count += 1
-    if (isRangeActive(audioFilter.minHardness, audioFilter.maxHardness)) count += 1
-    if (isRangeActive(audioFilter.minHarmonicity, audioFilter.maxHarmonicity)) count += 1
-    if (isRangeActive(audioFilter.minNoisiness, audioFilter.maxNoisiness)) count += 1
-    if (isRangeActive(audioFilter.minAttack, audioFilter.maxAttack)) count += 1
-    if (isRangeActive(audioFilter.minDynamics, audioFilter.maxDynamics)) count += 1
-    if (isRangeActive(audioFilter.minSaturation, audioFilter.maxSaturation)) count += 1
-    if (isRangeActive(audioFilter.minSurface, audioFilter.maxSurface)) count += 1
-    if (isRangeActive(audioFilter.minDensity, audioFilter.maxDensity)) count += 1
-    if (isRangeActive(audioFilter.minAmbience, audioFilter.maxAmbience)) count += 1
-    if (isRangeActive(audioFilter.minStereoWidth, audioFilter.maxStereoWidth)) count += 1
-    if (isRangeActive(audioFilter.minDepth, audioFilter.maxDepth)) count += 1
-    return count
-  }, [audioFilter, maxDuration, maxLoudness, minDuration, minLoudness, queryRules, selectedTags.length])
+
+    const dimensionRangeFilters: Array<{
+      id: string
+      label: string
+      min: number | undefined
+      max: number | undefined
+      reset: Partial<AudioFilterState>
+    }> = [
+      {
+        id: 'brightness',
+        label: 'Brightness',
+        min: audioFilter.minBrightness,
+        max: audioFilter.maxBrightness,
+        reset: { minBrightness: 0, maxBrightness: 1 },
+      },
+      {
+        id: 'warmth',
+        label: 'Warmth',
+        min: audioFilter.minWarmth,
+        max: audioFilter.maxWarmth,
+        reset: { minWarmth: 0, maxWarmth: 1 },
+      },
+      {
+        id: 'hardness',
+        label: 'Hardness',
+        min: audioFilter.minHardness,
+        max: audioFilter.maxHardness,
+        reset: { minHardness: 0, maxHardness: 1 },
+      },
+      {
+        id: 'noisiness',
+        label: 'Noisiness',
+        min: audioFilter.minNoisiness,
+        max: audioFilter.maxNoisiness,
+        reset: { minNoisiness: 0, maxNoisiness: 1 },
+      },
+      {
+        id: 'attack',
+        label: 'Attack',
+        min: audioFilter.minAttack,
+        max: audioFilter.maxAttack,
+        reset: { minAttack: 0, maxAttack: 1 },
+      },
+      {
+        id: 'dynamics',
+        label: 'Dynamics',
+        min: audioFilter.minDynamics,
+        max: audioFilter.maxDynamics,
+        reset: { minDynamics: 0, maxDynamics: 1 },
+      },
+      {
+        id: 'saturation',
+        label: 'Saturation',
+        min: audioFilter.minSaturation,
+        max: audioFilter.maxSaturation,
+        reset: { minSaturation: 0, maxSaturation: 1 },
+      },
+      {
+        id: 'surface',
+        label: 'Surface',
+        min: audioFilter.minSurface,
+        max: audioFilter.maxSurface,
+        reset: { minSurface: 0, maxSurface: 1 },
+      },
+      {
+        id: 'rhythmic',
+        label: 'Rhythmic',
+        min: audioFilter.minRhythmic,
+        max: audioFilter.maxRhythmic,
+        reset: { minRhythmic: 0, maxRhythmic: 1 },
+      },
+      {
+        id: 'density',
+        label: 'Density',
+        min: audioFilter.minDensity,
+        max: audioFilter.maxDensity,
+        reset: { minDensity: 0, maxDensity: 1 },
+      },
+      {
+        id: 'ambience',
+        label: 'Ambience',
+        min: audioFilter.minAmbience,
+        max: audioFilter.maxAmbience,
+        reset: { minAmbience: 0, maxAmbience: 1 },
+      },
+      {
+        id: 'stereo-width',
+        label: 'Stereo Width',
+        min: audioFilter.minStereoWidth,
+        max: audioFilter.maxStereoWidth,
+        reset: { minStereoWidth: 0, maxStereoWidth: 1 },
+      },
+      {
+        id: 'depth',
+        label: 'Depth',
+        min: audioFilter.minDepth,
+        max: audioFilter.maxDepth,
+        reset: { minDepth: 0, maxDepth: 1 },
+      },
+    ]
+
+    for (const dimensionFilter of dimensionRangeFilters) {
+      if (!isRangeActive(dimensionFilter.min, dimensionFilter.max)) continue
+      items.push({
+        id: dimensionFilter.id,
+        label: `${dimensionFilter.label}: ${formatRangeValue(dimensionFilter.min)} - ${formatRangeValue(dimensionFilter.max)}`,
+        tab: 'dimensions',
+        onRemove: () => setAudioFilter((prev) => ({ ...prev, ...dimensionFilter.reset })),
+      })
+    }
+
+    if ((audioFilter.stereoChannelMode ?? 'all') !== 'all') {
+      items.push({
+        id: 'stereo-channel-mode',
+        label: `Channel Mode: ${audioFilter.stereoChannelMode === 'mono' ? 'Mono' : 'Stereo'}`,
+        tab: 'dimensions',
+        onRemove: () => setAudioFilter((prev) => ({ ...prev, stereoChannelMode: 'all' })),
+      })
+    }
+
+    return items
+  }, [
+    allTags,
+    audioFilter,
+    bulkRenameRules.caseSensitive,
+    bulkRenameRules.matchRegex,
+    bulkRenameRules.replaceMatches,
+    bulkRenameSearchText,
+    isBulkRenamePreviewActive,
+    maxDuration,
+    maxLoudness,
+    minDuration,
+    minLoudness,
+    onBulkRenameRulesChange,
+    queryRules,
+    sampleTypeFilter,
+    selectedTags,
+  ])
+
+  const activeFilterCount = activeFilters.length
+  const handleClearAllFilters = () => {
+    for (const filter of activeFilters) {
+      filter.onRemove()
+    }
+  }
 
   const dimensionCategoryTabs = useMemo(
     () => [
@@ -2401,6 +3187,15 @@ export function SourcesView({
     ],
     [],
   )
+  const stereoChannelMode = audioFilter.stereoChannelMode === 'mono' || audioFilter.stereoChannelMode === 'stereo'
+    ? audioFilter.stereoChannelMode
+    : 'all'
+  const setStereoChannelMode = (mode: 'mono' | 'stereo') => {
+    setAudioFilter((prev) => ({
+      ...prev,
+      stereoChannelMode: (prev.stereoChannelMode ?? 'all') === mode ? 'all' : mode,
+    }))
+  }
 
   const collectionOverview = useMemo<CollectionOverview>(() => {
     const trackIds = new Set<number>()
@@ -2510,22 +3305,6 @@ export function SourcesView({
     treeSidebarTargetOpen,
   ])
 
-  useEffect(() => {
-    if (isTreeSidebarLocked || !isTreeSidebarOpen) return
-
-    const handlePointerDownOutsideSidebar = (event: PointerEvent) => {
-      const sidebarElement = overlaySidebarRef.current
-      if (!sidebarElement) return
-      if (sidebarElement.contains(event.target as Node)) return
-
-      setIsTreeSidebarTransitioning(false)
-      setTreeSidebarTargetOpen(false)
-    }
-
-    document.addEventListener('pointerdown', handlePointerDownOutsideSidebar)
-    return () => document.removeEventListener('pointerdown', handlePointerDownOutsideSidebar)
-  }, [isTreeSidebarLocked, isTreeSidebarOpen])
-
   const handleTreeSidebarTransitionEnd = (
     event: React.TransitionEvent<HTMLElement>,
   ) => {
@@ -2540,6 +3319,14 @@ export function SourcesView({
   const overlaySidebarOffset =
     !isTreeSidebarLocked && isTreeSidebarOpen ? Math.max(treeSidebarWidth - 14, 0) : 0
   const isYouTubeGroupedScope = currentScope.type === 'youtube' || currentScope.type === 'youtube-video'
+  const handleShowSourcesSidebar = () => {
+    setIsTreeSidebarCollapsed(false)
+    if (!isTreeSidebarLocked) {
+      setIsTreeSidebarTransitioning(false)
+      setTreeSidebarTargetOpen(true)
+      setIsTreeSidebarOpen(true)
+    }
+  }
 
   return (
     <div className="relative h-full flex overflow-hidden bg-surface-base">
@@ -2568,6 +3355,11 @@ export function SourcesView({
                 onBatchAddToFolder={handleBatchAddToFolder}
                 onCreateTagFromFolder={handleCreateTagFromFolder}
                 onCreateImportedFolder={handleCreateImportedFolder}
+                instrumentTags={instrumentTagsForTree}
+                instrumentTagCounts={instrumentTagCountsForTree}
+                selectedInstrumentTagIds={selectedTags}
+                onSelectInstrumentTag={handleSelectInstrumentTagFromTree}
+                onClearInstrumentSelection={handleClearInstrumentSelectionFromTree}
                 isLoading={isTreeLoading}
                 collections={collections}
                 activeCollectionId={activeCollectionId}
@@ -2577,7 +3369,6 @@ export function SourcesView({
                 onDeleteCollection={handleDeleteCollection}
                 onMoveCollection={handleMoveCollection}
                 onOpenAdvancedCategoryManagement={() => setShowCustomOrder(true)}
-                onOpenAddSource={onOpenAddSource}
                 onOpenLibraryImport={() => setShowLibraryImportModal(true)}
                 showFavoritesOnly={showFavoritesOnly}
                 onToggleFavoritesOnly={() => setShowFavoritesOnly((prev) => !prev)}
@@ -2639,6 +3430,11 @@ export function SourcesView({
                 onBatchAddToFolder={handleBatchAddToFolder}
                 onCreateTagFromFolder={handleCreateTagFromFolder}
                 onCreateImportedFolder={handleCreateImportedFolder}
+                instrumentTags={instrumentTagsForTree}
+                instrumentTagCounts={instrumentTagCountsForTree}
+                selectedInstrumentTagIds={selectedTags}
+                onSelectInstrumentTag={handleSelectInstrumentTagFromTree}
+                onClearInstrumentSelection={handleClearInstrumentSelectionFromTree}
                 isLoading={isTreeLoading}
                 collections={collections}
                 activeCollectionId={activeCollectionId}
@@ -2648,7 +3444,6 @@ export function SourcesView({
                 onDeleteCollection={handleDeleteCollection}
                 onMoveCollection={handleMoveCollection}
                 onOpenAdvancedCategoryManagement={() => setShowCustomOrder(true)}
-                onOpenAddSource={onOpenAddSource}
                 onOpenLibraryImport={() => setShowLibraryImportModal(true)}
                 showFavoritesOnly={showFavoritesOnly}
                 onToggleFavoritesOnly={() => setShowFavoritesOnly((prev) => !prev)}
@@ -2842,7 +3637,9 @@ export function SourcesView({
                 </div>
                 <div className="text-xs text-slate-300">
                   Showing {activeDuplicateModeCount} sample{activeDuplicateModeCount === 1 ? '' : 's'} in {scopeLabel}.
-                  Smart remove behaves as a live filter in this mode.
+                  {duplicateModeFilter === 'smart-remove'
+                    ? ' Smart remove shows only samples currently marked for deletion (updates live as pair choices change).'
+                    : ' All duplicates shows both samples from each duplicate pair.'}
                 </div>
               </div>
 
@@ -2850,24 +3647,26 @@ export function SourcesView({
                 <button
                   type="button"
                   onClick={() => setDuplicateModeFilter('all-duplicates')}
+                  title="Show both samples from each duplicate pair."
                   className={`px-2 py-1 rounded border text-[11px] font-medium transition-colors ${
                     duplicateModeFilter === 'all-duplicates'
                       ? 'border-accent-primary/60 bg-accent-primary/20 text-accent-primary'
                       : 'border-surface-border bg-surface-base text-slate-300 hover:text-white'
                   }`}
                 >
-                  All duplicates ({duplicateSamplesInScopeCount})
+                  All pair samples ({duplicateSamplesInScopeCount})
                 </button>
                 <button
                   type="button"
                   onClick={() => setDuplicateModeFilter('smart-remove')}
+                  title="Show only samples currently marked for deletion."
                   className={`px-2 py-1 rounded border text-[11px] font-medium transition-colors ${
                     duplicateModeFilter === 'smart-remove'
                       ? 'border-red-500/50 bg-red-500/15 text-red-200'
                       : 'border-surface-border bg-surface-base text-slate-300 hover:text-white'
                   }`}
                 >
-                  Smart remove ({smartRemoveSamplesInScopeCount})
+                  Smart remove: marked for delete ({smartRemoveSamplesInScopeCount})
                 </button>
                 <button
                   type="button"
@@ -2889,10 +3688,15 @@ export function SourcesView({
             selectedCount={selectedSampleIdsInCurrentView.size}
             selectedIds={selectedSampleIdsInCurrentView}
             modifiedSelectedCount={modifiedSelectedCount}
+            onBulkEdit={() => {
+              if (isBulkEditSubmitting) return
+              setShowBulkEditModal(true)
+            }}
             onBatchDelete={handleBatchDelete}
             onBatchDownload={handleBatchDownload}
             onAnalyzeSelected={handleAnalyzeSelected}
             onClearSelection={() => setSelectedSampleIds(new Set())}
+            isEditing={isBulkEditSubmitting}
             isDeleting={batchDeleteSlices.isPending}
             isAnalyzing={batchReanalyzeSlices.isPending}
           />
@@ -2901,12 +3705,32 @@ export function SourcesView({
         {/* Sample grid/list */}
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
           <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
-            {isYouTubeGroupedScope ? (
+            {showEmptyDatabaseWelcome ? (
+              <div className="h-full min-h-0 flex items-center justify-center p-6">
+                <div className="w-full max-w-2xl rounded-xl border border-surface-border bg-surface-raised/80 p-6 text-center shadow-lg">
+                  <h2 className="text-2xl font-semibold text-text-primary">Welcome to Sample Solution</h2>
+                  <p className="mt-2 text-sm text-text-secondary">
+                    Your database is empty. Open the left panel to manage your sources there.
+                  </p>
+                  <div className="mt-5 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={handleShowSourcesSidebar}
+                      className="inline-flex items-center gap-2 rounded-lg border border-accent-primary/50 bg-accent-primary/15 px-4 py-2 text-sm font-medium text-accent-primary transition-colors hover:bg-accent-primary/25"
+                    >
+                      <Plus size={15} />
+                      Add source
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : isYouTubeGroupedScope ? (
               // YouTube grouped view
               viewMode === 'grid' ? (
                 <div className="overflow-y-auto h-full">
                   <SourcesYouTubeGroupedGrid
                     samples={samples}
+                    selectedYouTubeTrackId={currentScope.type === 'youtube-video' ? currentScope.trackId : null}
                     selectedId={selectedSampleId}
                     selectedIds={selectedSampleIdsInCurrentView}
                     onSelect={handleSampleSelect}
@@ -2927,6 +3751,7 @@ export function SourcesView({
               ) : viewMode === 'list' ? (
                 <SourcesYouTubeGroupedList
                   samples={samples}
+                  selectedYouTubeTrackId={currentScope.type === 'youtube-video' ? currentScope.trackId : null}
                   selectedId={selectedSampleId}
                   selectedIds={selectedSampleIdsInCurrentView}
                   onSelect={handleSampleSelect}
@@ -2946,7 +3771,7 @@ export function SourcesView({
                   onDeleteSource={handleDeleteSource}
                 />
               ) : (
-                <div className="flex-1 min-h-0 relative">
+                <div className="h-full min-h-0 flex flex-col relative">
                   <SampleSpaceView
                     externalFilterState={spaceViewFilterState}
                     externalAudioFilter={audioFilter}
@@ -2981,9 +3806,10 @@ export function SourcesView({
                 {viewMode === 'grid' ? (
                   <div className="flex-1 overflow-y-auto min-h-0">
                     <SourcesSampleGrid
-                      samples={displaySamples}
+                      key={hasDuplicatePairRender ? 'duplicate-pairs-on' : 'duplicate-pairs-off'}
+                      samples={renderedSamples}
                       selectedId={selectedSampleId}
-                      selectedIds={selectedSampleIdsInCurrentView}
+                      selectedIds={selectedSampleIdsInRenderedView}
                       onSelect={handleSampleSelect}
                       onToggleSelect={handleToggleSelect}
                       onToggleSelectAll={handleToggleSelectAll}
@@ -3002,6 +3828,9 @@ export function SourcesView({
                       onToggleDuplicateDeleteTarget={
                         hasDuplicatePairRender ? handleToggleDuplicateDeleteTargetBySampleId : undefined
                       }
+                      onKeepDuplicateSample={
+                        hasDuplicatePairRender ? handleKeepDuplicateSampleBySampleId : undefined
+                      }
                     />
                   </div>
                 ) : viewMode === 'list' ? (
@@ -3015,7 +3844,7 @@ export function SourcesView({
                               Similar to: {similarityMode.referenceSampleName}
                             </div>
                             <div className="text-xs text-slate-400">
-                              {displaySamples.length} samples above {Math.round(similarityMode.minSimilarity * 100)}% similarity
+                              {renderedSamples.length} samples above {Math.round(similarityMode.minSimilarity * 100)}% similarity
                             </div>
                           </div>
                         </div>
@@ -3055,11 +3884,12 @@ export function SourcesView({
                         </div>
                       </div>
                     )}
-                    <div className="flex-1 overflow-hidden">
+                    <div className="flex-1 min-h-0 overflow-hidden">
                       <SourcesSampleList
-                        samples={displaySamples}
+                        key={hasDuplicatePairRender ? 'duplicate-pairs-on' : 'duplicate-pairs-off'}
+                        samples={renderedSamples}
                         selectedId={selectedSampleId}
-                        selectedIds={selectedSampleIdsInCurrentView}
+                        selectedIds={selectedSampleIdsInRenderedView}
                         onSelect={handleSampleSelect}
                         onToggleSelect={handleToggleSelect}
                         onToggleSelectAll={handleToggleSelectAll}
@@ -3082,6 +3912,9 @@ export function SourcesView({
                         duplicatePairMetaBySampleId={hasDuplicatePairRender ? duplicatePairMetaBySampleId : undefined}
                         onToggleDuplicateDeleteTarget={
                           hasDuplicatePairRender ? handleToggleDuplicateDeleteTargetBySampleId : undefined
+                        }
+                        onKeepDuplicateSample={
+                          hasDuplicatePairRender ? handleKeepDuplicateSampleBySampleId : undefined
                         }
                       />
                     </div>
@@ -3148,17 +3981,37 @@ export function SourcesView({
                 <>
                   <div className="pl-3 pr-4 py-2 border-b border-surface-border/70 bg-surface-base/80">
                     <div className="flex items-center gap-2">
-                      <div className="inline-flex items-center gap-1.5 rounded-sm border border-accent-primary/45 bg-accent-primary/10 px-2 py-1 text-[11px] font-semibold tracking-wide text-slate-200 uppercase">
+                      <button
+                        type="button"
+                        onClick={() => setIsEnabledFiltersListOpen((open) => !open)}
+                        className="inline-flex items-center gap-1.5 rounded-sm border border-accent-primary/45 bg-accent-primary/10 px-2 py-1 text-[11px] font-semibold tracking-wide text-slate-200 uppercase transition-colors hover:bg-accent-primary/20"
+                        aria-expanded={isEnabledFiltersListOpen}
+                        aria-controls="sources-enabled-filters-list"
+                      >
                         Filters
-                        <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-sm bg-surface-base border border-surface-border text-[10px] text-slate-300">
+                        <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-sm text-[10px] text-slate-300">
                           {activeFilterCount}
                         </span>
-                      </div>
+                        <ChevronRight
+                          size={11}
+                          className={`text-slate-400 transition-transform ${isEnabledFiltersListOpen ? 'rotate-90' : ''}`}
+                        />
+                      </button>
+
+                      {activeFilterCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleClearAllFilters}
+                          className="inline-flex items-center rounded-sm border border-surface-border px-2 py-1 text-[11px] font-medium text-slate-300 transition-colors hover:border-slate-400/60 hover:text-white"
+                        >
+                          Clear all
+                        </button>
+                      )}
 
                       <div className="flex-1 min-w-0 overflow-x-auto">
                         <div className="inline-flex items-center gap-0.5 rounded-md border border-surface-border bg-surface-base p-0.5 min-w-max">
                           {[
-                            { id: 'categories' as const, label: 'Tags' },
+                            { id: 'categories' as const, label: 'Instruments' },
                             { id: 'dimensions' as const, label: 'Dimensions' },
                             { id: 'features' as const, label: 'Features' },
                             { id: 'advanced' as const, label: 'Advanced' },
@@ -3184,6 +4037,44 @@ export function SourcesView({
                         </div>
                       </div>
                     </div>
+
+                    {isEnabledFiltersListOpen && (
+                      <div
+                        id="sources-enabled-filters-list"
+                        className="mt-2 rounded-md border border-surface-border bg-surface-base/95 px-2 py-2"
+                      >
+                        {activeFilters.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {activeFilters.map((filter) => (
+                              <div
+                                key={filter.id}
+                                className="inline-flex max-w-[280px] items-center gap-1 rounded border border-surface-border bg-surface-raised px-2 py-1 text-[11px] text-slate-200"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveFilterDockTab(filter.tab)}
+                                  className="truncate text-left hover:text-white transition-colors"
+                                  title={`Open ${filter.tab} filters`}
+                                >
+                                  {filter.label}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={filter.onRemove}
+                                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-surface-overlay hover:text-red-300"
+                                  title={`Remove ${filter.label}`}
+                                  aria-label={`Remove ${filter.label}`}
+                                >
+                                  <X size={11} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-slate-500">No filters enabled.</div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {activeFilterDockTab === 'categories' && (
@@ -3195,90 +4086,53 @@ export function SourcesView({
                             type="text"
                             value={tagFilterSearchQuery}
                             onChange={(e) => setTagFilterSearchQuery(e.target.value)}
-                            placeholder="Search tags..."
+                            placeholder="Search instruments..."
                             className="w-full pl-8 pr-2 py-1.5 text-sm bg-surface-base border border-surface-border rounded-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-accent-primary/60"
                           />
                         </div>
 
-                        <div ref={tagCategoryStripRef} className="relative flex-1 min-w-0">
-                          <div className="flex items-center justify-start gap-1.5 overflow-hidden">
-                            {inlineTagCategories.map((category) => {
-                              const isActive = activeTagCategory === category.key
-                              const hasMatches = category.matching > 0
-                              return (
-                                <button
-                                  key={category.key}
-                                  type="button"
-                                  onClick={() => {
-                                    setActiveTagCategory(category.key)
-                                    setIsTagCategoryMoreOpen(false)
-                                  }}
-                                  className={`inline-flex max-w-[134px] items-center gap-1 rounded-sm border px-2 py-1 text-[11px] transition-colors ${
-                                    isActive
-                                      ? 'border-accent-primary/45 bg-accent-primary/20 text-accent-primary'
-                                      : hasMatches
-                                        ? 'border-surface-border text-slate-300 hover:text-white hover:border-slate-400/40'
-                                        : 'border-surface-border/60 text-slate-500 hover:text-slate-400'
-                                  }`}
-                                >
-                                  <span className="truncate uppercase tracking-wide">{category.label}</span>
-                                  <span className="text-[10px] text-slate-500">{category.matching}</span>
-                                </button>
-                              )
-                            })}
-
-                            {overflowTagCategories.length > 0 && (
-                              <div ref={tagCategoryMoreRef} className="relative shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() => setIsTagCategoryMoreOpen((open) => !open)}
-                                  className={`inline-flex items-center gap-1 rounded-sm border px-2 py-1 text-[11px] transition-colors ${
-                                    isTagCategoryMoreOpen || overflowTagCategories.some((category) => category.key === activeTagCategory)
-                                      ? 'border-accent-primary/45 bg-accent-primary/20 text-accent-primary'
-                                      : 'border-surface-border text-slate-300 hover:text-white hover:border-slate-400/40'
-                                  }`}
-                                >
-                                  <span className="uppercase tracking-wide">More</span>
-                                  <ChevronDown size={12} className={isTagCategoryMoreOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
-                                </button>
-
-                                {isTagCategoryMoreOpen && (
-                                  <div className="absolute right-0 bottom-full mb-1.5 w-52 rounded-sm border border-surface-border bg-surface-base shadow-xl z-20 p-1 max-h-56 overflow-y-auto origin-bottom-right">
-                                    {overflowTagCategories.map((category) => {
-                                      const isActive = activeTagCategory === category.key
-                                      const hasMatches = category.matching > 0
-                                      return (
-                                        <button
-                                          key={category.key}
-                                          type="button"
-                                          onClick={() => {
-                                            setActiveTagCategory(category.key)
-                                            setIsTagCategoryMoreOpen(false)
-                                          }}
-                                          className={`w-full text-left px-2 py-1.5 rounded-sm text-xs transition-colors ${
-                                            isActive
-                                              ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/35'
-                                              : hasMatches
-                                                ? 'text-slate-300 hover:text-white hover:bg-surface-overlay border border-transparent'
-                                                : 'text-slate-500 hover:text-slate-400 border border-transparent'
-                                          }`}
-                                        >
-                                          <span className="flex items-center justify-between gap-2">
-                                            <span className="truncate uppercase tracking-wide">{category.label}</span>
-                                            <span className="text-[10px] text-slate-500">{category.matching}</span>
-                                          </span>
-                                        </button>
-                                      )
-                                    })}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
+                        <div className="inline-flex items-center gap-1.5 rounded-md bg-surface-base p-0.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSampleTypeFilter((current) => (current === 'one-shot' ? null : 'one-shot'))
+                            }
+                            aria-pressed={sampleTypeFilter === 'one-shot'}
+                            className={`inline-flex items-center gap-1 rounded-sm border px-2 py-1 text-[11px] transition-colors ${
+                              sampleTypeFilter === 'one-shot'
+                                ? 'border border-accent-primary/45 bg-accent-primary/20 text-accent-primary'
+                                : sampleTypeCounts.oneShot > 0
+                                  ? 'border-surface-border text-slate-300 hover:text-white hover:border-slate-400/40'
+                                  : 'border-surface-border/60 text-slate-500 hover:text-slate-400'
+                            }`}
+                          >
+                            <span className="uppercase tracking-wide">One-shot</span>
+                            <span className="text-[10px] text-slate-500">{sampleTypeCounts.oneShot}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSampleTypeFilter((current) => (current === 'loop' ? null : 'loop'))
+                            }
+                            aria-pressed={sampleTypeFilter === 'loop'}
+                            className={`inline-flex items-center gap-1 rounded-sm border px-2 py-1 text-[11px] transition-colors ${
+                              sampleTypeFilter === 'loop'
+                                ? 'border border-accent-primary/45 bg-accent-primary/20 text-accent-primary'
+                                : sampleTypeCounts.loop > 0
+                                  ? 'border-surface-border text-slate-300 hover:text-white hover:border-slate-400/40'
+                                  : 'border-surface-border/60 text-slate-500 hover:text-slate-400'
+                            }`}
+                          >
+                            <span className="uppercase tracking-wide">Loop</span>
+                            <span className="text-[10px] text-slate-500">{sampleTypeCounts.loop}</span>
+                          </button>
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-end gap-2 text-xs text-slate-400">
+                      <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
+                        <span className="text-slate-500">
+                          Drag one instrument onto another to merge.
+                        </span>
                         {selectedTags.length > 0 && (
                           <button
                             type="button"
@@ -3298,6 +4152,8 @@ export function SourcesView({
                         ? 'overflow-hidden'
                         : activeFilterDockTab === 'categories'
                           ? 'overflow-hidden pl-1 pr-2 py-1'
+                          : activeFilterDockTab === 'duplicates'
+                            ? 'overflow-hidden px-1 py-1'
                           : 'overflow-y-auto px-1 py-1'
                     }`}
                   >
@@ -3311,35 +4167,122 @@ export function SourcesView({
                                 tagCounts.counts[tag.id] ??
                                 tagCounts.countsByName[tag.name.toLowerCase()] ??
                                 0
+                              const isDragSource = draggingTagId === tag.id
+                              const isDropTarget =
+                                dragOverTagId === tag.id && draggingTagId !== null && draggingTagId !== tag.id
                               return (
-                                <button
+                                <div
                                   key={tag.id}
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedTags((prev) =>
-                                      prev.includes(tag.id)
-                                        ? prev.filter((id) => id !== tag.id)
-                                        : [...prev, tag.id],
-                                    )
-                                  }}
-                                  className={`relative h-10 border pl-3 pr-2 text-center transition-colors overflow-hidden ${
-                                    isSelected
-                                      ? 'border-accent-primary/60 bg-accent-primary/15'
-                                      : 'border-surface-border bg-surface-base hover:bg-surface-overlay'
-                                  }`}
+                                  className={`group relative h-10 border transition-colors overflow-hidden ${
+                                    isDropTarget
+                                      ? 'border-accent-warm/80 bg-accent-warm/20'
+                                      : isSelected
+                                        ? 'border-accent-primary/60 bg-accent-primary/15'
+                                        : 'border-surface-border bg-surface-base hover:bg-surface-overlay'
+                                  } ${isDragSource ? 'opacity-60' : ''}`}
                                 >
-                                  <span
-                                    className="absolute left-0 top-0 h-full w-1"
-                                    style={{ backgroundColor: tag.color }}
-                                    aria-hidden="true"
-                                  />
-                                  <span className="block truncate text-sm font-medium text-white leading-10">
-                                    {tag.name.toUpperCase()}
-                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedTags((prev) =>
+                                        prev.includes(tag.id)
+                                          ? prev.filter((id) => id !== tag.id)
+                                          : [...prev, tag.id],
+                                      )
+                                    }}
+                                    title={tag.name}
+                                    aria-label={tag.name}
+                                    draggable
+                                    onDragStart={(event) => {
+                                      setDraggingTagId(tag.id)
+                                      setDragOverTagId(null)
+                                      event.dataTransfer.effectAllowed = 'move'
+                                      event.dataTransfer.setData('text/tag-id', String(tag.id))
+                                      event.dataTransfer.setData('text/plain', String(tag.id))
+                                    }}
+                                    onDragEnd={() => {
+                                      setDraggingTagId(null)
+                                      setDragOverTagId(null)
+                                    }}
+                                    onDragOver={(event) => {
+                                      if (draggingTagId === null || draggingTagId === tag.id) return
+                                      event.preventDefault()
+                                      event.dataTransfer.dropEffect = 'move'
+                                      setDragOverTagId(tag.id)
+                                    }}
+                                    onDragLeave={(event) => {
+                                      const relatedTarget = event.relatedTarget as Node | null
+                                      if (relatedTarget && event.currentTarget.contains(relatedTarget)) return
+                                      if (dragOverTagId === tag.id) {
+                                        setDragOverTagId(null)
+                                      }
+                                    }}
+                                    onDrop={(event) => {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      const rawTagId =
+                                        event.dataTransfer.getData('text/tag-id') ||
+                                        event.dataTransfer.getData('text/plain')
+                                      const droppedTagId = Number.parseInt(rawTagId, 10)
+                                      const sourceTagId = Number.isInteger(droppedTagId) ? droppedTagId : draggingTagId
+                                      setDraggingTagId(null)
+                                      setDragOverTagId(null)
+                                      if (sourceTagId === null || sourceTagId === tag.id) return
+                                      handleMergeTags(sourceTagId, tag.id)
+                                    }}
+                                    className={`absolute inset-0 px-3 text-center ${
+                                      isDropTarget ? 'cursor-copy' : 'cursor-pointer'
+                                    }`}
+                                  >
+                                    <span
+                                      className="absolute left-0 top-0 h-full w-1"
+                                      style={{ backgroundColor: tag.color }}
+                                      aria-hidden="true"
+                                    />
+                                    <span className="block truncate text-sm font-medium text-white leading-10">
+                                      {tag.name.toUpperCase()}
+                                    </span>
+                                  </button>
+
                                   <span className="absolute right-0.5 bottom-0.5 z-10 inline-flex items-center rounded-sm bg-surface-base/85 px-1 text-[10px] leading-none text-slate-400 pointer-events-none">
                                     {usageCount}
                                   </span>
-                                </button>
+
+                                  <div
+                                    className={`absolute right-0.5 top-0.5 z-20 inline-flex items-center gap-0.5 transition-opacity ${
+                                      draggingTagId !== null
+                                        ? 'opacity-0 pointer-events-none'
+                                        : 'opacity-0 group-hover:opacity-100'
+                                    }`}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.preventDefault()
+                                        event.stopPropagation()
+                                        handleRenameTag(tag)
+                                      }}
+                                      className="inline-flex h-5 w-5 items-center justify-center rounded bg-surface-base/85 text-slate-300 hover:text-white hover:bg-surface-raised transition-colors"
+                                      title={`Rename ${tag.name}`}
+                                      aria-label={`Rename ${tag.name}`}
+                                    >
+                                      <Pencil size={12} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.preventDefault()
+                                        event.stopPropagation()
+                                        handleDeleteTag(tag)
+                                      }}
+                                      className="inline-flex h-5 w-5 items-center justify-center rounded bg-surface-base/85 text-red-300 hover:text-red-100 hover:bg-red-500/60 transition-colors"
+                                      title={`Delete ${tag.name}`}
+                                      aria-label={`Delete ${tag.name}`}
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                  </div>
+                                </div>
                               )
                             })}
                           </div>
@@ -3347,7 +4290,7 @@ export function SourcesView({
 
                         {visibleTagTiles.length === 0 && (
                           <div className="rounded-md border border-surface-border bg-surface-base px-3 py-4 text-sm text-slate-500">
-                            No tags match this search.
+                            No instruments match this search.
                           </div>
                         )}
                       </div>
@@ -3356,119 +4299,46 @@ export function SourcesView({
                     {activeFilterDockTab === 'features' && (
                       <div className="rounded-lg border border-surface-border bg-surface-base p-3">
                         <div className="space-y-1.5">
-                          <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2">
-                            <div className="space-y-1.5">
-                              <div className="text-[11px] text-slate-400 uppercase tracking-wide">Duration (seconds)</div>
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <input
-                                  type="number"
-                                  value={minDuration.toFixed(1)}
-                                  onChange={(e) => {
-                                    const val = parseFloat(e.target.value) || 0
-                                    setMinDuration(Math.max(0, Math.min(val, maxDuration)))
+                          <div className="space-y-1.5">
+                            <div className="text-[11px] text-slate-400 uppercase tracking-wide">Duration (seconds)</div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <input
+                                type="number"
+                                value={minDuration.toFixed(1)}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value) || 0
+                                  setMinDuration(Math.max(0, Math.min(val, maxDuration)))
+                                }}
+                                className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
+                                min="0"
+                                max={maxDuration}
+                                step="0.1"
+                              />
+                              <span className="text-xs text-slate-500">to</span>
+                              <input
+                                type="number"
+                                value={maxDuration.toFixed(1)}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value) || 0
+                                  setMaxDuration(Math.max(minDuration, Math.min(val, 600)))
+                                }}
+                                className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
+                                min={minDuration}
+                                max="600"
+                                step="0.1"
+                              />
+                              {(minDuration > 0 || maxDuration < 300) && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMinDuration(0)
+                                    setMaxDuration(300)
                                   }}
-                                  className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
-                                  min="0"
-                                  max={maxDuration}
-                                  step="0.1"
-                                />
-                                <span className="text-xs text-slate-500">to</span>
-                                <input
-                                  type="number"
-                                  value={maxDuration.toFixed(1)}
-                                  onChange={(e) => {
-                                    const val = parseFloat(e.target.value) || 0
-                                    setMaxDuration(Math.max(minDuration, Math.min(val, 600)))
-                                  }}
-                                  className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
-                                  min={minDuration}
-                                  max="600"
-                                  step="0.1"
-                                />
-                                {(minDuration > 0 || maxDuration < 300) && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setMinDuration(0)
-                                      setMaxDuration(300)
-                                    }}
-                                    className="text-xs text-slate-400 hover:text-white transition-colors"
-                                  >
-                                    Reset
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="space-y-1.5">
-                              <div className="text-[11px] text-slate-400 uppercase tracking-wide">Loudness (dB)</div>
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <input
-                                    type="number"
-                                    value={minLoudness.toFixed(1)}
-                                    onChange={(e) => {
-                                      const val = parseFloat(e.target.value)
-                                      if (Number.isNaN(val)) return
-                                      setMinLoudness(Math.max(-80, Math.min(val, maxLoudness)))
-                                    }}
-                                    className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
-                                    min="-80"
-                                    max={maxLoudness}
-                                    step="0.1"
-                                  />
-                                  <span className="text-xs text-slate-500">to</span>
-                                  <input
-                                    type="number"
-                                    value={maxLoudness.toFixed(1)}
-                                    onChange={(e) => {
-                                      const val = parseFloat(e.target.value)
-                                      if (Number.isNaN(val)) return
-                                      setMaxLoudness(Math.min(6, Math.max(val, minLoudness)))
-                                    }}
-                                    className="w-20 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
-                                    min={minLoudness}
-                                    max="6"
-                                    step="0.1"
-                                  />
-                                  {(minLoudness > -60 || maxLoudness < 0) && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setMinLoudness(-60)
-                                        setMaxLoudness(0)
-                                      }}
-                                      className="text-xs text-slate-400 hover:text-white transition-colors"
-                                    >
-                                      Reset
-                                    </button>
-                                  )}
-                                </div>
-                                <div className="flex flex-wrap gap-1 md:ml-auto">
-                                  {LOUDNESS_PRESETS.map((preset) => {
-                                    const isActive =
-                                      Math.abs(minLoudness - preset.min) < 0.05 &&
-                                      Math.abs(maxLoudness - preset.max) < 0.05
-                                    return (
-                                      <button
-                                        key={preset.id}
-                                        type="button"
-                                        onClick={() => {
-                                          setMinLoudness(preset.min)
-                                          setMaxLoudness(preset.max)
-                                        }}
-                                        className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
-                                          isActive
-                                            ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/45'
-                                            : 'bg-surface-raised text-slate-300 border border-surface-border hover:text-white'
-                                        }`}
-                                      >
-                                        {preset.label}
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                              </div>
+                                  className="text-xs text-slate-400 hover:text-white transition-colors"
+                                >
+                                  Reset
+                                </button>
+                              )}
                             </div>
                           </div>
 
@@ -3492,21 +4362,117 @@ export function SourcesView({
 
                     {activeFilterDockTab === 'dimensions' && (
                       <div className="rounded-lg border border-surface-border bg-surface-base p-3 space-y-3">
-                        <div className="inline-flex items-center gap-1 rounded-sm border border-surface-border bg-surface-raised p-0.5">
-                          {dimensionCategoryTabs.map((tab) => (
-                            <button
-                              key={tab.key}
-                              type="button"
-                              onClick={() => setActiveDimensionCategory(tab.key)}
-                              className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[11px] transition-colors ${
-                                activeDimensionCategory === tab.key
-                                  ? 'border border-accent-primary/45 bg-accent-primary/20 text-accent-primary'
-                                  : 'border border-transparent text-slate-300 hover:text-white'
-                              }`}
-                            >
-                              <span className="uppercase tracking-wide">{tab.label}</span>
-                            </button>
-                          ))}
+                        <div className="flex items-center gap-2">
+                          <div className="inline-flex items-center gap-1 rounded-sm border border-surface-border bg-surface-raised p-0.5">
+                            {dimensionCategoryTabs.map((tab) => (
+                              <button
+                                key={tab.key}
+                                type="button"
+                                onClick={() => setActiveDimensionCategory(tab.key)}
+                                className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[11px] transition-colors ${
+                                  activeDimensionCategory === tab.key
+                                    ? 'border border-accent-primary/45 bg-accent-primary/20 text-accent-primary'
+                                    : 'border border-transparent text-slate-300 hover:text-white'
+                                }`}
+                              >
+                                <span className="uppercase tracking-wide">{tab.label}</span>
+                              </button>
+                            ))}
+                          </div>
+
+                          {activeDimensionCategory === 'energy' && (
+                            <div className="ml-auto flex items-center gap-1.5 overflow-x-auto whitespace-nowrap">
+                              <span className="text-[11px] text-slate-400 uppercase tracking-wide">Loudness (dB)</span>
+                              <input
+                                type="number"
+                                value={minLoudness.toFixed(1)}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value)
+                                  if (Number.isNaN(val)) return
+                                  setMinLoudness(Math.max(-80, Math.min(val, maxLoudness)))
+                                }}
+                                className="w-16 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
+                                min="-80"
+                                max={maxLoudness}
+                                step="0.1"
+                              />
+                              <span className="text-xs text-slate-500">to</span>
+                              <input
+                                type="number"
+                                value={maxLoudness.toFixed(1)}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value)
+                                  if (Number.isNaN(val)) return
+                                  setMaxLoudness(Math.min(6, Math.max(val, minLoudness)))
+                                }}
+                                className="w-16 px-2 py-0.5 text-xs bg-surface-raised border border-surface-border rounded text-white focus:outline-none focus:border-accent-primary no-spinner"
+                                min={minLoudness}
+                                max="6"
+                                step="0.1"
+                              />
+                              {(minLoudness > -60 || maxLoudness < 0) && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMinLoudness(-60)
+                                    setMaxLoudness(0)
+                                  }}
+                                  className="text-xs text-slate-400 hover:text-white transition-colors"
+                                >
+                                  Reset
+                                </button>
+                              )}
+                              {LOUDNESS_PRESETS.map((preset) => {
+                                const isActive =
+                                  Math.abs(minLoudness - preset.min) < 0.05 &&
+                                  Math.abs(maxLoudness - preset.max) < 0.05
+                                return (
+                                  <button
+                                    key={preset.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setMinLoudness(preset.min)
+                                      setMaxLoudness(preset.max)
+                                    }}
+                                    className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
+                                      isActive
+                                        ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/45'
+                                        : 'bg-surface-raised text-slate-300 border border-surface-border hover:text-white'
+                                    }`}
+                                  >
+                                    {preset.label}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          )}
+
+                          {activeDimensionCategory === 'space' && (
+                            <div className="ml-auto inline-flex items-center gap-1 rounded-sm border border-surface-border bg-surface-raised p-0.5">
+                              <button
+                                type="button"
+                                onClick={() => setStereoChannelMode('mono')}
+                                className={`inline-flex items-center px-2 py-1 rounded-sm text-[11px] transition-colors ${
+                                  stereoChannelMode === 'mono'
+                                    ? 'border border-accent-primary/45 bg-accent-primary/20 text-accent-primary'
+                                    : 'border border-transparent text-slate-300 hover:text-white'
+                                }`}
+                              >
+                                <span className="uppercase tracking-wide">Mono</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setStereoChannelMode('stereo')}
+                                className={`inline-flex items-center px-2 py-1 rounded-sm text-[11px] transition-colors ${
+                                  stereoChannelMode === 'stereo'
+                                    ? 'border border-accent-primary/45 bg-accent-primary/20 text-accent-primary'
+                                    : 'border border-transparent text-slate-300 hover:text-white'
+                                }`}
+                              >
+                                <span className="uppercase tracking-wide">Stereo</span>
+                              </button>
+                            </div>
+                          )}
                         </div>
                         <SourcesDimensionFilter
                           category={activeDimensionCategory}
@@ -3531,7 +4497,8 @@ export function SourcesView({
 
                     {activeFilterDockTab === 'bulkActions' && (
                       <BulkRenamePanel
-                        samples={samples}
+                        scopedSamples={displaySamples}
+                        selectedSamples={selectedSamplesInCurrentView}
                         isSamplesLoading={isSamplesLoading}
                         rules={bulkRenameRules}
                         onRulesChange={onBulkRenameRulesChange}
@@ -3539,12 +4506,16 @@ export function SourcesView({
                     )}
 
                     {activeFilterDockTab === 'duplicates' && (
-                      <div className="bg-surface-base border border-surface-border rounded-xl overflow-hidden">
+                      <div
+                        className={`bg-surface-base border border-surface-border rounded-xl overflow-hidden ${
+                          isDuplicatePanelCompact ? '' : 'h-full min-h-0 flex flex-col'
+                        }`}
+                      >
                         <div
                           className={advancedFilterPanel.isDragging ? 'panel-animate dragging overflow-hidden' : 'panel-animate overflow-hidden'}
-                          style={{ height: advancedFilterPanel.size }}
+                          style={{ height: duplicatePanelHeight }}
                         >
-                          <div className="h-full overflow-y-auto p-3 pr-2 space-y-3">
+                          <div className={isDuplicatePanelCompact ? 'p-3 pr-2 space-y-3' : 'h-full overflow-y-auto p-3 pr-2 space-y-3'}>
                             {/* Duplicates */}
                             <div className="space-y-3">
                               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -3671,24 +4642,44 @@ export function SourcesView({
                                   </div>
 
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                    <label className="flex items-center gap-2 rounded border border-surface-border bg-surface-raised px-2 py-1.5 text-xs text-slate-300 cursor-pointer">
-                                      <input
-                                        type="checkbox"
+                                    <div
+                                      role="checkbox"
+                                      aria-checked={duplicateProtectFavorites}
+                                      tabIndex={0}
+                                      onClick={() => setDuplicateProtectFavorites((prev) => !prev)}
+                                      onKeyDown={(event) =>
+                                        handleCheckboxTileKeyDown(event, () =>
+                                          setDuplicateProtectFavorites((prev) => !prev)
+                                        )
+                                      }
+                                      className="flex items-center gap-2 rounded border border-surface-border bg-surface-raised px-2 py-1.5 text-xs text-slate-300 cursor-pointer select-none"
+                                    >
+                                      <CustomCheckbox
                                         checked={duplicateProtectFavorites}
                                         onChange={(e) => setDuplicateProtectFavorites(e.target.checked)}
-                                        className="accent-accent-primary"
+                                        className="flex-shrink-0"
                                       />
-                                      Protect favorites from delete
-                                    </label>
-                                    <label className="flex items-center gap-2 rounded border border-surface-border bg-surface-raised px-2 py-1.5 text-xs text-slate-300 cursor-pointer">
-                                      <input
-                                        type="checkbox"
+                                      <span>Protect favorites from delete</span>
+                                    </div>
+                                    <div
+                                      role="checkbox"
+                                      aria-checked={duplicatePreferAssigned}
+                                      tabIndex={0}
+                                      onClick={() => setDuplicatePreferAssigned((prev) => !prev)}
+                                      onKeyDown={(event) =>
+                                        handleCheckboxTileKeyDown(event, () =>
+                                          setDuplicatePreferAssigned((prev) => !prev)
+                                        )
+                                      }
+                                      className="flex items-center gap-2 rounded border border-surface-border bg-surface-raised px-2 py-1.5 text-xs text-slate-300 cursor-pointer select-none"
+                                    >
+                                      <CustomCheckbox
                                         checked={duplicatePreferAssigned}
                                         onChange={(e) => setDuplicatePreferAssigned(e.target.checked)}
-                                        className="accent-accent-primary"
+                                        className="flex-shrink-0"
                                       />
-                                      Keep tagged/folder-assigned first
-                                    </label>
+                                      <span>Keep tagged/folder-assigned first</span>
+                                    </div>
                                   </div>
 
                                   <div className="flex items-center justify-between gap-2 rounded border border-red-500/25 bg-red-500/5 px-3 py-2">
@@ -3746,14 +4737,16 @@ export function SourcesView({
                             </div>
                           </div>
                         </div>
-                        <ResizableDivider
-                          direction="vertical"
-                          isDragging={advancedFilterPanel.isDragging}
-                          isCollapsed={advancedFilterPanel.isCollapsed}
-                          onMouseDown={advancedFilterPanel.dividerProps.onMouseDown}
-                          onDoubleClick={advancedFilterPanel.dividerProps.onDoubleClick}
-                          onExpand={advancedFilterPanel.restore}
-                        />
+                        {!isDuplicatePanelCompact && (
+                          <ResizableDivider
+                            direction="vertical"
+                            isDragging={advancedFilterPanel.isDragging}
+                            isCollapsed={advancedFilterPanel.isCollapsed}
+                            onMouseDown={advancedFilterPanel.dividerProps.onMouseDown}
+                            onDoubleClick={advancedFilterPanel.dividerProps.onDoubleClick}
+                            onExpand={advancedFilterPanel.restore}
+                          />
+                        )}
                       </div>
                     )}
                   </div>
@@ -3768,6 +4761,19 @@ export function SourcesView({
           </div>
         </div>
       </div>
+
+      {showBulkEditModal && selectedSampleIdsInCurrentView.size > 0 && (
+        <SampleBulkEditModal
+          selectedCount={selectedSampleIdsInCurrentView.size}
+          allTags={allTags}
+          isSubmitting={isBulkEditSubmitting}
+          onCancel={() => {
+            if (isBulkEditSubmitting) return
+            setShowBulkEditModal(false)
+          }}
+          onSubmit={handleBulkEditSubmit}
+        />
+      )}
 
       {/* Editing Modal */}
       {editingTrackId !== null && (

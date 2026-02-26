@@ -170,7 +170,7 @@ export function CustomSplitBuilderPane({ state, dispatch, collections, folders, 
               <button onClick={() => dispatch({ type: 'CLEAR_SELECTED_FOLDERS' })} className="text-slate-500 hover:text-white"><X size={10} /></button>
             </div>
             <div className="flex items-center gap-1 bg-surface-base border border-surface-border rounded-full px-2 py-0.5">
-              Tags {activeCategory.sourceSelection.selectedTagIds.size}
+              Instruments {activeCategory.sourceSelection.selectedTagIds.size}
               <button onClick={() => dispatch({ type: 'CLEAR_SELECTED_TAGS' })} className="text-slate-500 hover:text-white"><X size={10} /></button>
             </div>
             <div className="flex items-center gap-1 bg-surface-base border border-surface-border rounded-full px-2 py-0.5">
@@ -288,7 +288,7 @@ function CategoryCard({
             className="text-sm bg-surface-base border border-surface-border rounded px-2 py-1.5 text-slate-200"
           >
             <option value="folder">Folder</option>
-            <option value="tag">Tag</option>
+            <option value="tag">Instrument</option>
           </select>
         </div>
 
@@ -330,7 +330,7 @@ function CategoryCard({
 
         {category.destinationType === 'tag' && (
           <div className="flex flex-col gap-1 col-span-1">
-            <label className="text-xs text-slate-500">Tag target</label>
+            <label className="text-xs text-slate-500">Instrument target</label>
             <select
               value={category.destinationTagId ?? ''}
               onChange={(e) => onSetTag(e.target.value ? Number(e.target.value) : null)}

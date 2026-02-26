@@ -1,6 +1,7 @@
 import React, { ReactElement } from 'react'
 import { render, RenderOptions } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { AppDialogProvider } from '../hooks/useAppDialog'
 
 // Create a new QueryClient for each test
 function createTestQueryClient() {
@@ -27,7 +28,9 @@ function createWrapper() {
   return function Wrapper({ children }: WrapperProps) {
     return (
       <QueryClientProvider client={testQueryClient}>
-        {children}
+        <AppDialogProvider>
+          {children}
+        </AppDialogProvider>
       </QueryClientProvider>
     )
   }

@@ -29,7 +29,6 @@ interface WorkspaceLayoutProps {
   onTuneToNote: (note: string | null) => void
   samplePlayMode: PlayMode
   sampleLoopEnabled: boolean
-  onOpenAddSource?: () => void
 }
 
 export function WorkspaceLayout({
@@ -38,7 +37,6 @@ export function WorkspaceLayout({
   onTuneToNote,
   samplePlayMode,
   sampleLoopEnabled,
-  onOpenAddSource,
 }: WorkspaceLayoutProps) {
   const { showToast } = useToast()
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('details')
@@ -47,9 +45,11 @@ export function WorkspaceLayout({
   const [isPanelHidden, setIsPanelHidden] = useState(true)
   const [showNotification, setShowNotification] = useState(false)
   const [visibleSamples, setVisibleSamples] = useState<SliceWithTrackExtended[]>([])
+  const [selectedSamples, setSelectedSamples] = useState<SliceWithTrackExtended[]>([])
   const [isSourcesLoading, setIsSourcesLoading] = useState(false)
   const [viewportWidth, setViewportWidth] = useState(() => getViewportWidth())
   const lastNotifiedSampleIdRef = useRef<number | null>(null)
+  const previousShowRightPanelRef = useRef<boolean | null>(null)
   const [bulkRenameRules, setBulkRenameRules] = useState<BulkRenameRules>(() => ({
     ...DEFAULT_BULK_RENAME_RULES,
     filterText: '',
@@ -58,12 +58,17 @@ export function WorkspaceLayout({
   const dividerWidth = 2
   const panelToggleWidth = 14
   const splitAvailableWidth = Math.max(viewportWidth - dividerWidth, 0)
-  const sourcesPanelMinWidth = Math.max(120, Math.min(320, Math.floor(splitAvailableWidth * 0.52)))
-  const sidePanelMinWidth = Math.max(120, Math.min(340, Math.floor(splitAvailableWidth * 0.48)))
+  const sidePanelMinWidth = Math.max(120, Math.floor(splitAvailableWidth * 0.15))
+  const sidePanelMaxWidth = Math.max(sidePanelMinWidth, Math.floor(splitAvailableWidth * 0.35))
+  const sidePanelDefaultWidth = Math.max(
+    sidePanelMinWidth,
+    Math.min(sidePanelMaxWidth, Math.floor(splitAvailableWidth * 0.2)),
+  )
+  const sourcesPanelMinWidth = Math.max(120, splitAvailableWidth - sidePanelMaxWidth)
   const sourcesPanelMaxWidth = Math.max(sourcesPanelMinWidth, splitAvailableWidth - sidePanelMinWidth)
   const sourcesPanelInitialWidth = Math.max(
     sourcesPanelMinWidth,
-    Math.min(sourcesPanelMaxWidth, Math.floor(splitAvailableWidth * 0.55)),
+    Math.min(sourcesPanelMaxWidth, splitAvailableWidth - sidePanelDefaultWidth),
   )
 
   const horizontal = useResizablePanel({
@@ -71,15 +76,17 @@ export function WorkspaceLayout({
     initialSize: sourcesPanelInitialWidth,
     minSize: sourcesPanelMinWidth,
     maxSize: sourcesPanelMaxWidth,
-    storageKey: 'workspace-h-size',
-    clampOnBoundsChange: false,
+    storageKey: 'workspace-h-size-v2',
+    clampOnBoundsChange: true,
   })
 
   const isBulkRenameMode = mode === 'bulk-rename'
-  const shouldAnimate = !horizontal.isDragging
   const hasSelectedSample = workspaceState?.selectedSample !== null
   const shouldShowPanel = isBulkRenameMode || activeTab !== 'details' || hasSelectedSample
   const showRightPanel = isBulkRenameMode ? true : shouldShowPanel && !isPanelHidden
+  const panelVisibilityChangedThisRender =
+    previousShowRightPanelRef.current !== null && previousShowRightPanelRef.current !== showRightPanel
+  const shouldAnimate = !horizontal.isDragging && !panelVisibilityChangedThisRender
   const shouldReserveToggleGutter = !isBulkRenameMode && shouldShowPanel
 
   useEffect(() => {
@@ -87,6 +94,10 @@ export function WorkspaceLayout({
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  useEffect(() => {
+    previousShowRightPanelRef.current = showRightPanel
+  }, [showRightPanel])
 
   useEffect(() => {
     // Keep room for panel controls by collapsing labels on narrower viewports.
@@ -157,6 +168,7 @@ export function WorkspaceLayout({
           width: showRightPanel ? horizontal.size : '100%',
           minWidth: showRightPanel ? sourcesPanelMinWidth : 0,
           flexShrink: 0,
+          boxSizing: 'border-box',
           overflow: 'hidden',
           position: 'relative',
           paddingRight: shouldReserveToggleGutter ? panelToggleWidth : 0,
@@ -171,9 +183,9 @@ export function WorkspaceLayout({
           bulkRenameMode={isBulkRenameMode}
           bulkRenameRules={bulkRenameRules}
           onBulkRenameRulesChange={setBulkRenameRules}
-          onOpenAddSource={onOpenAddSource}
           onWorkspaceStateChange={setWorkspaceState}
           onVisibleSamplesChange={setVisibleSamples}
+          onSelectedSamplesChange={setSelectedSamples}
           onSamplesLoadingChange={setIsSourcesLoading}
         />
 
@@ -211,7 +223,8 @@ export function WorkspaceLayout({
           >
             {isBulkRenameMode ? (
               <BulkRenamePanel
-                samples={visibleSamples}
+                scopedSamples={visibleSamples}
+                selectedSamples={selectedSamples}
                 isSamplesLoading={isSourcesLoading}
                 rules={bulkRenameRules}
                 onRulesChange={setBulkRenameRules}
@@ -286,6 +299,7 @@ export function WorkspaceLayout({
                       onAddToFolder={workspaceState.onAddToFolder}
                       onRemoveFromFolder={workspaceState.onRemoveFromFolder}
                       onUpdateName={workspaceState.onUpdateName}
+                      onUpdateSample={workspaceState.onUpdateSample}
                       onTagClick={workspaceState.onTagClick}
                       onSelectSample={workspaceState.onSelectSample}
                       onFilterBySimilarity={workspaceState.onFilterBySimilarity}

@@ -22,11 +22,13 @@ import {
 } from 'lucide-react'
 import { useResizablePanel } from '../hooks/useResizablePanel'
 import { ResizableDivider } from './ResizableDivider'
+import { AddSourceMenu } from './AddSourceMenu'
 import type {
   SourceTree,
   SourceScope,
   Folder,
   Collection,
+  Tag as AppTag,
   FolderNode as SourceFolderNode,
   LibrarySourceNode as SourceLibraryNode,
 } from '../types'
@@ -44,6 +46,11 @@ interface SourcesTreeProps {
   onCreateImportedFolder?: (parentPath: string, name: string) => Promise<void> | void
   onBatchAddToFolder?: (folderId: number, sampleIds: number[]) => void
   onCreateTagFromFolder?: (folderId: number, name: string, color: string) => void
+  instrumentTags?: Array<Pick<AppTag, 'id' | 'name' | 'color' | 'category'>>
+  instrumentTagCounts?: Record<number, number>
+  selectedInstrumentTagIds?: number[]
+  onSelectInstrumentTag?: (tagId: number) => void
+  onClearInstrumentSelection?: () => void
   isLoading?: boolean
   collections?: Collection[]
   activeCollectionId?: number | null
@@ -53,7 +60,6 @@ interface SourcesTreeProps {
   onDeleteCollection?: (id: number) => void
   onMoveCollection?: (id: number, direction: 'up' | 'down') => void
   onOpenAdvancedCategoryManagement?: () => void
-  onOpenAddSource?: () => void
   onOpenLibraryImport?: () => void
   showFavoritesOnly?: boolean
   onToggleFavoritesOnly?: () => void
@@ -89,7 +95,6 @@ export function SourcesTree({
   onDeleteCollection,
   onMoveCollection,
   onOpenAdvancedCategoryManagement,
-  onOpenAddSource,
   onOpenLibraryImport,
   showFavoritesOnly = false,
   onToggleFavoritesOnly,
@@ -118,6 +123,19 @@ export function SourcesTree({
         return updated
       })
     }
+  }, [tree])
+
+  useEffect(() => {
+    if (!tree?.streaming) return
+    const streaming = tree.streaming
+
+    setExpandedSections(prev => {
+      const updated = new Set(prev)
+      if (Number(streaming.soundcloud?.count || 0) > 0) updated.add('soundcloud')
+      if (Number(streaming.spotify?.count || 0) > 0) updated.add('spotify')
+      if (Number(streaming.bandcamp?.count || 0) > 0) updated.add('bandcamp')
+      return updated
+    })
   }, [tree])
 
   // Auto-expand Libraries section when imported libraries exist
@@ -158,7 +176,7 @@ export function SourcesTree({
   const [colorPickerFolderId, setColorPickerFolderId] = useState<number | null>(null)
   const colorPickerRef = useRef<HTMLDivElement>(null)
 
-  // Create tag from folder state
+  // Create instrument from folder state
   const [createTagFromId, setCreateTagFromId] = useState<number | null>(null)
   const [createTagName, setCreateTagName] = useState('')
 
@@ -330,6 +348,12 @@ export function SourcesTree({
     switch (scope.type) {
       case 'youtube-video':
         return currentScope.type === 'youtube-video' && currentScope.trackId === scope.trackId
+      case 'soundcloud-track':
+        return currentScope.type === 'soundcloud-track' && currentScope.trackId === scope.trackId
+      case 'spotify-track':
+        return currentScope.type === 'spotify-track' && currentScope.trackId === scope.trackId
+      case 'bandcamp-track':
+        return currentScope.type === 'bandcamp-track' && currentScope.trackId === scope.trackId
       case 'folder':
         return currentScope.type === 'folder' && currentScope.path === scope.path
       case 'library':
@@ -574,6 +598,58 @@ export function SourcesTree({
   const filteredYouTubeVideos = (tree?.youtube ?? []).filter(video =>
     !treeSearchQuery || video.title.toLowerCase().includes(treeSearchQuery.toLowerCase())
   )
+  type StreamingSection = {
+    sectionKey: 'soundcloud' | 'spotify' | 'bandcamp'
+    scopeType: 'soundcloud' | 'spotify' | 'bandcamp'
+    trackScopeType: 'soundcloud-track' | 'spotify-track' | 'bandcamp-track'
+    label: string
+    badge: string
+    badgeClassName: string
+    count: number
+    tracks: Array<{ id: number; title: string; thumbnailUrl: string; sliceCount: number }>
+    filteredTracks: Array<{ id: number; title: string; thumbnailUrl: string; sliceCount: number }>
+  }
+  const streamingSections: StreamingSection[] = [
+    {
+      sectionKey: 'soundcloud',
+      scopeType: 'soundcloud',
+      trackScopeType: 'soundcloud-track',
+      label: 'SoundCloud',
+      badge: 'SC',
+      badgeClassName: 'bg-orange-500/20 text-orange-300',
+      count: Number(tree?.streaming?.soundcloud?.count || 0),
+      tracks: tree?.streaming?.soundcloud?.tracks ?? [],
+      filteredTracks: (tree?.streaming?.soundcloud?.tracks ?? []).filter((track) =>
+        !treeSearchQuery || track.title.toLowerCase().includes(treeSearchQuery.toLowerCase())
+      ),
+    },
+    {
+      sectionKey: 'spotify',
+      scopeType: 'spotify',
+      trackScopeType: 'spotify-track',
+      label: 'Spotify',
+      badge: 'SP',
+      badgeClassName: 'bg-emerald-500/20 text-emerald-300',
+      count: Number(tree?.streaming?.spotify?.count || 0),
+      tracks: tree?.streaming?.spotify?.tracks ?? [],
+      filteredTracks: (tree?.streaming?.spotify?.tracks ?? []).filter((track) =>
+        !treeSearchQuery || track.title.toLowerCase().includes(treeSearchQuery.toLowerCase())
+      ),
+    },
+    {
+      sectionKey: 'bandcamp',
+      scopeType: 'bandcamp',
+      trackScopeType: 'bandcamp-track',
+      label: 'Bandcamp',
+      badge: 'BC',
+      badgeClassName: 'bg-sky-500/20 text-sky-300',
+      count: Number(tree?.streaming?.bandcamp?.count || 0),
+      tracks: tree?.streaming?.bandcamp?.tracks ?? [],
+      filteredTracks: (tree?.streaming?.bandcamp?.tracks ?? []).filter((track) =>
+        !treeSearchQuery || track.title.toLowerCase().includes(treeSearchQuery.toLowerCase())
+      ),
+    },
+  ].filter((section): section is StreamingSection => section.count > 0)
   const filteredLibrarySources = (tree?.libraries ?? []).filter((library) =>
     !treeSearchQuery || library.name.toLowerCase().includes(treeSearchQuery.toLowerCase())
   )
@@ -635,6 +711,26 @@ export function SourcesTree({
     const filtered = filterFolderTree(tree)
     return { ...entry, tree, filtered }
   })
+  const aggregateMyFolderCountsById = (() => {
+    const countsById = new Map<number, number>()
+
+    const accumulateNodeCount = (node: MyFolderNode): number => {
+      let total = Number(node.sliceCount || 0)
+      for (const child of node.children) {
+        total += accumulateNodeCount(child)
+      }
+      countsById.set(node.id, total)
+      return total
+    }
+
+    for (const entry of collectionTrees) {
+      for (const root of entry.tree) {
+        accumulateNodeCount(root)
+      }
+    }
+
+    return countsById
+  })()
 
   const totalYouTubeSlices = (tree?.youtube ?? []).reduce((sum, v) => sum + Number(v.sliceCount || 0), 0)
   const totalImportedFolderSlices = (tree?.folders ?? []).reduce((sum, f) => sum + Number(f.sampleCount || 0), 0)
@@ -995,12 +1091,6 @@ export function SourcesTree({
             )}
             <FolderOpen size={14} style={{ color: node.color }} />
             <span className="flex-1 text-left truncate">{node.name}</span>
-            {/* Drop hint on hover */}
-            {!active && !isDragOver && draggedFolderId !== null && !isDragging && (
-              <span className="text-[10px] text-accent-warm/60 transition-colors mr-1">
-                drop here
-              </span>
-            )}
             {isDragOver && dropPosition === 'inside' && (
               <span className="text-[10px] text-accent-warm mr-1 font-semibold animate-pulse">
                 drop inside
@@ -1016,7 +1106,9 @@ export function SourcesTree({
                 drop below
               </span>
             )}
-            <span className={`text-xs text-slate-500 transition-opacity ${draggedFolderId !== null && !isDragOver && !isDragging ? 'opacity-0' : ''} group-hover:opacity-0`}>{Number(node.sliceCount || 0)}</span>
+            <span className={`text-xs text-slate-500 transition-opacity ${draggedFolderId !== null && !isDragOver && !isDragging ? 'opacity-0' : ''} group-hover:opacity-0`}>
+              {Number(aggregateMyFolderCountsById.get(node.id) ?? node.sliceCount ?? 0)}
+            </span>
           </button>
 
           {/* Context menu button */}
@@ -1087,7 +1179,7 @@ export function SourcesTree({
                   className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-raised hover:text-text-primary flex items-center gap-2 transition-colors"
                 >
                   <Tag size={12} />
-                  Create Tag from Folder
+                  Create Instrument from Folder
                 </button>
               )}
               {onDeleteFolder && (
@@ -1106,13 +1198,13 @@ export function SourcesTree({
             </div>
           )}
 
-          {/* Create tag from folder confirmation */}
+          {/* Create instrument from folder confirmation */}
           {createTagFromId === node.id && (
             <div
               className="absolute right-0 top-full mt-1 z-20 w-52 p-2 bg-surface-raised border border-surface-border rounded-lg shadow-xl space-y-2"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="text-xs text-slate-400 font-medium">Create tag from folder</div>
+              <div className="text-xs text-slate-400 font-medium">Create instrument from folder</div>
               <input
                 type="text"
                 value={createTagName}
@@ -1128,7 +1220,7 @@ export function SourcesTree({
                     setCreateTagName('')
                   }
                 }}
-                placeholder="Tag name..."
+                placeholder="Instrument name..."
                 className="w-full px-2 py-1.5 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
                 autoFocus
               />
@@ -1290,22 +1382,7 @@ export function SourcesTree({
 
             {expandedSections.has('sources') && (
               <div className="space-y-px rounded-md border-surface-border/70 bg-surface-base/20 p-0.5">
-              {(onOpenAddSource || onOpenLibraryImport) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (onOpenAddSource) {
-                      onOpenAddSource()
-                      return
-                    }
-                    onOpenLibraryImport?.()
-                  }}
-                  className="w-full min-h-6 px-1.5 py-0.5 text-[12px] rounded-sm transition-colors flex items-center gap-1.5 text-text-secondary hover:text-text-primary hover:bg-surface-overlay"
-                >
-                  <Plus size={14} />
-                  <span className="text-left">Add source</span>
-                </button>
-              )}
+              <AddSourceMenu onOpenLibraryImport={onOpenLibraryImport} />
 
               {(() => {
                 const showAllActive = isActive({ type: 'all' })
@@ -1413,6 +1490,101 @@ export function SourcesTree({
                   </div>
                 )}
               </div>
+
+              {streamingSections.map((section) => {
+                const sectionActive = currentScope.type === section.scopeType
+                const sectionContainsActive = currentScope.type === section.trackScopeType
+                const sectionMarkerState: SelectionMarkerState = sectionActive
+                  ? 'active'
+                  : sectionContainsActive
+                  ? 'contains-active'
+                  : 'none'
+
+                return (
+                  <div key={section.sectionKey}>
+                    <div
+                      className={`group flex min-w-0 items-center gap-1 rounded-sm min-h-6 transition-colors ${
+                        sectionActive || sectionContainsActive
+                          ? 'bg-accent-warm/12 text-accent-warm'
+                          : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
+                      }`}
+                    >
+                      <SelectionMarker state={sectionMarkerState} />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          toggleSection(section.sectionKey)
+                        }}
+                        className="p-0.5 rounded text-slate-500 hover:text-slate-200"
+                        aria-label={expandedSections.has(section.sectionKey) ? `Collapse ${section.label}` : `Expand ${section.label}`}
+                      >
+                        {expandedSections.has(section.sectionKey) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onScopeChange({ type: section.scopeType })}
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px]"
+                      >
+                        <span
+                          className={`inline-flex h-4 min-w-[1.25rem] items-center justify-center rounded px-1 text-[9px] font-semibold ${section.badgeClassName}`}
+                        >
+                          {section.badge}
+                        </span>
+                        <span className="flex-1 truncate text-left">{section.label}</span>
+                      </button>
+                      <div className="ml-auto flex shrink-0 items-center gap-1">
+                        <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
+                          {section.count}
+                        </span>
+                      </div>
+                    </div>
+
+                    {expandedSections.has(section.sectionKey) && section.filteredTracks.map((track) => {
+                      const scope: SourceScope = { type: section.trackScopeType, trackId: track.id }
+                      const active = isActive(scope)
+                      return (
+                        <div
+                          key={track.id}
+                          className={`flex min-w-0 items-center gap-1.5 min-h-6 pl-7 pr-0.5 rounded-sm transition-colors ${
+                            active
+                              ? 'bg-accent-primary/20 text-accent-primary'
+                              : 'text-slate-300 hover:bg-surface-base'
+                          }`}
+                        >
+                          <SelectionMarker
+                            state={active ? 'active' : 'none'}
+                            activeClassName="text-accent-primary"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => onScopeChange(scope)}
+                            className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-[12px]"
+                          >
+                            {track.thumbnailUrl && (
+                              <img
+                                src={track.thumbnailUrl}
+                                alt=""
+                                className="w-6 h-4 shrink-0 object-cover rounded"
+                              />
+                            )}
+                            <span className="min-w-0 flex-1 truncate text-left text-[11px]">{track.title}</span>
+                          </button>
+                          <div className="ml-auto flex shrink-0 items-center gap-1">
+                            <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
+                              {Number(track.sliceCount || 0)}
+                            </span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {expandedSections.has(section.sectionKey) && treeSearchQuery && section.filteredTracks.length === 0 && (
+                      <div className="pl-8 pr-2 py-2 text-xs text-slate-500 italic">
+                        No {section.label.toLowerCase()} tracks found
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
 
               {/* Local Samples */}
               {(() => {

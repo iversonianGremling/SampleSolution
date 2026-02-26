@@ -31,6 +31,10 @@ interface TunePreviewOptions {
    * falling back to tape. Reduces "first click sounds wrong" perception.
    */
   maxWaitForRenderedMs?: number
+  /**
+   * Apply formant compensation when using granular/HQ pitch processing.
+   */
+  preserveFormants?: boolean
 }
 
 const clamp = (value: number, min: number, max: number) => {
@@ -111,11 +115,16 @@ const waitForRenderedWithTimeout = async (
   return Promise.race([renderPromise, timeoutPromise])
 }
 
-const createTuneRenderSettings = (pitchSemitones: number, mode: Exclude<TunePlaybackMode, 'tape'>): LabSettings => ({
+const createTuneRenderSettings = (
+  pitchSemitones: number,
+  mode: Exclude<TunePlaybackMode, 'tape'>,
+  preserveFormants: boolean
+): LabSettings => ({
   ...DEFAULT_LAB_SETTINGS,
   offset: 0,
   pitchSemitones,
   pitchMode: mode,
+  preserveFormants,
   tempo: 1,
   velocity: 1,
   outputGain: 1,
@@ -225,7 +234,8 @@ export const prepareTunePreviewPlayback = async (
   const effectiveMode: Exclude<TunePlaybackMode, 'tape'> =
     mode === 'hq' && !options.allowHqPreview ? 'granular' : mode
 
-  const renderKey = `${sampleId}|${mode}|${effectiveMode}|${maxRenderSeconds}|${semitoneKey(safeSemitones)}`
+  const preserveFormants = Boolean(options.preserveFormants)
+  const renderKey = `${sampleId}|${mode}|${effectiveMode}|${maxRenderSeconds}|${semitoneKey(safeSemitones)}|${preserveFormants ? 'formants' : 'raw'}`
   const immediateFallback = options.immediateFallbackToTape ?? true
   const readyRendered = renderedPreviewReadyCache.get(renderKey)
   if (readyRendered) {
@@ -255,7 +265,7 @@ export const prepareTunePreviewPlayback = async (
 
     const renderedBuffer = await renderLabAudioBuffer(
       trimmedSource,
-      createTuneRenderSettings(safeSemitones, effectiveMode)
+      createTuneRenderSettings(safeSemitones, effectiveMode, preserveFormants)
     )
     const wavArrayBuffer = await audioBufferToWavArrayBufferAsync(renderedBuffer)
     return URL.createObjectURL(new Blob([wavArrayBuffer], { type: 'audio/wav' }))

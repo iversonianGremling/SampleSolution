@@ -39,6 +39,11 @@ interface FolderNode {
 interface SourceTree {
   youtube: YouTubeSourceNode[]
   local: { count: number }
+  streaming: {
+    soundcloud: { count: number; tracks: YouTubeSourceNode[] }
+    spotify: { count: number; tracks: YouTubeSourceNode[] }
+    bandcamp: { count: number; tracks: YouTubeSourceNode[] }
+  }
   folders: FolderNode[]
 }
 
@@ -46,6 +51,20 @@ interface FolderCountEntry {
   folderPath: string
   rootPath: string
   sampleCount: number
+}
+
+type StreamingProvider = 'soundcloud' | 'spotify' | 'bandcamp'
+
+function detectStreamingProviderFromTrackKey(trackKey: string | null | undefined): StreamingProvider | null {
+  if (!trackKey) return null
+  const normalized = trackKey.trim().toLowerCase()
+  if (!normalized) return null
+
+  if (normalized.startsWith('sc_')) return 'soundcloud'
+  if (normalized.startsWith('spotify_')) return 'spotify'
+  if (normalized.startsWith('bandcamp_') || normalized.startsWith('bc_')) return 'bandcamp'
+
+  return null
 }
 
 function normalizeSourcePathValue(value: string): string {
@@ -316,17 +335,60 @@ router.get('/sources/tree', async (_req, res) => {
       sliceCount: sliceCountMap.get(t.id) || 0,
     }))
 
-    // Get local samples count (individual imports without folderPath)
-    const localCountResult = await db
-      .select({ count: sql<number>`count(*)`.as('count') })
-      .from(schema.slices)
-      .innerJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+    // Get standalone local tracks (non-folder) and split them by provider.
+    const localStandaloneTracks = await db
+      .select({
+        id: schema.tracks.id,
+        title: schema.tracks.title,
+        thumbnailUrl: schema.tracks.thumbnailUrl,
+        trackKey: schema.tracks.youtubeId,
+      })
+      .from(schema.tracks)
       .where(and(
         eq(schema.tracks.source, 'local'),
         isNull(schema.tracks.folderPath)
       ))
+      .orderBy(schema.tracks.createdAt)
 
-    const localCount = Number(localCountResult[0]?.count || 0)
+    const localStandaloneTrackIds = localStandaloneTracks.map((track) => track.id)
+    const localStandaloneSliceCounts = localStandaloneTrackIds.length > 0
+      ? await db
+          .select({
+            trackId: schema.slices.trackId,
+            count: sql<number>`count(*)`.as('count'),
+          })
+          .from(schema.slices)
+          .where(inArray(schema.slices.trackId, localStandaloneTrackIds))
+          .groupBy(schema.slices.trackId)
+      : []
+    const localStandaloneSliceCountMap = new Map(
+      localStandaloneSliceCounts.map((row) => [row.trackId, Number(row.count)]),
+    )
+
+    const streaming: SourceTree['streaming'] = {
+      soundcloud: { count: 0, tracks: [] },
+      spotify: { count: 0, tracks: [] },
+      bandcamp: { count: 0, tracks: [] },
+    }
+    let localCount = 0
+
+    for (const track of localStandaloneTracks) {
+      const sliceCount = localStandaloneSliceCountMap.get(track.id) || 0
+      const provider = detectStreamingProviderFromTrackKey(track.trackKey)
+      if (provider) {
+        if (sliceCount > 0) {
+          streaming[provider].count += sliceCount
+          streaming[provider].tracks.push({
+            id: track.id,
+            title: track.title,
+            thumbnailUrl: track.thumbnailUrl,
+            sliceCount,
+          })
+        }
+      } else {
+        localCount += sliceCount
+      }
+    }
 
     // Get imported folder paths with sample counts.
     // Group by both root folder path and relative path so nested folder structure is preserved.
@@ -379,6 +441,7 @@ router.get('/sources/tree', async (_req, res) => {
     const tree: SourceTree = {
       youtube,
       local: { count: localCount },
+      streaming,
       folders,
     }
 
@@ -433,6 +496,22 @@ router.delete('/sources', async (req, res) => {
         .where(and(
           eq(schema.tracks.source, 'local'),
           isNull(schema.tracks.folderPath)
+        ))
+    } else if (scope === 'soundcloud' || scope === 'spotify' || scope === 'bandcamp') {
+      const providerCondition =
+        scope === 'soundcloud'
+          ? sql`${schema.tracks.youtubeId} GLOB 'sc_*'`
+          : scope === 'spotify'
+          ? sql`${schema.tracks.youtubeId} GLOB 'spotify_*'`
+          : sql`(${schema.tracks.youtubeId} GLOB 'bandcamp_*' OR ${schema.tracks.youtubeId} GLOB 'bc_*')`
+
+      tracksToDelete = await db
+        .select()
+        .from(schema.tracks)
+        .where(and(
+          eq(schema.tracks.source, 'local'),
+          isNull(schema.tracks.folderPath),
+          providerCondition
         ))
     } else if (scope.startsWith('folder:')) {
       const folderScopeValue = normalizeSourcePathValue(scope.slice('folder:'.length).trim())

@@ -91,6 +91,9 @@ export function useCreateSlice(trackId: number) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      queryClient.invalidateQueries({ queryKey: ['sourceTree'] })
+      queryClient.invalidateQueries({ queryKey: ['slice-count'] })
     },
   })
 }
@@ -103,11 +106,12 @@ export function useUpdateSlice(trackId: number) {
       data,
     }: {
       id: number
-      data: { name?: string; startTime?: number; endTime?: number }
+      data: api.UpdateSlicePayload
     }) => api.updateSlice(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
     },
   })
 }
@@ -119,7 +123,10 @@ export function useDeleteSlice(trackId: number) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      queryClient.invalidateQueries({ queryKey: ['sourceTree'] })
       queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['slice-count'] })
     },
   })
 }
@@ -131,7 +138,10 @@ export function useDeleteSliceGlobal() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      queryClient.invalidateQueries({ queryKey: ['sourceTree'] })
       queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['slice-count'] })
     },
   })
 }
@@ -144,11 +154,12 @@ export function useUpdateSliceGlobal() {
       data,
     }: {
       id: number
-      data: { name?: string; startTime?: number; endTime?: number }
+      data: api.UpdateSlicePayload
     }) => api.updateSlice(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
     },
   })
 }
@@ -214,7 +225,10 @@ export function useBatchDeleteSlices() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      queryClient.invalidateQueries({ queryKey: ['sourceTree'] })
       queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['slice-count'] })
     },
   })
 }
@@ -227,12 +241,14 @@ export function useBatchReanalyzeSlices() {
       analysisLevel,
       concurrency,
       includeFilenameTags,
+      allowAiTagging,
     }: {
       sliceIds?: number[]
       analysisLevel?: 'advanced'
       concurrency?: number
       includeFilenameTags?: boolean
-    }) => api.batchReanalyzeSamples(sliceIds, analysisLevel, concurrency, includeFilenameTags),
+      allowAiTagging?: boolean
+    }) => api.batchReanalyzeSamples(sliceIds, analysisLevel, concurrency, includeFilenameTags, allowAiTagging),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['slices'] })
@@ -257,10 +273,11 @@ export function useYouTubeSearch(query: string) {
   })
 }
 
-export function usePlaylists() {
+export function usePlaylists(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['playlists'],
     queryFn: api.getPlaylists,
+    enabled: options?.enabled ?? true,
   })
 }
 
@@ -472,7 +489,9 @@ export function useCreateTagFromFolder() {
     mutationFn: api.createTagFromFolder,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tags'] })
-      queryClient.invalidateQueries({ queryKey: ['sources-samples'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slices'] })
     },
   })
 }
@@ -586,8 +605,15 @@ export function useExportSlices() {
 export function useImportLocalFile() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ file, importType }: { file: File; importType?: 'sample' | 'track' }) =>
-      api.importLocalFile(file, importType),
+    mutationFn: ({
+      file,
+      importType,
+      allowAiTagging,
+    }: {
+      file: File
+      importType?: 'sample' | 'track'
+      allowAiTagging?: boolean
+    }) => api.importLocalFile(file, importType, undefined, allowAiTagging),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
@@ -598,8 +624,17 @@ export function useImportLocalFile() {
 export function useImportLocalFiles() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ files, importType }: { files: File[]; importType?: 'sample' | 'track' }) =>
-      api.importLocalFiles(files, importType),
+    mutationFn: ({
+      files,
+      importType,
+      allowAiTagging,
+      sourceKind,
+    }: {
+      files: File[]
+      importType?: 'sample' | 'track'
+      allowAiTagging?: boolean
+      sourceKind?: api.LocalImportSourceKind
+    }) => api.importLocalFiles(files, importType, undefined, allowAiTagging, { sourceKind }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
@@ -610,8 +645,15 @@ export function useImportLocalFiles() {
 export function useImportFolder() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ folderPath, importType }: { folderPath: string; importType?: 'sample' | 'track' }) =>
-      api.importFolder(folderPath, importType),
+    mutationFn: ({
+      folderPath,
+      importType,
+      allowAiTagging,
+    }: {
+      folderPath: string
+      importType?: 'sample' | 'track'
+      allowAiTagging?: boolean
+    }) => api.importFolder(folderPath, importType, undefined, allowAiTagging),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
@@ -657,19 +699,20 @@ export function useBrowseDirectory(path?: string) {
 }
 
 // Spotify
-export function useSpotifyStatus() {
+export function useSpotifyStatus(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['spotify-status'],
     queryFn: api.getSpotifyStatus,
+    enabled: options?.enabled ?? true,
     refetchOnWindowFocus: false,
   })
 }
 
-export function useSpotifyPlaylists() {
+export function useSpotifyPlaylists(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['spotify-playlists'],
     queryFn: api.getSpotifyPlaylists,
-    enabled: false,
+    enabled: options?.enabled ?? false,
   })
 }
 

@@ -132,7 +132,7 @@ export function CustomOrderModal({ onClose, activeCollectionId }: Props) {
       .map(folder => {
         const changeCount = getSelectionChangeCount(folder.sourceSelection)
         if (changeCount === 0) return null
-        const typeLabel = folder.destinationType === 'tag' ? 'tag' : 'folder'
+        const typeLabel = folder.destinationType === 'tag' ? 'instrument' : 'folder'
         return {
           id: folder.tempId,
           label: `${typeLabel} "${folder.name || 'Untitled'}"`,
@@ -250,7 +250,7 @@ export function CustomOrderModal({ onClose, activeCollectionId }: Props) {
           <div className="flex items-center gap-3 px-4 py-4 border-b border-surface-border flex-shrink-0 bg-surface-raised">
             <div className="flex items-center gap-3 flex-1">
               <h2 className="text-lg font-semibold text-white">Advanced Order</h2>
-              <span className="text-xs text-slate-500">Select samples from your sources and organize them into folders or tags</span>
+              <span className="text-xs text-slate-500">Select samples from your sources and organize them into folders or instruments</span>
             </div>
             <button
               onClick={requestClose}

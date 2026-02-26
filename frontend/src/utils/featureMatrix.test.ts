@@ -67,8 +67,8 @@ describe('buildFeatureMatrix tag dimensions', () => {
 
     // "bright/brightness" are excluded, so only kick and snare remain.
     expect(matrix).toEqual([
-      [1.8, 0],
-      [0, 1.8],
+      [0.6, 0],
+      [0, 0.6],
     ])
   })
 
@@ -83,9 +83,19 @@ describe('buildFeatureMatrix tag dimensions', () => {
     })
 
     // Active tags are: bright, brightness, kick, snare (alphabetical).
-    expect(matrix).toEqual([
-      [1, 0, 1, 0],
-      [0, 1, 0, 1],
-    ])
+    // Tag vectors are L2-normalized by active tag count in each sample.
+    expect(matrix).toHaveLength(2)
+    expect(matrix[0]).toHaveLength(4)
+    expect(matrix[1]).toHaveLength(4)
+
+    expect(matrix[0][0]).toBeCloseTo(Math.SQRT1_2, 12)
+    expect(matrix[0][1]).toBe(0)
+    expect(matrix[0][2]).toBeCloseTo(Math.SQRT1_2, 12)
+    expect(matrix[0][3]).toBe(0)
+
+    expect(matrix[1][0]).toBe(0)
+    expect(matrix[1][1]).toBeCloseTo(Math.SQRT1_2, 12)
+    expect(matrix[1][2]).toBe(0)
+    expect(matrix[1][3]).toBeCloseTo(Math.SQRT1_2, 12)
   })
 })

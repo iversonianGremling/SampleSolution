@@ -2,9 +2,16 @@ import { spawn } from 'child_process'
 import fs from 'fs/promises'
 
 export type AudioConversionFormat = 'mp3' | 'wav' | 'flac' | 'aiff' | 'ogg' | 'm4a'
+export type AudioConversionBitDepth = 16 | 24 | 32
+
+export interface AudioConversionOptions {
+  sampleRate?: number
+  bitDepth?: AudioConversionBitDepth
+}
 
 export interface AudioFileMetadata {
   sampleRate: number | null
+  bitDepth: number | null
   channels: number | null
   format: string | null
   modifiedAt: string | null
@@ -121,20 +128,52 @@ function isLikelyValidBirthtime(date: Date): boolean {
   return ms > Date.parse('1971-01-01T00:00:00.000Z')
 }
 
-function getConversionArgs(targetFormat: AudioConversionFormat): string[] {
+const PCM_LE_CODEC_BY_BIT_DEPTH: Record<AudioConversionBitDepth, string> = {
+  16: 'pcm_s16le',
+  24: 'pcm_s24le',
+  32: 'pcm_s32le',
+}
+
+const PCM_BE_CODEC_BY_BIT_DEPTH: Record<AudioConversionBitDepth, string> = {
+  16: 'pcm_s16be',
+  24: 'pcm_s24be',
+  32: 'pcm_s32be',
+}
+
+function getSharedConversionQualityArgs(options: AudioConversionOptions): string[] {
+  const args: string[] = []
+  if (typeof options.sampleRate === 'number' && Number.isFinite(options.sampleRate)) {
+    args.push('-ar', String(Math.round(options.sampleRate)))
+  }
+  return args
+}
+
+function getFlacBitDepthArgs(bitDepth: AudioConversionBitDepth | undefined): string[] {
+  if (!bitDepth) return []
+  if (bitDepth === 16) return ['-sample_fmt', 's16', '-bits_per_raw_sample', '16']
+  if (bitDepth === 24) return ['-sample_fmt', 's32', '-bits_per_raw_sample', '24']
+  return ['-sample_fmt', 's32', '-bits_per_raw_sample', '32']
+}
+
+function getConversionArgs(
+  targetFormat: AudioConversionFormat,
+  options: AudioConversionOptions
+): string[] {
+  const sharedQualityArgs = getSharedConversionQualityArgs(options)
+
   switch (targetFormat) {
     case 'mp3':
-      return ['-acodec', 'libmp3lame', '-q:a', '2']
+      return ['-acodec', 'libmp3lame', '-q:a', '2', ...sharedQualityArgs]
     case 'wav':
-      return ['-acodec', 'pcm_s16le']
+      return ['-acodec', PCM_LE_CODEC_BY_BIT_DEPTH[options.bitDepth ?? 16], ...sharedQualityArgs]
     case 'flac':
-      return ['-acodec', 'flac']
+      return ['-acodec', 'flac', ...getFlacBitDepthArgs(options.bitDepth), ...sharedQualityArgs]
     case 'aiff':
-      return ['-acodec', 'pcm_s16be']
+      return ['-acodec', PCM_BE_CODEC_BY_BIT_DEPTH[options.bitDepth ?? 16], ...sharedQualityArgs]
     case 'ogg':
-      return ['-acodec', 'libvorbis', '-q:a', '5']
+      return ['-acodec', 'libvorbis', '-q:a', '5', ...sharedQualityArgs]
     case 'm4a':
-      return ['-acodec', 'aac', '-b:a', '256k']
+      return ['-acodec', 'aac', '-b:a', '256k', ...sharedQualityArgs]
     default: {
       const neverFormat: never = targetFormat
       throw new Error(`Unsupported conversion format: ${String(neverFormat)}`)
@@ -145,13 +184,14 @@ function getConversionArgs(targetFormat: AudioConversionFormat): string[] {
 export async function convertAudioFile(
   inputPath: string,
   outputPath: string,
-  targetFormat: AudioConversionFormat
+  targetFormat: AudioConversionFormat,
+  options: AudioConversionOptions = {}
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const args = [
       '-i', inputPath,
       '-vn',
-      ...getConversionArgs(targetFormat),
+      ...getConversionArgs(targetFormat, options),
       '-y',
       outputPath,
     ]
@@ -364,10 +404,14 @@ export async function getAudioFileMetadata(inputPath: string): Promise<AudioFile
   const tagMaps: TagMap[] = [streamTags, formatTags]
 
   const sampleRateRaw = audioStream?.sample_rate
+  const bitDepthRaw = audioStream?.bits_per_raw_sample ?? audioStream?.bits_per_sample
   const channelsRaw = audioStream?.channels
   const rawFormat = parsed?.format?.format_name
 
   const sampleRate = Number.isFinite(Number(sampleRateRaw)) ? Number(sampleRateRaw) : null
+  const bitDepth = Number.isFinite(Number(bitDepthRaw)) && Number(bitDepthRaw) > 0
+    ? Number(bitDepthRaw)
+    : null
   const channels = Number.isFinite(Number(channelsRaw)) ? Number(channelsRaw) : null
   const format = typeof rawFormat === 'string' && rawFormat.trim()
     ? rawFormat.split(',')[0].trim().toLowerCase()
@@ -423,6 +467,7 @@ export async function getAudioFileMetadata(inputPath: string): Promise<AudioFile
 
   return {
     sampleRate,
+    bitDepth,
     channels,
     format,
     modifiedAt,

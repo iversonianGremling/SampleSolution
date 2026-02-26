@@ -6,13 +6,15 @@ import { db, schema } from '../db/index.js'
 import { getAudioDuration, getAudioFileMetadata, type AudioFileMetadata } from '../services/ffmpeg.js'
 import {
   analyzeAudioFeatures,
+  buildSamplePathHint,
   featuresToTags,
   getTagMetadata,
   storeAudioFeatures,
   parseFilenameTagsSmart,
+  postAnalyzeSampleTags,
 } from '../services/audioAnalysis.js'
 import { v4 as uuidv4 } from 'uuid'
-import { and, eq, isNotNull } from 'drizzle-orm'
+import { and, eq, isNotNull, sql } from 'drizzle-orm'
 
 const router = Router()
 router.use(json())
@@ -21,6 +23,7 @@ router.use(json())
 class AnalysisQueue {
   private running = false
   private queue: Array<() => Promise<void>> = []
+  private activeTaskCount = 0
 
   async add(task: () => Promise<void>): Promise<void> {
     this.queue.push(task)
@@ -36,15 +39,27 @@ class AnalysisQueue {
     while (this.queue.length > 0) {
       const task = this.queue.shift()
       if (task) {
+        this.activeTaskCount += 1
         try {
           await task()
         } catch (err) {
           console.error('Task in analysis queue failed:', err)
+        } finally {
+          this.activeTaskCount = Math.max(0, this.activeTaskCount - 1)
         }
       }
     }
 
     this.running = false
+  }
+
+  getStatus() {
+    return {
+      running: this.running,
+      activeTaskCount: this.activeTaskCount,
+      queuedTaskCount: this.queue.length,
+      isActive: this.running || this.queue.length > 0 || this.activeTaskCount > 0,
+    }
   }
 }
 
@@ -59,10 +74,18 @@ router.use((req, _res, next) => {
   next()
 })
 
+router.get('/import/analysis-status', (_req, res) => {
+  res.json(analysisQueue.getStatus())
+})
+
 const DATA_DIR = process.env.DATA_DIR || './data'
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads')
 const SLICES_DIR = path.join(DATA_DIR, 'slices')
 const USE_REFERENCE_IMPORTS = process.env.LOCAL_IMPORT_MODE === 'reference'
+const TRACK_IMPORT_FILENAME_TAG_LIMIT = Math.max(
+  0,
+  Number.parseInt(process.env.TRACK_IMPORT_FILENAME_TAG_LIMIT ?? '1', 10) || 1
+)
 
 // Supported audio formats
 const SUPPORTED_FORMATS = ['.wav', '.mp3', '.flac', '.aiff', '.ogg', '.m4a']
@@ -155,6 +178,21 @@ function parseAbsolutePathHint(rawValue: unknown): string | null {
   if (!trimmed) return null
   if (!path.isAbsolute(trimmed)) return null
   return path.resolve(trimmed)
+}
+
+function resolveImportType(rawValue: unknown): 'sample' | 'track' {
+  if (typeof rawValue !== 'string') return 'sample'
+  const normalized = rawValue.trim().toLowerCase()
+  if (normalized === 'track') return 'track'
+  return 'sample'
+}
+
+function logIgnoredAllowAiTagging(rawValue: unknown, routePath: string): void {
+  if (rawValue === undefined || rawValue === null) return
+  console.warn(
+    `[import] Ignoring allowAiTagging override on ${routePath}; ` +
+      'import tagging always runs deterministic fallbacks with AI as final fallback.'
+  )
 }
 
 async function resolveImportSourcePath(
@@ -269,6 +307,115 @@ function toTrackMetadata(sourceMetadata: AudioFileMetadata | null) {
   }
 }
 
+async function replaceInstrumentTagsForSlice(
+  sliceId: number,
+  reviewedTags: Array<{ name: string; category: 'instrument' }>
+): Promise<void> {
+  await db.run(sql`
+    DELETE FROM slice_tags WHERE slice_id = ${sliceId}
+    AND tag_id IN (
+      SELECT id FROM tags WHERE category = 'instrument'
+    )
+  `)
+
+  if (reviewedTags.length === 0) return
+
+  for (const reviewedTag of reviewedTags) {
+    const lowerTag = reviewedTag.name.toLowerCase()
+    const { color, category } = getTagMetadata(lowerTag, reviewedTag.category)
+
+    let tag = await db
+      .select()
+      .from(schema.tags)
+      .where(eq(schema.tags.name, lowerTag))
+      .limit(1)
+
+    if (tag.length === 0) {
+      const [newTag] = await db
+        .insert(schema.tags)
+        .values({
+          name: lowerTag,
+          color,
+          category,
+        })
+        .returning()
+      tag = [newTag]
+    } else if (tag[0].category === 'filename' && category !== 'filename') {
+      await db
+        .update(schema.tags)
+        .set({
+          color,
+          category,
+        })
+        .where(eq(schema.tags.id, tag[0].id))
+    }
+
+    await db
+      .insert(schema.sliceTags)
+      .values({ sliceId, tagId: tag[0].id })
+      .onConflictDoNothing()
+  }
+}
+
+async function seedFilenameTagsForSlice(options: {
+  sliceId: number
+  filename: string
+  folderPath: string | null
+  relativePath?: string | null
+}): Promise<void> {
+  if (TRACK_IMPORT_FILENAME_TAG_LIMIT <= 0) return
+
+  const pathHint = buildSamplePathHint({
+    folderPath: options.folderPath,
+    relativePath: options.relativePath,
+    filename: options.filename,
+  })
+  const filenameTags = await parseFilenameTagsSmart(options.filename, pathHint)
+  const conciseTags = filenameTags.slice(0, TRACK_IMPORT_FILENAME_TAG_LIMIT)
+
+  for (const filenameTag of conciseTags) {
+    const lowerTag = filenameTag.tag.toLowerCase()
+    const metadata = getTagMetadata(lowerTag, filenameTag.category)
+    let tag = await db
+      .select()
+      .from(schema.tags)
+      .where(eq(schema.tags.name, lowerTag))
+      .limit(1)
+
+    if (tag.length === 0) {
+      const [newTag] = await db
+        .insert(schema.tags)
+        .values({
+          name: lowerTag,
+          color: metadata.color,
+          category: metadata.category,
+        })
+        .returning()
+      tag = [newTag]
+    } else if (tag[0].category === 'filename' && metadata.category !== 'filename') {
+      await db
+        .update(schema.tags)
+        .set({
+          color: metadata.color,
+          category: metadata.category,
+        })
+        .where(eq(schema.tags.id, tag[0].id))
+    }
+
+    await db
+      .insert(schema.sliceTags)
+      .values({ sliceId: options.sliceId, tagId: tag[0].id })
+      .onConflictDoNothing()
+  }
+
+  if (filenameTags.length > conciseTags.length) {
+    console.log(
+      `[import] trimmed filename tag seed for slice ${options.sliceId}: ` +
+        `${filenameTags.length} -> ${conciseTags.length}`
+    )
+  }
+}
+
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: async (_req, _file, cb) => {
@@ -301,7 +448,6 @@ const upload = multer({
   fileFilter,
   limits: {
     fileSize: 500 * 1024 * 1024, // 500MB max per file
-    files: 100, // Max 100 files
   },
 })
 
@@ -310,6 +456,23 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
   try {
     const level: 'advanced' = 'advanced'
     console.log(`Analyzing audio features for slice ${sliceId} from: ${audioPath} (level: ${level})`)
+
+    const sliceContext = await db
+      .select({
+        name: schema.slices.name,
+        folderPath: schema.tracks.folderPath,
+        relativePath: schema.tracks.relativePath,
+      })
+      .from(schema.slices)
+      .leftJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .where(eq(schema.slices.id, sliceId))
+      .limit(1)
+
+    const pathHint = buildSamplePathHint({
+      folderPath: sliceContext[0]?.folderPath ?? null,
+      relativePath: sliceContext[0]?.relativePath ?? null,
+      filename: sliceContext[0]?.name ?? null,
+    })
 
     // Verify file exists before analysis
     try {
@@ -340,54 +503,29 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
     })
 
     // Store raw features in database
-    await storeAudioFeatures(sliceId, enrichedFeatures)
+    await storeAudioFeatures(sliceId, enrichedFeatures, {
+      sampleName: sliceContext[0]?.name ?? null,
+      pathHint,
+      preferPathHint: true,
+    })
 
-    // Convert features to tags
-    const tagNames = featuresToTags(features)
+    const reviewedTags = await postAnalyzeSampleTags({
+      features,
+      sampleName: sliceContext[0]?.name ?? null,
+      folderPath: pathHint,
+      modelTags: featuresToTags(features),
+    })
 
-    if (tagNames.length === 0) {
+    if (reviewedTags.length === 0) {
       console.log(`No tags generated for slice ${sliceId}`)
-      return
+    } else {
+      console.log(
+        `Applying ${reviewedTags.length} reviewed tags to slice ${sliceId}:`,
+        reviewedTags.map((tag) => tag.name).join(', ')
+      )
     }
 
-    console.log(`Applying ${tagNames.length} tags to slice ${sliceId}:`, tagNames.join(', '))
-
-    // Create tags and link them to the slice
-    for (const tagName of tagNames) {
-      const lowerTag = tagName.toLowerCase()
-      const { color, category } = getTagMetadata(lowerTag)
-
-      try {
-        // Check if tag exists
-        let tag = await db
-          .select()
-          .from(schema.tags)
-          .where(eq(schema.tags.name, lowerTag))
-          .limit(1)
-
-        // Create tag if it doesn't exist
-        if (tag.length === 0) {
-          const [newTag] = await db
-            .insert(schema.tags)
-            .values({
-              name: lowerTag,
-              color,
-              category,
-            })
-            .returning()
-          tag = [newTag]
-        }
-
-        // Link tag to slice
-        await db
-          .insert(schema.sliceTags)
-          .values({ sliceId, tagId: tag[0].id })
-          .onConflictDoNothing()
-      } catch (error) {
-        console.error(`Failed to add tag ${lowerTag} to slice ${sliceId}:`, error)
-      }
-    }
-
+    await replaceInstrumentTagsForSlice(sliceId, reviewedTags)
     console.log(`Successfully auto-tagged slice ${sliceId}`)
   } catch (error) {
     console.error(`Error analyzing slice ${sliceId}:`, error)
@@ -405,7 +543,8 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
     const originalName = req.file.originalname
     const baseName = path.basename(originalName, path.extname(originalName))
     const uploadedPath = req.file.path
-    const importType = req.query?.importType as 'sample' | 'track' | undefined
+    const importType = resolveImportType(req.query?.importType)
+    logIgnoredAllowAiTagging(req.query?.allowAiTagging, '/import/file')
     const {
       sourcePath,
       usingReferencePath,
@@ -497,33 +636,19 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
       })
       .returning()
 
-    // Apply filename-based tags immediately (no Python dependency)
-    try {
-      const filenameTags = await parseFilenameTagsSmart(originalName, null)
-      for (const ft of filenameTags) {
-        const lowerTag = ft.tag.toLowerCase()
-        const metadata = getTagMetadata(lowerTag, ft.category)
-        let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
-        if (tag.length === 0) {
-          const [newTag] = await db.insert(schema.tags).values({
-            name: lowerTag,
-            color: metadata.color,
-            category: metadata.category,
-          }).returning()
-          tag = [newTag]
-        } else if (tag[0].category === 'filename' && metadata.category !== 'filename') {
-          await db
-            .update(schema.tags)
-            .set({
-              color: metadata.color,
-              category: metadata.category,
-            })
-            .where(eq(schema.tags.id, tag[0].id))
-        }
-        await db.insert(schema.sliceTags).values({ sliceId: slice.id, tagId: tag[0].id }).onConflictDoNothing()
+    // For sample imports, defer to full analysis + reviewed-tag replacement so the
+    // tag outcome matches batch re-analysis behavior.
+    if (importType !== 'sample') {
+      try {
+        await seedFilenameTagsForSlice({
+          sliceId: slice.id,
+          filename: originalName,
+          folderPath: browserFolderPath,
+          relativePath: browserRelativePath,
+        })
+      } catch (err) {
+        console.error('Filename tagging failed:', err)
       }
-    } catch (err) {
-      console.error('Filename tagging failed:', err)
     }
 
     // If importing as sample, automatically analyze audio features (queued)
@@ -565,8 +690,14 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
   }
 })
 
+router.get('/import/files', (_req, res) => {
+  res.status(405).json({
+    error: 'Method not allowed. Use POST /api/import/files with multipart/form-data.',
+  })
+})
+
 // Import multiple files
-router.post('/import/files', upload.array('files', 100), async (req, res) => {
+router.post('/import/files', upload.array('files'), async (req, res) => {
   console.log('[import/files] Request query:', req.query)
   console.log('[import/files] Request files:', req.files)
   const files = req.files as Express.Multer.File[]
@@ -582,7 +713,8 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
     : typeof rawAbsolutePaths === 'string'
       ? [rawAbsolutePaths]
       : []
-  const importType = req.query?.importType as 'sample' | 'track' | undefined
+  const importType = resolveImportType(req.query?.importType)
+  logIgnoredAllowAiTagging(req.query?.allowAiTagging, '/import/files')
 
   console.log('[import/files] importType from query:', importType)
 
@@ -685,33 +817,19 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
         })
         .returning()
 
-      // Apply filename-based tags immediately
-      try {
-        const filenameTags = await parseFilenameTagsSmart(originalName, null)
-        for (const ft of filenameTags) {
-          const lowerTag = ft.tag.toLowerCase()
-          const metadata = getTagMetadata(lowerTag, ft.category)
-          let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
-          if (tag.length === 0) {
-            const [newTag] = await db.insert(schema.tags).values({
-              name: lowerTag,
-              color: metadata.color,
-              category: metadata.category,
-            }).returning()
-            tag = [newTag]
-          } else if (tag[0].category === 'filename' && metadata.category !== 'filename') {
-            await db
-              .update(schema.tags)
-              .set({
-                color: metadata.color,
-                category: metadata.category,
-              })
-              .where(eq(schema.tags.id, tag[0].id))
-          }
-          await db.insert(schema.sliceTags).values({ sliceId: slice.id, tagId: tag[0].id }).onConflictDoNothing()
+      if (importType !== 'sample') {
+        // For sample imports, defer to full analysis + reviewed-tag replacement so the
+        // tag outcome matches batch re-analysis behavior.
+        try {
+          await seedFilenameTagsForSlice({
+            sliceId: slice.id,
+            filename: originalName,
+            folderPath: browserFolderPath,
+            relativePath: browserRelativePath,
+          })
+        } catch (err) {
+          console.error('Filename tagging failed:', err)
         }
-      } catch (err) {
-        console.error('Filename tagging failed:', err)
       }
 
       // If importing as sample, automatically analyze audio features (queued)
@@ -752,10 +870,12 @@ router.post('/import/files', upload.array('files', 100), async (req, res) => {
 
 // Import from folder path (server-side)
 router.post('/import/folder', async (req, res) => {
-  const { folderPath, importType } = req.body as {
+  const { folderPath } = req.body as {
     folderPath: string
     importType?: 'sample' | 'track'
   }
+  const importType = resolveImportType(req.body?.importType)
+  logIgnoredAllowAiTagging(req.body?.allowAiTagging, '/import/folder')
 
   if (!folderPath) {
     return res.status(400).json({ error: 'folderPath required' })
@@ -866,33 +986,19 @@ router.post('/import/folder', async (req, res) => {
           })
           .returning()
 
-        // Apply filename-based tags immediately
-        try {
-          const filenameTags = await parseFilenameTagsSmart(originalName, folderRootPath)
-          for (const ft of filenameTags) {
-            const lowerTag = ft.tag.toLowerCase()
-            const metadata = getTagMetadata(lowerTag, ft.category)
-            let tag = await db.select().from(schema.tags).where(eq(schema.tags.name, lowerTag)).limit(1)
-            if (tag.length === 0) {
-              const [newTag] = await db.insert(schema.tags).values({
-                name: lowerTag,
-                color: metadata.color,
-                category: metadata.category,
-              }).returning()
-              tag = [newTag]
-            } else if (tag[0].category === 'filename' && metadata.category !== 'filename') {
-              await db
-                .update(schema.tags)
-                .set({
-                  color: metadata.color,
-                  category: metadata.category,
-                })
-                .where(eq(schema.tags.id, tag[0].id))
-            }
-            await db.insert(schema.sliceTags).values({ sliceId: slice.id, tagId: tag[0].id }).onConflictDoNothing()
+        if (importType !== 'sample') {
+          // For sample imports, defer to full analysis + reviewed-tag replacement so the
+          // tag outcome matches batch re-analysis behavior.
+          try {
+            await seedFilenameTagsForSlice({
+              sliceId: slice.id,
+              filename: originalName,
+              folderPath: folderRootPath,
+              relativePath,
+            })
+          } catch (err) {
+            console.error('Filename tagging failed:', err)
           }
-        } catch (err) {
-          console.error('Filename tagging failed:', err)
         }
 
         // If importing as sample, automatically analyze audio features (queued)
@@ -1052,7 +1158,7 @@ router.use(
     if (err instanceof multer.MulterError) {
       console.error('Multer error:', err)
       if (err.code === 'LIMIT_FILE_COUNT') {
-        res.status(400).json({ error: 'Too many files. Maximum is 100 files.' })
+        res.status(400).json({ error: 'Too many files in request.' })
         return
       }
       if (err.code === 'LIMIT_FILE_SIZE') {

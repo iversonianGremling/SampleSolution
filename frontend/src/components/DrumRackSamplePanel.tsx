@@ -219,7 +219,7 @@ export function DrumRackSamplePanel() {
               value={tagCategory}
               onChange={(e) => setTagCategory(e.target.value)}
               className="bg-surface-base border border-surface-border rounded px-2 py-1.5 text-xs text-slate-300"
-              title="Tag category"
+              title="Instrument category"
             >
               <option value="all">All</option>
               {tagCategories.map(category => (

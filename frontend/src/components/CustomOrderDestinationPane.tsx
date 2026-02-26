@@ -856,12 +856,12 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                 onClick={() => setTagsOpen(!tagsOpen)}
               >
                 {tagsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                Tags
+                Instruments
               </button>
               <button
                 className="ml-auto text-slate-400 hover:text-white"
                 onClick={handleAddTagCategory}
-                title="Create tag category"
+                title="Create instrument category"
               >
                 <Plus size={12} />
               </button>
@@ -920,7 +920,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                             <button
                               className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-white"
                               onClick={() => handleAddTagInCategory(category)}
-                              title="Add tag"
+                              title="Add instrument"
                             >
                               <Plus size={10} />
                             </button>
@@ -959,7 +959,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                                 type="text"
                                 value={newTagByCategory[category].name}
                                 onChange={(e) => setNewTagByCategory(prev => ({ ...prev, [category]: { ...prev[category], name: e.target.value } }))}
-                                placeholder="New tag name"
+                                placeholder="New instrument name"
                                 className="flex-1 bg-transparent text-sm text-white outline-none placeholder-slate-500"
                               />
                               <input
@@ -971,7 +971,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                               <button
                                 className="text-emerald-300 hover:text-emerald-200"
                                 onClick={() => handleCreateTagInCategory(category)}
-                                title="Create tag"
+                                title="Create instrument"
                               >
                                 <Check size={12} />
                               </button>
@@ -1016,7 +1016,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                                     <button
                                       className="text-emerald-300 hover:text-emerald-200"
                                       onClick={saveEditTag}
-                                      title="Save tag"
+                                      title="Save instrument"
                                     >
                                       <Check size={12} />
                                     </button>
@@ -1044,7 +1044,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                                           })
                                         }
                                       }}
-                                      title="Use tag as destination"
+                                      title="Use instrument as destination"
                                     >
                                       <span className="w-2 h-2 rounded-full" style={{ backgroundColor: tag.color }} />
                                       <span className="flex-1 truncate text-slate-200">{tag.name}</span>
@@ -1060,14 +1060,14 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                                     <button
                                       className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-white"
                                       onClick={() => startEditTag(tag)}
-                                      title="Edit tag"
+                                      title="Edit instrument"
                                     >
                                       <Pencil size={12} />
                                     </button>
                                     <button
                                       className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-300"
                                       onClick={() => openDeleteModal({ kind: 'tag', id: tag.id, name: tag.name })}
-                                      title="Delete tag"
+                                      title="Delete instrument"
                                     >
                                       <Trash2 size={12} />
                                     </button>
@@ -1084,7 +1084,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
 
                 {filteredTagDestinations.length > 0 && (
                   <div className="px-2">
-                    <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-1">Selected tags</div>
+                    <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-1">Selected instruments</div>
                     <div className="space-y-2">
                       {filteredTagDestinations.map(tag => {
                         const changeCount = getSelectionChangeCount(tag.sourceSelection)
@@ -1101,7 +1101,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                             type="text"
                             value={tag.name}
                             onChange={(e) => dispatch({ type: 'RENAME_DESTINATION_FOLDER', tempId: tag.tempId, name: e.target.value })}
-                            placeholder="New tag name"
+                            placeholder="New instrument name"
                             className="flex-1 bg-transparent text-sm outline-none text-white placeholder-slate-500"
                             onFocus={() => dispatch({ type: 'SET_ACTIVE_FOLDER', tempId: tag.tempId })}
                           />
@@ -1122,7 +1122,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                           <button
                             className="p-1 text-slate-200 hover:text-red-400"
                             onClick={() => dispatch({ type: 'REMOVE_DESTINATION_FOLDER', tempId: tag.tempId })}
-                            title="Remove tag destination"
+                            title="Remove instrument destination"
                           >
                             <X size={14} />
                           </button>
@@ -1141,7 +1141,13 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-base/60">
           <div className="bg-surface-base border border-surface-border rounded-xl w-full max-w-md p-5">
             <div className="flex items-center justify-between mb-3">
-              <h4 className="text-base font-semibold text-white">Delete {deleteTarget.kind.replace('-', ' ')}</h4>
+              <h4 className="text-base font-semibold text-white">
+                Delete {deleteTarget.kind === 'tag'
+                  ? 'instrument'
+                  : deleteTarget.kind === 'tag-category'
+                    ? 'instrument category'
+                    : deleteTarget.kind.replace('-', ' ')}
+              </h4>
               <button className="text-slate-400 hover:text-white" onClick={closeDeleteModal}>
                 <X size={16} />
               </button>
@@ -1177,7 +1183,7 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
                     You are about to delete {deleteSampleIds.length} samples from your library.
                   </p>
                   <p className="text-xs text-red-300/80">
-                    These samples might exist in other folders, tags, or collections. This cannot be undone.
+                    These samples might exist in other folders, instruments, or collections. This cannot be undone.
                   </p>
                 </>
               )}

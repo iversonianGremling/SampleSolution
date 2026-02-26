@@ -1,19 +1,21 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   Play, Square, Volume2, VolumeX, Trash2, ChevronUp, ChevronDown, Download,
-  MousePointerClick, Hand, Mic, Repeat, Music, Layers, BarChart3, Grid3X3,
+  MousePointerClick, Hand, Mic, Repeat, Music, Layers, BarChart3, Grid3X3, SlidersHorizontal,
   Plus
 } from 'lucide-react'
-import { getSliceDownloadUrl } from '../api/client'
+import { getSliceDownloadUrl, importLocalFiles as importDroppedLocalFiles } from '../api/client'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import { useDrumRack } from '../contexts/DrumRackContext'
+import { DrumRackEffectsPanel } from './DrumRackEffectsPanel'
 import { PadFxChain } from './PadFxChain'
 import { DEFAULT_LAB_SETTINGS, renderLabAudioBuffer, type LabSettings } from '../services/LabAudioEngine'
+import { PANIC_STOP_AUDIO_EVENT } from '../services/globalAudioVolume'
 import type { Slice } from '../types'
 
 type PadPlayMode = 'one-shot' | 'hold'
 type EditMode = 'grid' | 'velocity'
-type DrumRackTab = 'drumrack' | 'sequencer'
+type DrumRackTab = 'drumrack' | 'sequencer' | 'effects'
 
 const KEY_MAP: Record<string, number> = {
   '1': 12, '2': 13, '3': 14, '4': 15,
@@ -31,6 +33,7 @@ const PAD_KEYS = [
 
 const STEPS = 16
 const PAD_COUNT = 16
+const AUDIO_FILE_REGEX = /\.(wav|mp3|flac|aiff|ogg|m4a)$/i
 
 const PAD_COLORS = [
   'from-blue-500/30 to-blue-600/10',
@@ -192,12 +195,53 @@ const isSliceLike = (value: unknown): value is Slice => {
 }
 
 const getSettingsSignature = (settings: LabSettings): string => JSON.stringify(settings)
-const DEFAULT_SETTINGS_SIGNATURE = getSettingsSignature(DEFAULT_LAB_SETTINGS)
+const clampPitchSemitones = (value: number) => {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(-24, Math.min(24, value))
+}
+const buildGlobalPadPrepSettings = (settings: LabSettings): LabSettings => ({
+  ...DEFAULT_LAB_SETTINGS,
+  fxOrder: [...DEFAULT_LAB_SETTINGS.fxOrder],
+  offset: 0,
+  velocity: 1,
+  outputGain: 1,
+  tempo: 1,
+  lowpassEnabled: false,
+  highpassEnabled: false,
+  peakingEnabled: false,
+  distortionEnabled: false,
+  compressorEnabled: false,
+  delayEnabled: false,
+  reverbEnabled: false,
+  pitchSemitones: settings.pitchSemitones,
+  pitchMode: settings.pitchMode,
+  preserveFormants: settings.preserveFormants,
+  fadeIn: settings.fadeIn,
+  fadeOut: settings.fadeOut,
+})
+const buildEffectivePadPrepSettings = (
+  globalSettings: LabSettings,
+  padSettings: LabSettings | undefined,
+): LabSettings => {
+  if (!padSettings) {
+    return buildGlobalPadPrepSettings(globalSettings)
+  }
+
+  const pitchOffset = Number.isFinite(padSettings.pitchSemitones) ? padSettings.pitchSemitones : 0
+  return {
+    ...padSettings,
+    fxOrder: Array.isArray(padSettings.fxOrder)
+      ? [...padSettings.fxOrder]
+      : [...DEFAULT_LAB_SETTINGS.fxOrder],
+    pitchSemitones: clampPitchSemitones(globalSettings.pitchSemitones + pitchOffset),
+  }
+}
+const DEFAULT_PAD_PREP_SIGNATURE = getSettingsSignature(buildGlobalPadPrepSettings(DEFAULT_LAB_SETTINGS))
 
 export function DrumRackView() {
   const {
     pads, assignSample, clearPad, toggleMute, setVolume, getAudioBuffer, getAudioContext,
-    getPadInputNode, previewSample, stopPreview, previewingSliceId, padFxSettings
+    getPadInputNode, previewSample, stopPreview, previewingSliceId, globalFxSettings, padFxSettings
   } = useDrumRack()
 
   const [sequencer, setSequencer] = useState<SequencerState>({
@@ -231,6 +275,7 @@ export function DrumRackView() {
   // Manual pad sources are tracked per pad to support overlapping/polyphonic playback.
   const manualSourcesByPadRef = useRef<Map<number, Set<AudioBufferSourceNode>>>(new Map())
   const holdSourcesByPadRef = useRef<Map<number, Set<AudioBufferSourceNode>>>(new Map())
+  const sequencerSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
 
   // Drag painting refs
   const paintRef = useRef<{ active: boolean; padIndex: number; paintValue: number } | null>(null)
@@ -245,7 +290,7 @@ export function DrumRackView() {
   const countInTimerRef = useRef<number | null>(null)
   const countInStepRef = useRef(0)
 
-  // Per-pad rendered FX buffer cache (Lab-style offline processing)
+  // Per-pad rendered prep buffer cache
   const padProcessedBufferCacheRef = useRef<Map<number, PadProcessedBufferCacheEntry>>(new Map())
 
   // Keep refs in sync
@@ -254,12 +299,14 @@ export function DrumRackView() {
   useEffect(() => { padPlayModeRef.current = padPlayMode }, [padPlayMode])
 
   // Sample browser data
-  const { data: samplesData } = useScopedSamples({ type: 'all' }, [], '', false)
+  const { data: samplesData, refetch: refetchAllSamples } = useScopedSamples({ type: 'all' }, [], '', false)
   const allSamples = useMemo(() => samplesData?.samples ?? [], [samplesData])
   const filteredSamples = useMemo(() => {
     if (!browserSearch.trim()) return allSamples.slice(0, 50)
     const q = browserSearch.toLowerCase()
-    return allSamples.filter(s => s.name.toLowerCase().includes(q)).slice(0, 50)
+    return allSamples
+      .filter((sample) => typeof sample?.name === 'string' && sample.name.toLowerCase().includes(q))
+      .slice(0, 50)
   }, [allSamples, browserSearch])
 
   const startPadFxRender = useCallback((
@@ -292,7 +339,7 @@ export function DrumRackView() {
         if (latest && latest.sliceId === sliceId && latest.settingsSignature === signature) {
           cache.delete(padIndex)
         }
-        console.error(`Failed to render Drum Rack FX for pad ${padIndex + 1}:`, error)
+        console.error(`Failed to render Drum Rack pad prep for pad ${padIndex + 1}:`, error)
         throw error
       })
 
@@ -316,10 +363,10 @@ export function DrumRackView() {
     const sourceBuffer = getAudioBuffer(pad.slice.id)
     if (!sourceBuffer) return undefined
 
-    const settings = padFxSettings.get(padIndex) ?? DEFAULT_LAB_SETTINGS
+    const settings = buildEffectivePadPrepSettings(globalFxSettings, padFxSettings.get(padIndex))
     const settingsSignature = getSettingsSignature(settings)
 
-    if (settingsSignature === DEFAULT_SETTINGS_SIGNATURE) {
+    if (settingsSignature === DEFAULT_PAD_PREP_SIGNATURE) {
       const cached = padProcessedBufferCacheRef.current.get(padIndex)
       if (cached && cached.sliceId !== pad.slice.id) {
         padProcessedBufferCacheRef.current.delete(padIndex)
@@ -334,7 +381,7 @@ export function DrumRackView() {
 
     startPadFxRender(padIndex, pad.slice.id, sourceBuffer, settings, settingsSignature)
     return sourceBuffer
-  }, [getAudioBuffer, padFxSettings, startPadFxRender])
+  }, [getAudioBuffer, globalFxSettings, padFxSettings, startPadFxRender])
 
   /** Async — waits for the FX render to complete before returning. Used by manual pad triggers. */
   const getPadPlaybackBuffer = useCallback(async (padIndex: number): Promise<AudioBuffer | undefined> => {
@@ -344,10 +391,10 @@ export function DrumRackView() {
     const sourceBuffer = getAudioBuffer(pad.slice.id)
     if (!sourceBuffer) return undefined
 
-    const settings = padFxSettings.get(padIndex) ?? DEFAULT_LAB_SETTINGS
+    const settings = buildEffectivePadPrepSettings(globalFxSettings, padFxSettings.get(padIndex))
     const settingsSignature = getSettingsSignature(settings)
 
-    if (settingsSignature === DEFAULT_SETTINGS_SIGNATURE) {
+    if (settingsSignature === DEFAULT_PAD_PREP_SIGNATURE) {
       const cached = padProcessedBufferCacheRef.current.get(padIndex)
       if (cached && cached.sliceId !== pad.slice.id) {
         padProcessedBufferCacheRef.current.delete(padIndex)
@@ -378,9 +425,9 @@ export function DrumRackView() {
       }
     }
     return sourceBuffer
-  }, [getAudioBuffer, padFxSettings, startPadFxRender])
+  }, [getAudioBuffer, globalFxSettings, padFxSettings, startPadFxRender])
 
-  // Keep processed buffers aligned with loaded pads and current pad-FX settings
+  // Keep processed buffers aligned with loaded pads and current pad prep settings
   useEffect(() => {
     for (let padIndex = 0; padIndex < PAD_COUNT; padIndex++) {
       const pad = pads[padIndex]
@@ -392,10 +439,10 @@ export function DrumRackView() {
       const sourceBuffer = getAudioBuffer(pad.slice.id)
       if (!sourceBuffer) continue
 
-      const settings = padFxSettings.get(padIndex) ?? DEFAULT_LAB_SETTINGS
+      const settings = buildEffectivePadPrepSettings(globalFxSettings, padFxSettings.get(padIndex))
       const signature = getSettingsSignature(settings)
 
-      if (signature === DEFAULT_SETTINGS_SIGNATURE) {
+      if (signature === DEFAULT_PAD_PREP_SIGNATURE) {
         padProcessedBufferCacheRef.current.delete(padIndex)
         continue
       }
@@ -409,7 +456,7 @@ export function DrumRackView() {
         startPadFxRender(padIndex, pad.slice.id, sourceBuffer, settings, signature)
       }
     }
-  }, [pads, padFxSettings, getAudioBuffer, startPadFxRender])
+  }, [pads, globalFxSettings, padFxSettings, getAudioBuffer, startPadFxRender])
 
   // ─── Metronome click generator ───────────────────────────────
   const playMetronomeClick = useCallback((time: number, isDownbeat: boolean) => {
@@ -504,6 +551,14 @@ export function DrumRackView() {
     setActivePads(() => new Set())
   }, [unregisterManualSource])
 
+  const stopAllSequencerSources = useCallback(() => {
+    for (const source of Array.from(sequencerSourcesRef.current)) {
+      source.onended = null
+      try { source.stop() } catch { /* already stopped */ }
+    }
+    sequencerSourcesRef.current.clear()
+  }, [])
+
   // Play a pad manually (polyphonic / overlapping)
   const triggerPadManual = useCallback(async (padIndex: number) => {
     const pad = padsRef.current[padIndex]
@@ -568,6 +623,10 @@ export function DrumRackView() {
     gain.gain.value = velocity
     source.connect(gain)
     gain.connect(getPadInputNode(padIndex))
+    sequencerSourcesRef.current.add(source)
+    source.onended = () => {
+      sequencerSourcesRef.current.delete(source)
+    }
     source.start(time)
   }, [getAudioContext, getPadInputNode, getPadPlaybackBufferSync])
 
@@ -792,11 +851,26 @@ export function DrumRackView() {
 
   // Cleanup
   useEffect(() => {
+    const handlePanicStop = () => {
+      stopSequencer()
+      stopAllSequencerSources()
+      stopAllManualSources()
+      stopPreview()
+      setSequencer(prev => ({ ...prev, playing: false, currentStep: -1, recording: false }))
+    }
+
+    window.addEventListener(PANIC_STOP_AUDIO_EVENT, handlePanicStop)
+    return () => window.removeEventListener(PANIC_STOP_AUDIO_EVENT, handlePanicStop)
+  }, [stopSequencer, stopAllSequencerSources, stopAllManualSources, stopPreview])
+
+  // Cleanup
+  useEffect(() => {
     return () => {
       stopSequencer()
+      stopAllSequencerSources()
       stopAllManualSources()
     }
-  }, [stopSequencer, stopAllManualSources])
+  }, [stopSequencer, stopAllSequencerSources, stopAllManualSources])
 
   useEffect(() => {
     if (activeTab !== 'sequencer' && showPatterns) {
@@ -871,38 +945,105 @@ export function DrumRackView() {
   }, [])
 
   // Handle drag & drop
-  const handleDrop = useCallback((padIndex: number, e: React.DragEvent) => {
+  const assignSamplesSequentially = useCallback((padIndex: number, slices: Slice[]) => {
+    if (slices.length === 0 || padIndex >= PAD_COUNT) return
+
+    const maxAssignable = Math.max(0, PAD_COUNT - padIndex)
+    const slicesToAssign = slices.slice(0, maxAssignable)
+    slicesToAssign.forEach((slice, offset) => {
+      assignSample(padIndex + offset, slice)
+    })
+    setSelectedPadIndex(padIndex)
+  }, [assignSample])
+
+  const resolveSlicesFromIds = useCallback((sampleIds: number[], samplePool: Slice[]) => {
+    if (sampleIds.length === 0) return []
+
+    const sampleById = new Map<number, Slice>()
+    samplePool.forEach(sample => {
+      if (!sample || typeof sample.id !== 'number') return
+      sampleById.set(sample.id, sample)
+    })
+
+    const resolved: Slice[] = []
+    const seen = new Set<number>()
+    sampleIds.forEach(id => {
+      if (seen.has(id)) return
+      const sample = sampleById.get(id)
+      if (!sample) return
+      seen.add(id)
+      resolved.push(sample)
+    })
+    return resolved
+  }, [])
+
+  const resolveSlicesFromPayload = useCallback((payload: unknown): Slice[] => {
+    if (isSliceLike(payload)) {
+      return [payload]
+    }
+    if (!payload || typeof payload !== 'object') {
+      return []
+    }
+
+    const parsedPayload = payload as DrumRackDropPayload
+    const resolved: Slice[] = []
+    if (isSliceLike(parsedPayload.slice)) {
+      resolved.push(parsedPayload.slice)
+    }
+
+    if (Array.isArray(parsedPayload.sampleIds)) {
+      const sampleIds = parsedPayload.sampleIds.filter((id): id is number => typeof id === 'number')
+      const slices = resolveSlicesFromIds(sampleIds, allSamples)
+      const seen = new Set(resolved.map(slice => slice.id))
+      slices.forEach(slice => {
+        if (seen.has(slice.id)) return
+        seen.add(slice.id)
+        resolved.push(slice)
+      })
+    }
+
+    return resolved
+  }, [allSamples, resolveSlicesFromIds])
+
+  const handleDrop = useCallback(async (padIndex: number, e: React.DragEvent) => {
     e.preventDefault()
     try {
+      const droppedFiles = Array.from(e.dataTransfer.files || []).filter(file => AUDIO_FILE_REGEX.test(file.name))
+      if (droppedFiles.length > 0) {
+        const importResult = await importDroppedLocalFiles(
+          droppedFiles,
+          'sample',
+          undefined,
+          undefined,
+          { sourceKind: 'files' },
+        )
+        const importedSliceIds = importResult.results
+          .map(result => (result.success === true && typeof result.sliceId === 'number' ? result.sliceId : null))
+          .filter((sliceId): sliceId is number => sliceId !== null)
+
+        if (importedSliceIds.length > 0) {
+          const refreshed = await refetchAllSamples()
+          const latestSamples = refreshed.data?.samples ?? allSamples
+          const importedSlices = resolveSlicesFromIds(importedSliceIds, latestSamples)
+          assignSamplesSequentially(padIndex, importedSlices)
+        }
+        return
+      }
+
       const data = e.dataTransfer.getData('application/json')
       if (!data) return
 
       const parsed = JSON.parse(data) as unknown
-      let sliceToAssign: Slice | null = null
-
-      if (isSliceLike(parsed)) {
-        sliceToAssign = parsed
-      } else if (parsed && typeof parsed === 'object') {
-        const payload = parsed as DrumRackDropPayload
-        if (isSliceLike(payload.slice)) {
-          sliceToAssign = payload.slice
-        } else if (Array.isArray(payload.sampleIds)) {
-          const firstSampleId = payload.sampleIds.find((id): id is number => typeof id === 'number')
-          if (firstSampleId !== undefined) {
-            const fallbackSlice = allSamples.find(sample => sample.id === firstSampleId)
-            if (fallbackSlice) {
-              sliceToAssign = fallbackSlice
-            }
-          }
-        }
-      }
-
-      if (sliceToAssign) {
-        assignSample(padIndex, sliceToAssign)
-        setSelectedPadIndex(padIndex)
-      }
+      const droppedSlices = resolveSlicesFromPayload(parsed)
+      assignSamplesSequentially(padIndex, droppedSlices)
     } catch { /* ignore */ }
-  }, [assignSample, allSamples])
+  }, [
+    allSamples,
+    assignSamplesSequentially,
+    refetchAllSamples,
+    resolveSlicesFromIds,
+    resolveSlicesFromPayload,
+  ])
 
   // Clear all steps
   const clearAll = useCallback(() => {
@@ -959,7 +1100,7 @@ export function DrumRackView() {
 
   const getPadIndex = (row: number, col: number) => (3 - row) * 4 + col
   const loadedPadCount = pads.filter(pad => isSliceLike(pad.slice)).length
-  const selectedPad = selectedPadIndex !== null ? pads[selectedPadIndex] : null
+  const selectedPadHasSlice = selectedPadIndex !== null && isSliceLike(pads[selectedPadIndex]?.slice)
 
   return (
     <div className="h-full flex flex-col bg-surface-base">
@@ -984,6 +1125,17 @@ export function DrumRackView() {
           }`}
         >
           Sequencer
+        </button>
+        <button
+          onClick={() => setActiveTab('effects')}
+          className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
+            activeTab === 'effects'
+              ? 'border-violet-400/50 bg-violet-400/10 text-violet-300'
+              : 'border-surface-border bg-surface-base text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <SlidersHorizontal size={12} />
+          Effects
         </button>
       </div>
 
@@ -1017,6 +1169,17 @@ export function DrumRackView() {
               <span className="hidden lg:inline">Hold</span>
             </button>
           </div>
+          <button
+            onClick={() => setSelectedPadIndex(null)}
+            className={`px-2.5 py-1.5 text-[11px] border rounded-lg transition-colors ${
+              selectedPadIndex === null
+                ? 'border-violet-400/40 bg-violet-400/10 text-violet-200'
+                : 'border-surface-border bg-surface-base text-slate-400 hover:text-slate-200'
+            }`}
+            title="Select no pad"
+          >
+            Select None
+          </button>
         </div>
       )}
 
@@ -1284,8 +1447,8 @@ export function DrumRackView() {
                           }
                         }}
                         onClick={() => {
+                          setSelectedPadIndex(padIndex)
                           if (pad.slice) {
-                            setSelectedPadIndex(padIndex)
                             if (padPlayMode === 'one-shot') {
                               void triggerPadManual(padIndex)
                             }
@@ -1361,19 +1524,26 @@ export function DrumRackView() {
               </div>
             </div>
 
-            {selectedPadIndex !== null && selectedPad?.slice ? (
-              <PadFxChain
-                padIndex={selectedPadIndex}
-                onClose={() => setSelectedPadIndex(null)}
-              />
-            ) : loadedPadCount > 0 ? (
+            {loadedPadCount > 0 ? (
               <div className="rounded-lg border border-surface-border bg-surface-raised px-3 py-2 text-xs text-slate-500">
-                Select a loaded pad to show its mini FX (Core, Env, LP, HP, Offset).
+                Global effects and global pitch/fade-in/fade-out controls are in the Effects tab. Select a pad to edit its per-pad FX below.
               </div>
+            ) : null}
+
+            {selectedPadIndex !== null ? (
+              selectedPadHasSlice ? (
+                <div className="w-full max-w-[960px] mx-auto lg:mx-0">
+                  <PadFxChain padIndex={selectedPadIndex} onClose={() => setSelectedPadIndex(null)} />
+                </div>
+              ) : (
+                <div className="w-full max-w-[960px] mx-auto lg:mx-0 rounded-lg border border-surface-border bg-surface-raised px-3 py-2 text-xs text-slate-500">
+                  Pad {selectedPadIndex + 1} is empty. Load a sample to edit per-pad FX.
+                </div>
+              )
             ) : null}
           </div>
         </div>
-      ) : (
+      ) : activeTab === 'sequencer' ? (
         <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6">
           <div className="mx-auto w-full max-w-[960px] min-w-0">
             {/* Step numbers */}
@@ -1537,6 +1707,10 @@ export function DrumRackView() {
               </div>
             )}
           </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6">
+          <DrumRackEffectsPanel />
         </div>
       )}
 

@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { startImportProgress, type ImportSourceKind } from '../services/importProgress'
 import type {
   Track,
   Slice,
@@ -34,8 +35,11 @@ async function getHierarchyApiMode(): Promise<HierarchyApiMode> {
 
   hierarchyApiModePromise = (async () => {
     try {
-      const { data } = await api.get<Array<{ id: number }>>('/perspectives')
-      if (Array.isArray(data)) return 'legacy'
+      const { data: modernCollections } = await api.get<Array<{ id: number }>>('/collections')
+      if (Array.isArray(modernCollections)) return 'modern'
+
+      const { data: legacyPerspectives } = await api.get<Array<{ id: number }>>('/perspectives')
+      if (Array.isArray(legacyPerspectives)) return 'legacy'
       return 'modern'
     } catch {
       return 'modern'
@@ -123,9 +127,18 @@ export const createSlice = (
   data: { name: string; startTime: number; endTime: number }
 ) => api.post<Slice>(`/tracks/${trackId}/slices`, data).then((r) => r.data)
 
+export interface UpdateSlicePayload {
+  name?: string
+  startTime?: number
+  endTime?: number
+  sampleType?: 'oneshot' | 'loop' | null
+  envelopeType?: string | null
+  note?: string | null
+}
+
 export const updateSlice = (
   id: number,
-  data: { name?: string; startTime?: number; endTime?: number }
+  data: UpdateSlicePayload
 ) => api.put<Slice>(`/slices/${id}`, data).then((r) => r.data)
 
 export const deleteSlice = (id: number, deleteSource = false) =>
@@ -184,6 +197,12 @@ export const downloadBatchSlicesZip = (sliceIds: number[]) =>
     }))
 
 export type BatchConvertTargetFormat = 'mp3' | 'wav' | 'flac' | 'aiff' | 'ogg' | 'm4a'
+export type BatchConvertTargetBitDepth = 16 | 24 | 32
+
+export interface BatchConvertQualityOptions {
+  sampleRate?: number
+  bitDepth?: BatchConvertTargetBitDepth
+}
 
 export interface BatchConvertResultEntry {
   sliceId: number
@@ -196,6 +215,8 @@ export interface BatchConvertResultEntry {
 
 export interface BatchConvertResponse {
   targetFormat: BatchConvertTargetFormat
+  sampleRate: number | null
+  bitDepth: BatchConvertTargetBitDepth | null
   total: number
   converted: number
   skipped: number
@@ -203,9 +224,17 @@ export interface BatchConvertResponse {
   results: BatchConvertResultEntry[]
 }
 
-export const batchConvertSlices = (sliceIds: number[], targetFormat: BatchConvertTargetFormat) =>
+export const batchConvertSlices = (
+  sliceIds: number[],
+  targetFormat: BatchConvertTargetFormat,
+  qualityOptions: BatchConvertQualityOptions = {}
+) =>
   api
-    .post<BatchConvertResponse>('/slices/batch-convert', { sliceIds, targetFormat })
+    .post<BatchConvertResponse>('/slices/batch-convert', {
+      sliceIds,
+      targetFormat,
+      ...qualityOptions,
+    })
     .then((r) => r.data)
 
 // YouTube
@@ -242,6 +271,18 @@ export const updateTag = (id: number, data: { name?: string; color?: string; cat
   api.put<Tag>(`/tags/${id}`, data).then((r) => r.data)
 
 export const deleteTag = (id: number) => api.delete(`/tags/${id}`)
+
+export const mergeTags = (data: { sourceTagId: number; targetTagId: number; deleteSourceTag?: boolean }) =>
+  api
+    .post<{
+      success: boolean
+      sourceTagId: number
+      targetTagId: number
+      mergedSlices: number
+      mergedTracks: number
+      deletedSourceTag: boolean
+    }>('/tags/merge', data)
+    .then((r) => r.data)
 
 export const createTagFromFolder = (data: { folderId: number; name?: string; color?: string }) =>
   api.post<Tag & { slicesTagged: number }>('/tags/from-folder', data).then((r) => r.data)
@@ -522,6 +563,13 @@ export interface LocalImportResult {
   slice?: { id: number; name: string; duration: number }
 }
 
+export interface ImportAnalysisStatus {
+  running: boolean
+  activeTaskCount: number
+  queuedTaskCount: number
+  isActive: boolean
+}
+
 export interface BatchImportResult {
   total: number
   successful: number
@@ -533,6 +581,12 @@ export interface FolderImportResult extends BatchImportResult {
   folderPath: string
 }
 
+export type LocalImportSourceKind = ImportSourceKind
+
+export interface LocalImportProgressOptions {
+  sourceKind?: LocalImportSourceKind
+}
+
 type LocalFileWithPath = File & {
   path?: string
   webkitRelativePath?: string
@@ -541,8 +595,10 @@ type LocalFileWithPath = File & {
 export const importLocalFile = async (
   file: File,
   importType?: 'sample' | 'track',
-  analysisLevel?: 'advanced'
+  analysisLevel?: 'advanced',
+  _allowAiTagging?: boolean,
 ): Promise<LocalImportResult> => {
+  const resolvedImportType = importType ?? 'sample'
   const formData = new FormData()
   const localFile = file as LocalFileWithPath
   formData.append('file', file)
@@ -551,7 +607,7 @@ export const importLocalFile = async (
     formData.append('absolutePath', localFile.path)
   }
   const params = new URLSearchParams()
-  if (importType) params.append('importType', importType)
+  params.append('importType', resolvedImportType)
   if (analysisLevel) params.append('analysisLevel', analysisLevel)
   const url = `/import/file${params.toString() ? `?${params.toString()}` : ''}`
   const response = await api.post<LocalImportResult>(url, formData)
@@ -561,8 +617,18 @@ export const importLocalFile = async (
 export const importLocalFiles = async (
   files: File[],
   importType?: 'sample' | 'track',
-  analysisLevel?: 'advanced'
+  analysisLevel?: 'advanced',
+  _allowAiTagging?: boolean,
+  options?: LocalImportProgressOptions,
 ): Promise<BatchImportResult> => {
+  const resolvedImportType = importType ?? 'sample'
+  const resolvedSourceKind = options?.sourceKind ?? 'files'
+  const progress = startImportProgress({
+    sourceKind: resolvedSourceKind,
+    importType: resolvedImportType,
+    totalFiles: files.length,
+  })
+
   const formData = new FormData()
   files.forEach((file) => {
     const localFile = file as LocalFileWithPath
@@ -571,19 +637,64 @@ export const importLocalFiles = async (
     formData.append('absolutePaths', typeof localFile.path === 'string' ? localFile.path : '')
   })
   const params = new URLSearchParams()
-  if (importType) params.append('importType', importType)
+  params.append('importType', resolvedImportType)
   if (analysisLevel) params.append('analysisLevel', analysisLevel)
   const url = `/import/files${params.toString() ? `?${params.toString()}` : ''}`
-  const response = await api.post<BatchImportResult>(url, formData)
-  return response.data
+  try {
+    const response = await api.post<BatchImportResult>(url, formData, {
+      onUploadProgress: (event) => {
+        if (!event || typeof event.loaded !== 'number') return
+        progress.markUploadProgress(event.loaded, event.total)
+      },
+    })
+    progress.complete({
+      total: response.data.total,
+      successful: response.data.successful,
+      failed: response.data.failed,
+    })
+    return response.data
+  } catch (error) {
+    progress.fail(error)
+    throw error
+  }
 }
 
 export const importFolder = (
   folderPath: string,
   importType?: 'sample' | 'track',
-  analysisLevel?: 'advanced'
-) =>
-  api.post<FolderImportResult>('/import/folder', { folderPath, importType, analysisLevel }).then((r) => r.data)
+  analysisLevel?: 'advanced',
+  _allowAiTagging?: boolean,
+) => {
+  const resolvedImportType = importType ?? 'sample'
+  const progress = startImportProgress({
+    sourceKind: 'folder',
+    importType: resolvedImportType,
+    totalFiles: null,
+  })
+  progress.markProcessing()
+
+  return api
+    .post<FolderImportResult>('/import/folder', {
+      folderPath,
+      importType: resolvedImportType,
+      analysisLevel,
+    })
+    .then((r) => {
+      progress.complete({
+        total: r.data.total,
+        successful: r.data.successful,
+        failed: r.data.failed,
+      })
+      return r.data
+    })
+    .catch((error) => {
+      progress.fail(error)
+      throw error
+    })
+}
+
+export const getImportAnalysisStatus = () =>
+  api.get<ImportAnalysisStatus>('/import/analysis-status').then((r) => r.data)
 
 // Folder browsing
 export interface BrowseResult {
@@ -803,7 +914,7 @@ export const getSourceTree = () =>
   api.get<SourceTree>('/sources/tree').then((r) => r.data)
 
 export interface SourcesSamplesParams {
-  scope?: string  // 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'folder:{id}' | 'library:{id}' | 'all'
+  scope?: string  // 'youtube' | 'youtube:{trackId}' | 'local' | 'soundcloud' | 'soundcloud:{trackId}' | 'spotify' | 'spotify:{trackId}' | 'bandcamp' | 'bandcamp:{trackId}' | 'folder:{path}' | 'folder:{id}' | 'library:{id}' | 'all'
   tags?: number[]
   search?: string
   favorites?: boolean
@@ -841,8 +952,6 @@ export interface SourcesSamplesParams {
   minSimilarity?: number
   brightnessMin?: number
   brightnessMax?: number
-  harmonicityMin?: number
-  harmonicityMax?: number
   noisinessMin?: number
   noisinessMax?: number
   attackMin?: number
@@ -853,6 +962,8 @@ export interface SourcesSamplesParams {
   saturationMax?: number
   surfaceMin?: number
   surfaceMax?: number
+  rhythmicMin?: number
+  rhythmicMax?: number
   densityMin?: number
   densityMax?: number
   ambienceMin?: number
@@ -885,8 +996,6 @@ export const getSourcesSamples = (params: SourcesSamplesParams) => {
   if (params.minSimilarity !== undefined) queryParams.minSimilarity = params.minSimilarity.toString()
   if (params.brightnessMin !== undefined) queryParams.brightnessMin = params.brightnessMin.toString()
   if (params.brightnessMax !== undefined) queryParams.brightnessMax = params.brightnessMax.toString()
-  if (params.harmonicityMin !== undefined) queryParams.harmonicityMin = params.harmonicityMin.toString()
-  if (params.harmonicityMax !== undefined) queryParams.harmonicityMax = params.harmonicityMax.toString()
   if (params.noisinessMin !== undefined) queryParams.noisinessMin = params.noisinessMin.toString()
   if (params.noisinessMax !== undefined) queryParams.noisinessMax = params.noisinessMax.toString()
   if (params.attackMin !== undefined) queryParams.attackMin = params.attackMin.toString()
@@ -897,6 +1006,8 @@ export const getSourcesSamples = (params: SourcesSamplesParams) => {
   if (params.saturationMax !== undefined) queryParams.saturationMax = params.saturationMax.toString()
   if (params.surfaceMin !== undefined) queryParams.surfaceMin = params.surfaceMin.toString()
   if (params.surfaceMax !== undefined) queryParams.surfaceMax = params.surfaceMax.toString()
+  if (params.rhythmicMin !== undefined) queryParams.rhythmicMin = params.rhythmicMin.toString()
+  if (params.rhythmicMax !== undefined) queryParams.rhythmicMax = params.rhythmicMax.toString()
   if (params.densityMin !== undefined) queryParams.densityMin = params.densityMin.toString()
   if (params.densityMax !== undefined) queryParams.densityMax = params.densityMax.toString()
   if (params.ambienceMin !== undefined) queryParams.ambienceMin = params.ambienceMin.toString()
@@ -910,7 +1021,7 @@ export const getSourcesSamples = (params: SourcesSamplesParams) => {
 }
 
 export interface DuplicateGroup {
-  matchType: 'exact' | 'content' | 'file'
+  matchType: 'exact' | 'content' | 'file' | 'near-duplicate'
   hashSimilarity: number
   samples: Array<{
     id: number
@@ -935,10 +1046,28 @@ export interface BatchReanalyzeResponse {
   total: number
   analyzed: number
   failed: number
-  warnings?: {
+  warnings: {
     totalWithWarnings: number
     sliceIds: number[]
     messages: string[]
+  }
+  audit: {
+    enabled: boolean
+    reviewedSamples: number
+    weirdSamples: number
+    fixedSamples: number
+    failedFixes: number
+    messages: string[]
+    issues: Array<{
+      sliceId: number
+      sampleName: string
+      reason: string | null
+      suspiciousTags: string[]
+      previousTags: string[]
+      suggestedTags: string[]
+      applied: boolean
+      error?: string
+    }>
   }
   results: Array<{
     sliceId: number
@@ -951,19 +1080,94 @@ export interface BatchReanalyzeResponse {
   }>
 }
 
+export type BatchReanalyzeJobState =
+  | 'idle'
+  | 'running'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+
+export type BatchReanalyzeStage = 'analysis' | 'audit'
+
+export interface BatchReanalyzeStatusSummary {
+  total: number
+  analyzed: number
+  failed: number
+  warnings: {
+    totalWithWarnings: number
+    sliceIds: number[]
+    messages: string[]
+  }
+  audit: BatchReanalyzeResponse['audit']
+}
+
+export interface BatchReanalyzeStatusResponse {
+  jobId: string | null
+  status: BatchReanalyzeJobState
+  stage: BatchReanalyzeStage
+  isActive: boolean
+  isStopping: boolean
+  startedAt: string | null
+  updatedAt: string | null
+  finishedAt: string | null
+  total: number
+  analyzed: number
+  failed: number
+  processed: number
+  progressPercent: number
+  concurrency: number | null
+  includeFilenameTags: boolean
+  allowAiTagging: boolean
+  statusNote: string | null
+  error: string | null
+  warnings: {
+    totalWithWarnings: number
+    sliceIds: number[]
+    messages: string[]
+  }
+  audit: BatchReanalyzeResponse['audit']
+  resultSummary: BatchReanalyzeStatusSummary | null
+}
+
 export const batchReanalyzeSamples = (
   sliceIds?: number[],
   analysisLevel?: 'advanced',
   concurrency?: number,
   includeFilenameTags?: boolean,
+  allowAiTagging?: boolean,
   options?: { signal?: AbortSignal }
 ) =>
   api
     .post<BatchReanalyzeResponse>(
       '/slices/batch-reanalyze',
-      { sliceIds, analysisLevel, concurrency, includeFilenameTags },
+      { sliceIds, analysisLevel, concurrency, includeFilenameTags, allowAiTagging },
       { signal: options?.signal },
     )
+    .then((r) => r.data)
+
+export const startBatchReanalyzeSamples = (
+  sliceIds?: number[],
+  analysisLevel?: 'advanced',
+  concurrency?: number,
+  includeFilenameTags?: boolean,
+  allowAiTagging?: boolean,
+) =>
+  api
+    .post<{ started: boolean; status: BatchReanalyzeStatusResponse }>(
+      '/slices/batch-reanalyze/start',
+      { sliceIds, analysisLevel, concurrency, includeFilenameTags, allowAiTagging },
+    )
+    .then((r) => r.data)
+
+export const getBatchReanalyzeStatus = () =>
+  api
+    .get<BatchReanalyzeStatusResponse>('/slices/batch-reanalyze/status')
+    .then((r) => r.data)
+
+export const cancelBatchReanalyze = () =>
+  api
+    .post<{ canceled: boolean; status: BatchReanalyzeStatusResponse }>('/slices/batch-reanalyze/cancel')
     .then((r) => r.data)
 
 // Sync configs

@@ -10,9 +10,10 @@ import {
   SPOTDL_INTEGRATION_EVENT,
   SPOTDL_INTEGRATION_STORAGE_KEY,
 } from '../utils/spotdlIntegration'
+import { formatReanalyzeEtaLabel } from '../utils/reanalyzeEta'
 
 const MAX_REANALYZE_CONCURRENCY = 10
-const DEFAULT_REANALYZE_CONCURRENCY = 5
+const DEFAULT_REANALYZE_CONCURRENCY = 2
 
 // Roughly calibrated from local advanced-analysis benchmarks.
 const REANALYZE_REFERENCE_CPU_THREADS = 20
@@ -799,7 +800,7 @@ function BackupTransferSection() {
         <p className="text-xs text-amber-400">Import will replace what you currently have in this app.</p>
       </div>
 
-      <div className="bg-surface-base border border-surface-border rounded-lg p-4 space-y-4">
+      <div className="bg-surface-base rounded-lg p-4 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
             <div className="text-sm font-medium text-white">Undo Changes (optional)</div>
@@ -942,7 +943,12 @@ interface ReanalyzeBottomProgress {
   isActive: boolean
   isStopping: boolean
   elapsedMs: number
-  sampleCount: number | null
+  total: number | null
+  processed: number
+  analyzed: number
+  failed: number
+  progressPercent: number
+  etaLabel: string | null
   parallelism: number
   statusNote: string | null
   error: string | null
@@ -1092,6 +1098,10 @@ function BackendToolsUpdateSection({ reanalyzeProgress }: BackendToolsUpdateSect
   }
 
   const isReanalyzingInPanel = reanalyzeProgress.isActive
+  const hasReanalyzeReachedCompletion =
+    reanalyzeProgress.isActive &&
+    !reanalyzeProgress.isStopping &&
+    reanalyzeProgress.progressPercent >= 100
   const panelMode: 'update' | 'reanalyze' | null = isUpdating
     ? 'update'
     : isReanalyzingInPanel
@@ -1101,31 +1111,39 @@ function BackendToolsUpdateSection({ reanalyzeProgress }: BackendToolsUpdateSect
         : null
   const showBottomLogBar = panelMode !== null
 
-  const reanalyzeStatusText = reanalyzeProgress.isActive
-    ? reanalyzeProgress.isStopping
-      ? 'Stopping re-analysis...'
-      : 'Re-analyzing samples...'
-    : reanalyzeProgress.error
-      ? 'Re-analysis failed'
-      : reanalyzeProgress.statusNote
-        ? reanalyzeProgress.statusNote
-        : 'Ready'
+  const reanalyzeStatusText = hasReanalyzeReachedCompletion
+    ? 'Library successfully analyzed'
+    : reanalyzeProgress.isActive
+      ? reanalyzeProgress.isStopping
+        ? 'Stopping re-analysis...'
+        : `Re-analyzing samples... ${reanalyzeProgress.progressPercent}%${reanalyzeProgress.etaLabel ? ` (ETA ${reanalyzeProgress.etaLabel})` : ''}`
+      : reanalyzeProgress.error
+        ? 'Re-analysis failed'
+        : reanalyzeProgress.statusNote
+          ? reanalyzeProgress.statusNote
+          : 'Ready'
 
-  const reanalyzeStatusClassName = reanalyzeProgress.isActive
-    ? reanalyzeProgress.isStopping
-      ? 'text-amber-300'
-      : 'text-accent-primary'
-    : reanalyzeProgress.error
-      ? 'text-red-400'
-      : reanalyzeProgress.statusNote
+  const reanalyzeStatusClassName = hasReanalyzeReachedCompletion
+    ? 'text-green-300'
+    : reanalyzeProgress.isActive
+      ? reanalyzeProgress.isStopping
         ? 'text-amber-300'
-        : 'text-slate-400'
+        : 'text-accent-primary'
+      : reanalyzeProgress.error
+        ? 'text-red-400'
+        : reanalyzeProgress.statusNote
+          ? 'text-amber-300'
+          : 'text-slate-400'
 
   const reanalyzeDetails = [
-    `Analyzing samples (total: ${reanalyzeProgress.sampleCount ?? '...'}, parallelism: ${reanalyzeProgress.parallelism}, elapsed: ${formatElapsedTime(reanalyzeProgress.elapsedMs)})`,
-    reanalyzeProgress.isStopping
-      ? 'Stopping analysis and terminating active workers...'
-      : 'Running advanced feature extraction and tag refresh across your library.',
+    hasReanalyzeReachedCompletion
+      ? `Library successfully analyzed (processed: ${reanalyzeProgress.processed}/${reanalyzeProgress.total ?? '...'}, analyzed: ${reanalyzeProgress.analyzed}, failed: ${reanalyzeProgress.failed}, elapsed: ${formatElapsedTime(reanalyzeProgress.elapsedMs)})`
+      : `Analyzing samples (processed: ${reanalyzeProgress.processed}/${reanalyzeProgress.total ?? '...'}, analyzed: ${reanalyzeProgress.analyzed}, failed: ${reanalyzeProgress.failed}, progress: ${reanalyzeProgress.progressPercent}%, parallelism: ${reanalyzeProgress.parallelism}, elapsed: ${formatElapsedTime(reanalyzeProgress.elapsedMs)}, eta: ${reanalyzeProgress.etaLabel ?? 'n/a'})`,
+    hasReanalyzeReachedCompletion
+      ? 'Finishing final audit and cleanup...'
+      : reanalyzeProgress.isStopping
+        ? 'Stopping analysis and terminating active workers...'
+        : `Running advanced feature extraction and tag refresh across your library. It might seem frozen, it's normal.`,
     reanalyzeProgress.statusNote ? `Note: ${reanalyzeProgress.statusNote}` : '',
     reanalyzeProgress.error ? `Error: ${reanalyzeProgress.error}` : '',
   ]
@@ -1142,7 +1160,7 @@ function BackendToolsUpdateSection({ reanalyzeProgress }: BackendToolsUpdateSect
   const panelIsRunning =
     panelMode === 'update'
       ? isUpdating
-      : reanalyzeProgress.isActive && !reanalyzeProgress.isStopping
+      : reanalyzeProgress.isActive && !reanalyzeProgress.isStopping && !hasReanalyzeReachedCompletion
   const panelCanStop = panelMode === 'update' ? isUpdating : reanalyzeProgress.isActive
   const panelIsStopping = panelMode === 'update' ? isStoppingUpdate : reanalyzeProgress.isStopping
   const panelStopLabel = panelMode === 'update'
@@ -3070,7 +3088,7 @@ function SimplifiedBackupSection() {
         </p>
       </div>
 
-      <div className="bg-surface-base border border-surface-border rounded-lg p-4 space-y-4">
+      <div className="bg-surface-base rounded-lg p-4 space-y-4">
         <div className="space-y-2">
           <label className="block text-xs text-slate-400">Import/export/sync</label>
           <div className="flex flex-wrap gap-2">
@@ -3342,7 +3360,7 @@ function SimplifiedBackupSection() {
                   onChange={() => setPlacement('separate')}
                   className="mt-0.5"
                 />
-                <span>On a separate collection with this name</span>
+                <span>On a separate collection with custom name</span>
               </label>
               {placement === 'separate' && (
                 <input
@@ -3362,7 +3380,7 @@ function SimplifiedBackupSection() {
                   onChange={() => setPlacement('suffix')}
                   className="mt-0.5"
                 />
-                <span>Use collection names from the other library and add -1/2/3</span>
+                <span>Preserve source names</span>
               </label>
 
               <label className="flex items-start gap-2 text-xs text-slate-300">
@@ -3581,26 +3599,24 @@ function ManageBackupsSection() {
 
 export function SourcesSettings() {
   const { confirm, alert: showAlert, dialogNode } = useAppDialog()
-  const [isReanalyzing, setIsReanalyzing] = useState(false)
-  const [isStoppingReanalyze, setIsStoppingReanalyze] = useState(false)
-  const [reanalyzeElapsedMs, setReanalyzeElapsedMs] = useState(0)
-  const [reanalyzeStatus, setReanalyzeStatus] = useState<{
-    total: number
-    analyzed: number
-    failed: number
-  } | null>(null)
-  const [statusNote, setStatusNote] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [reanalyzeActionError, setReanalyzeActionError] = useState<string | null>(null)
+  const [isStoppingReanalyzeRequest, setIsStoppingReanalyzeRequest] = useState(false)
+  const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now())
   const [concurrency, setConcurrency] = useState(() => {
     const saved = localStorage.getItem('analysis-concurrency')
     const parsed = saved ? Number.parseInt(saved, 10) : DEFAULT_REANALYZE_CONCURRENCY
     return clampReanalyzeConcurrency(parsed)
   })
+  const [allowAiTagging, setAllowAiTagging] = useState(() => {
+    const saved = localStorage.getItem('analysis-ai-tagging')
+    return saved === '1'
+  })
   const includeFilenameTags = true
   const showDownloadToolsUi = isDownloadToolsUiVisible()
 
   const queryClient = useQueryClient()
-  const reanalyzeAbortRef = useRef<AbortController | null>(null)
+  const previousReanalyzeStatusRef = useRef<api.BatchReanalyzeJobState | null>(null)
+  const shownWarningJobRef = useRef<string | null>(null)
 
   const { data: librarySampleCount, refetch: refetchSliceCount } = useQuery<number>({
     queryKey: ['slice-count'],
@@ -3608,6 +3624,58 @@ export function SourcesSettings() {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   })
+
+  const {
+    data: reanalyzeJobStatus,
+    refetch: refetchReanalyzeStatus,
+  } = useQuery<api.BatchReanalyzeStatusResponse>({
+    queryKey: ['batch-reanalyze-status'],
+    queryFn: api.getBatchReanalyzeStatus,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: (query) => (query.state.data?.isActive ? 1000 : 5000),
+    refetchIntervalInBackground: true,
+  })
+
+  const isReanalyzing = reanalyzeJobStatus?.isActive ?? false
+  const isStoppingReanalyze = (reanalyzeJobStatus?.isStopping ?? false) || isStoppingReanalyzeRequest
+  const reanalyzeStatus = reanalyzeJobStatus?.resultSummary ?? null
+  const reanalyzeTotal = reanalyzeJobStatus?.total ?? (typeof librarySampleCount === 'number' ? librarySampleCount : null)
+  const reanalyzeAnalyzed = reanalyzeJobStatus?.analyzed ?? 0
+  const reanalyzeFailed = reanalyzeJobStatus?.failed ?? 0
+  const reanalyzeProcessed = reanalyzeJobStatus?.processed ?? 0
+  const reanalyzeProgressPercent = reanalyzeJobStatus?.progressPercent ?? 0
+  const reanalyzeParallelism = reanalyzeJobStatus?.concurrency ?? concurrency
+  const statusNote = reanalyzeJobStatus?.statusNote ?? null
+  const error = reanalyzeActionError ?? reanalyzeJobStatus?.error ?? null
+  const hasReanalyzeReachedCompletion =
+    isReanalyzing &&
+    !isStoppingReanalyze &&
+    reanalyzeProgressPercent >= 100
+
+  const reanalyzeElapsedMs = useMemo(() => {
+    const startedAt = reanalyzeJobStatus?.startedAt ? new Date(reanalyzeJobStatus.startedAt).getTime() : Number.NaN
+    if (!Number.isFinite(startedAt)) return 0
+    const fallbackEnd = isReanalyzing ? elapsedNowMs : Date.now()
+    const endAt = reanalyzeJobStatus?.finishedAt ? new Date(reanalyzeJobStatus.finishedAt).getTime() : fallbackEnd
+    if (!Number.isFinite(endAt)) return 0
+    return Math.max(0, endAt - startedAt)
+  }, [reanalyzeJobStatus?.startedAt, reanalyzeJobStatus?.finishedAt, isReanalyzing, elapsedNowMs])
+  const reanalyzeEtaLabel = useMemo(() => {
+    return formatReanalyzeEtaLabel({
+      isStopping: isStoppingReanalyze,
+      startedAt: reanalyzeJobStatus?.startedAt,
+      processed: reanalyzeProcessed,
+      total: reanalyzeTotal ?? 0,
+      nowMs: elapsedNowMs,
+    })
+  }, [
+    isStoppingReanalyze,
+    reanalyzeJobStatus?.startedAt,
+    reanalyzeProcessed,
+    reanalyzeTotal,
+    elapsedNowMs,
+  ])
 
   const projectionSampleCount = typeof librarySampleCount === 'number'
     ? librarySampleCount
@@ -3648,26 +3716,60 @@ export function SourcesSettings() {
   }, [concurrency])
 
   useEffect(() => {
-    if (!isReanalyzing) {
-      setReanalyzeElapsedMs(0)
-      return
-    }
+    localStorage.setItem('analysis-ai-tagging', allowAiTagging ? '1' : '0')
+  }, [allowAiTagging])
 
-    const startedAt = Date.now()
-    setReanalyzeElapsedMs(0)
-
-    const timerId = window.setInterval(() => {
-      setReanalyzeElapsedMs(Date.now() - startedAt)
-    }, 500)
-
+  useEffect(() => {
+    if (!isReanalyzing) return
+    const timerId = window.setInterval(() => setElapsedNowMs(Date.now()), 500)
     return () => window.clearInterval(timerId)
   }, [isReanalyzing])
 
   useEffect(() => {
-    return () => {
-      reanalyzeAbortRef.current?.abort()
+    const currentStatus = reanalyzeJobStatus?.status ?? null
+    if (!currentStatus) return
+    const previousStatus = previousReanalyzeStatusRef.current
+    previousReanalyzeStatusRef.current = currentStatus
+
+    if (
+      previousStatus !== currentStatus &&
+      (currentStatus === 'completed' || currentStatus === 'failed' || currentStatus === 'canceled')
+    ) {
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      queryClient.invalidateQueries({ queryKey: ['slice-count'] })
     }
-  }, [])
+  }, [reanalyzeJobStatus?.status, queryClient])
+
+  useEffect(() => {
+    if (!reanalyzeJobStatus?.isActive) {
+      setIsStoppingReanalyzeRequest(false)
+    }
+  }, [reanalyzeJobStatus?.isActive])
+
+  useEffect(() => {
+    if (!reanalyzeJobStatus) return
+    if (reanalyzeJobStatus.status !== 'completed') return
+    if (reanalyzeJobStatus.warnings.totalWithWarnings <= 0) return
+    if (!reanalyzeJobStatus.jobId) return
+    if (shownWarningJobRef.current === reanalyzeJobStatus.jobId) return
+
+    shownWarningJobRef.current = reanalyzeJobStatus.jobId
+    const preview = reanalyzeJobStatus.warnings.messages.slice(0, 5)
+    const extra = Math.max(0, reanalyzeJobStatus.warnings.messages.length - preview.length)
+    const details = preview.map((message) => `• ${message}`).join('\n')
+
+    void showAlert({
+      title: 'Analysis Warning',
+      message: [
+        `Warning: ${reanalyzeJobStatus.warnings.totalWithWarnings} sample(s) had potential custom state before re-analysis.`,
+        details,
+        extra > 0 ? `...and ${extra} more warning(s).` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    })
+  }, [reanalyzeJobStatus, showAlert])
 
   const handleReanalyzeAll = async () => {
     if (isReanalyzing) return
@@ -3679,21 +3781,6 @@ export function SourcesSettings() {
 
     const refetchedSliceCount = await refetchSliceCount().catch(() => undefined)
     const sampleCountForEstimate = refetchedSliceCount?.data ?? librarySampleCount
-    const projectionSampleCountForDialog = typeof sampleCountForEstimate === 'number'
-      ? sampleCountForEstimate
-      : Math.max(1, safeConcurrency)
-    const projectionsForDialog = buildTierProjections(
-      projectionSampleCountForDialog,
-      safeConcurrency,
-      includeFilenameTags,
-    )
-    const i3ProjectionForDialog = projectionsForDialog.find((p) => p.tier.id === 'i3_ryzen3')
-    const i5ProjectionForDialog = projectionsForDialog.find((p) => p.tier.id === 'i5_ryzen5')
-    const i7ProjectionForDialog = projectionsForDialog.find((p) => p.tier.id === 'i7_ryzen7')
-    const workstationProjectionForDialog = projectionsForDialog.find((p) => p.tier.id === 'workstation_high_end')
-    const isHighPressureForDialog = projectionsForDialog.some(
-      (projection) => projection.usage.level === 'high' || projection.usage.level === 'extreme',
-    )
     const sampleCountMessage = typeof sampleCountForEstimate === 'number'
       ? formatSampleCountLabel(sampleCountForEstimate)
       : 'all samples in your library'
@@ -3702,21 +3789,10 @@ export function SourcesSettings() {
       title: 'Re-analyze All Samples',
       message: [
         `This will re-analyze ${sampleCountMessage} with ${formatProcessCountLabel(safeConcurrency)}.`,
-        i3ProjectionForDialog
-          ? `i3/Ryzen 3 older CPUs: ${formatEstimateRange(i3ProjectionForDialog.runtime)} with ${formatProcessCountLabel(i3ProjectionForDialog.runtime.effectiveParallelism)} active (${i3ProjectionForDialog.usage.level} pressure). Recommended: ${formatProcessCountLabel(i3ProjectionForDialog.recommendedConcurrency)}.`
-          : '',
-        i5ProjectionForDialog
-          ? `i5/Ryzen 5 mid CPUs: ${formatEstimateRange(i5ProjectionForDialog.runtime)} with ${formatProcessCountLabel(i5ProjectionForDialog.runtime.effectiveParallelism)} active (${i5ProjectionForDialog.usage.level} pressure). Recommended: ${formatProcessCountLabel(i5ProjectionForDialog.recommendedConcurrency)}.`
-          : '',
-        i7ProjectionForDialog
-          ? `i7/Ryzen 7 newer CPUs: ${formatEstimateRange(i7ProjectionForDialog.runtime)} with ${formatProcessCountLabel(i7ProjectionForDialog.runtime.effectiveParallelism)} active (${i7ProjectionForDialog.usage.level} pressure). Recommended: ${formatProcessCountLabel(i7ProjectionForDialog.recommendedConcurrency)}.`
-          : '',
-        workstationProjectionForDialog
-          ? `Threadripper/Xeon W/Ryzen 9 class: ${formatEstimateRange(workstationProjectionForDialog.runtime)} with ${formatProcessCountLabel(workstationProjectionForDialog.runtime.effectiveParallelism)} active (${workstationProjectionForDialog.usage.level} pressure). Recommended: ${formatProcessCountLabel(workstationProjectionForDialog.recommendedConcurrency)}.`
-          : '',
-        isHighPressureForDialog
-          ? 'Warning: this setting is likely to make the app or system less responsive during re-analysis.'
-          : '',
+        allowAiTagging
+          ? 'AI instrument review via Ollama is enabled and can be very slow.'
+          : 'AI instrument review via Ollama is disabled; fallback instrument labeling will be used.',
+        'Lower end processors might have trouble executing this.',
         'Continue?',
       ]
         .filter(Boolean)
@@ -3727,66 +3803,39 @@ export function SourcesSettings() {
 
     if (!confirmed) return
 
-    const abortController = new AbortController()
-    reanalyzeAbortRef.current = abortController
-
-    setIsReanalyzing(true)
-    setIsStoppingReanalyze(false)
-    setError(null)
-    setStatusNote(null)
-    setReanalyzeStatus(null)
+    setReanalyzeActionError(null)
+    setIsStoppingReanalyzeRequest(false)
 
     try {
-      const result = await api.batchReanalyzeSamples(
+      const startResult = await api.startBatchReanalyzeSamples(
         undefined,
         'advanced',
         safeConcurrency,
         includeFilenameTags,
-        { signal: abortController.signal },
+        allowAiTagging,
       )
-
-      setReanalyzeStatus({
-        total: result.total,
-        analyzed: result.analyzed,
-        failed: result.failed,
-      })
-
-      if (result.warnings && result.warnings.totalWithWarnings > 0) {
-        const preview = result.warnings.messages.slice(0, 5)
-        const extra = Math.max(0, result.warnings.messages.length - preview.length)
-        const details = preview.map((m) => `• ${m}`).join('\n')
-        await showAlert({
-          title: 'Analysis Warning',
-          message: [
-            `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before re-analysis.`,
-            details,
-            extra > 0 ? `...and ${extra} more warning(s).` : '',
-          ]
-            .filter(Boolean)
-            .join('\n'),
-        })
-      }
-
-      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
-      queryClient.invalidateQueries({ queryKey: ['allSlices'] })
-      queryClient.invalidateQueries({ queryKey: ['slice-count'] })
-    } catch (err) {
-      if (isRequestAbortError(err)) {
-        setStatusNote('Re-analysis stopped by user.')
-        return
-      }
-      setError(err instanceof Error ? err.message : 'Failed to re-analyze samples')
-    } finally {
-      reanalyzeAbortRef.current = null
-      setIsStoppingReanalyze(false)
-      setIsReanalyzing(false)
+      queryClient.setQueryData(['batch-reanalyze-status'], startResult.status)
+      await refetchReanalyzeStatus()
+    } catch (error) {
+      setReanalyzeActionError(getApiErrorMessage(error, 'Failed to start re-analysis'))
     }
   }
 
   const handleStopReanalyze = () => {
-    if (!isReanalyzing) return
-    setIsStoppingReanalyze(true)
-    reanalyzeAbortRef.current?.abort()
+    if (!isReanalyzing || isStoppingReanalyze) return
+    setIsStoppingReanalyzeRequest(true)
+    setReanalyzeActionError(null)
+    void (async () => {
+      try {
+        const cancelResult = await api.cancelBatchReanalyze()
+        queryClient.setQueryData(['batch-reanalyze-status'], cancelResult.status)
+      } catch (error) {
+        setIsStoppingReanalyzeRequest(false)
+        setReanalyzeActionError(getApiErrorMessage(error, 'Failed to stop re-analysis'))
+      } finally {
+        await refetchReanalyzeStatus().catch(() => undefined)
+      }
+    })()
   }
 
   return (
@@ -3794,7 +3843,7 @@ export function SourcesSettings() {
       <div className="space-y-4">
         <div>
           <h3 className="text-base font-medium text-white mb-2">Audio Analysis</h3>
-          <div className="bg-surface-raised border border-surface-border rounded-lg p-4 md:p-5 space-y-3">
+          <div className="bg-surface-raised rounded-lg p-4 md:p-5 space-y-3">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
                 <h4 className="text-sm font-medium text-white">Re-analyze All Samples</h4>
@@ -3838,6 +3887,19 @@ export function SourcesSettings() {
                 <span>10</span>
               </div>
             </div>
+
+            <label className="flex items-start gap-2 rounded-lg border border-surface-border bg-surface-base/70 px-3 py-2.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={allowAiTagging}
+                onChange={(e) => setAllowAiTagging(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-surface-border bg-surface-base text-accent-primary focus:ring-accent-primary/40"
+                disabled={isReanalyzing}
+              />
+              <span>
+                Advanced semantic/tag analysis with AI (VERY slow but more accurate)
+              </span>
+            </label>
 
             <div
               className={`rounded-lg border p-2.5 ${
@@ -3907,20 +3969,45 @@ export function SourcesSettings() {
               </details>
             )}
 
-            {isReanalyzing && (
+            {isReanalyzing && !hasReanalyzeReachedCompletion && (
               <div className="rounded-lg border border-accent-primary/30 bg-accent-primary/10 p-3">
                 <div className="flex items-start gap-2.5">
                   <RefreshCw size={16} className="mt-0.5 flex-shrink-0 animate-spin text-accent-primary" />
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-white">
-                      Analyzing {librarySampleCount ?? '...'} samples • {formatProcessCountLabel(concurrency)} • {formatElapsedTime(reanalyzeElapsedMs)}
+                      Analyzing {reanalyzeTotal ?? '...'} samples • {formatProcessCountLabel(reanalyzeParallelism)} • {formatElapsedTime(reanalyzeElapsedMs)}{reanalyzeEtaLabel ? ` • ETA ${reanalyzeEtaLabel}` : ''}
                     </div>
                     <div className="mt-0.5 text-[11px] text-slate-300">
                       {isStoppingReanalyze
                         ? 'Stopping analysis and terminating workers...'
-                        : 'Running advanced feature extraction and tag refresh.'}
+                        : `Running advanced feature extraction and tag refresh. It might seem frozen, it's normal.`}
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-[11px] text-slate-300">
+                      <span>
+                        Processed {reanalyzeProcessed}/{reanalyzeTotal ?? '...'} (analyzed {reanalyzeAnalyzed}, failed {reanalyzeFailed})
+                      </span>
+                      <span className="font-mono text-slate-100">
+                        {reanalyzeProgressPercent}%{reanalyzeEtaLabel ? ` • ETA ${reanalyzeEtaLabel}` : ''}
+                      </span>
+                    </div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded bg-surface-base/80">
+                      <div
+                        className={`h-full transition-[width] duration-300 ${
+                          isStoppingReanalyze ? 'bg-amber-400' : 'bg-accent-primary'
+                        }`}
+                        style={{ width: `${Math.max(0, Math.min(100, reanalyzeProgressPercent))}%` }}
+                      />
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {hasReanalyzeReachedCompletion && (
+              <div className="rounded-md border border-green-500/30 bg-green-500/10 px-3 py-1.5">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={14} className="text-green-400" />
+                  <span className="text-[11px] text-green-300">Library successfully analyzed</span>
                 </div>
               </div>
             )}
@@ -3930,13 +4017,13 @@ export function SourcesSettings() {
                 <div className="flex items-center gap-2 text-[12px]">
                   <CheckCircle2 size={14} className="flex-shrink-0 text-green-400" />
                   <span className="text-slate-100">
-                    Complete: {reanalyzeStatus.analyzed} analyzed, {reanalyzeStatus.failed} failed (of {reanalyzeStatus.total}).
+                    {reanalyzeJobStatus?.status === 'canceled' ? 'Stopped' : 'Complete'}: {reanalyzeStatus.analyzed} analyzed, {reanalyzeStatus.failed} failed (of {reanalyzeStatus.total}).
                   </span>
                 </div>
               </div>
             )}
 
-            {statusNote && (
+            {statusNote && reanalyzeJobStatus?.status === 'canceled' && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5">
                 <div className="flex items-center gap-2 text-[12px]">
                   <AlertCircle size={14} className="flex-shrink-0 text-amber-400" />
@@ -3993,14 +4080,19 @@ export function SourcesSettings() {
         {showDownloadToolsUi && (
           <div>
             <h3 className="text-lg font-medium text-white mb-4">System</h3>
-            <div className="bg-surface-raised border border-surface-border rounded-lg p-6">
+            <div className="bg-surface-raised rounded-lg p-6">
               <BackendToolsUpdateSection
                 reanalyzeProgress={{
                   isActive: isReanalyzing,
                   isStopping: isStoppingReanalyze,
                   elapsedMs: reanalyzeElapsedMs,
-                  sampleCount: typeof librarySampleCount === 'number' ? librarySampleCount : null,
-                  parallelism: concurrency,
+                  total: reanalyzeTotal,
+                  processed: reanalyzeProcessed,
+                  analyzed: reanalyzeAnalyzed,
+                  failed: reanalyzeFailed,
+                  progressPercent: reanalyzeProgressPercent,
+                  etaLabel: reanalyzeEtaLabel,
+                  parallelism: reanalyzeParallelism,
                   statusNote,
                   error,
                   onStop: handleStopReanalyze,
@@ -4012,7 +4104,7 @@ export function SourcesSettings() {
 
         <div>
           <h3 className="text-lg font-medium text-white mb-4">Manage Backups</h3>
-          <div className="bg-surface-raised border border-surface-border rounded-lg p-6">
+          <div className="bg-surface-raised rounded-lg p-6">
             <ManageBackupsSection />
           </div>
         </div>

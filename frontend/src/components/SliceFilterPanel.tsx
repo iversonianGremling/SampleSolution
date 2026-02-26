@@ -322,7 +322,7 @@ export function SliceFilterPanel({
       {onTagFilterChange && (
         <div className="border-t border-surface-border pt-3">
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-medium text-slate-400">Filter by tags</label>
+            <label className="text-xs font-medium text-slate-400">Filter by instruments</label>
             {selectedTags.length > 0 && (
               <button
                 onClick={() => handleTagFilterChange([])}
@@ -333,7 +333,7 @@ export function SliceFilterPanel({
             )}
           </div>
 
-          {/* Selected Tags */}
+          {/* Selected Instruments */}
           {selectedTags.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2">
               {selectedTags.map((tagId) => {
@@ -347,6 +347,7 @@ export function SliceFilterPanel({
                       backgroundColor: tag.color + '30',
                       color: tag.color,
                     }}
+                    title={tag.name}
                   >
                     {tag.name}
                     <button
@@ -371,7 +372,7 @@ export function SliceFilterPanel({
                 setIsTagDropdownOpen(true)
               }}
               onFocus={() => setIsTagDropdownOpen(true)}
-              placeholder="Search tags..."
+              placeholder="Search instruments..."
               className="w-full px-3 py-2 bg-surface-raised border border-surface-border rounded text-sm text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary transition-colors"
             />
 
@@ -392,7 +393,7 @@ export function SliceFilterPanel({
                       className="w-3 h-3 rounded-full flex-shrink-0"
                       style={{ backgroundColor: tag.color }}
                     />
-                    <span style={{ color: tag.color }}>{tag.name}</span>
+                    <span style={{ color: tag.color }} title={tag.name}>{tag.name}</span>
                   </button>
                 ))}
               </div>

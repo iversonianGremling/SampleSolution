@@ -63,7 +63,7 @@ export function UnifiedSamplesView() {
   // Feature weights state (shared with SampleSpaceView)
   const [weights, setWeights] = useState<FeatureWeights>(DEFAULT_WEIGHTS)
   const [reductionMethod, setReductionMethod] = useState<ReductionMethod>('umap')
-  const [clusterMethod, setClusterMethod] = useState<ClusterMethod>('kmeans')
+  const [clusterMethod, setClusterMethod] = useState<ClusterMethod>('hdbscan')
   const [clusterCount, setClusterCount] = useState(7)
   const [dbscanEpsilon, setDbscanEpsilon] = useState(0.15)
 

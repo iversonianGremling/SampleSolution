@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { applyBulkRenameRules, type BulkRenameRules, DEFAULT_BULK_RENAME_RULES } from './bulkRename'
+import {
+  applyBulkRenameRules,
+  DEFAULT_BULK_RENAME_RULES,
+  matchesBulkRenameSearchText,
+  type BulkRenameRules,
+} from './bulkRename'
 
 function withRules(overrides: Partial<BulkRenameRules>): BulkRenameRules {
   return {
@@ -50,5 +55,56 @@ describe('applyBulkRenameRules', () => {
     }), 4)
 
     expect(result).toBe('05-hat')
+  })
+
+  it('supports native regex replacement', () => {
+    const result = applyBulkRenameRules('kick_808_take12', withRules({
+      searchText: '(kick|808)_',
+      matchRegex: true,
+      replaceText: '',
+    }), 0)
+
+    expect(result).toBe('take12')
+  })
+
+  it('supports match-only mode without replacement', () => {
+    const result = applyBulkRenameRules('Kick LOOP', withRules({
+      searchText: 'loop',
+      replaceText: 'hit',
+      replaceMatches: false,
+    }), 0)
+
+    expect(result).toBe('Kick LOOP')
+  })
+
+  it('ignores invalid regex patterns safely', () => {
+    const result = applyBulkRenameRules('snare_loop', withRules({
+      searchText: '[',
+      matchRegex: true,
+      replaceText: 'x',
+    }), 0)
+
+    expect(result).toBe('snare_loop')
+  })
+})
+
+describe('matchesBulkRenameSearchText', () => {
+  it('matches using native regex when enabled', () => {
+    const rules = withRules({
+      searchText: '^kick_[0-9]+$',
+      matchRegex: true,
+    })
+
+    expect(matchesBulkRenameSearchText('kick_12', rules)).toBe(true)
+    expect(matchesBulkRenameSearchText('kick_loop', rules)).toBe(false)
+  })
+
+  it('returns false for invalid regex patterns', () => {
+    const rules = withRules({
+      searchText: '[',
+      matchRegex: true,
+    })
+
+    expect(matchesBulkRenameSearchText('kick_12', rules)).toBe(false)
   })
 })

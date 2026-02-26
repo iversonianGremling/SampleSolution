@@ -1,15 +1,16 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Play, Pause, Heart, Trash2, Pencil, Disc3, MoreHorizontal } from 'lucide-react'
 import { CustomCheckbox } from './CustomCheckbox'
 import { InstrumentIcon } from './InstrumentIcon'
 import { DrumRackPadPicker } from './DrumRackPadPicker'
 import type { SliceWithTrackExtended } from '../types'
-import { freqToNoteName } from '../utils/musicTheory'
+import { freqToNoteName, freqToPitchDisplay } from '../utils/musicTheory'
+import type { BulkRenameHighlightRange } from '../utils/bulkRename'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
-type DuplicatePairMatchType = 'exact' | 'content' | 'file'
+type DuplicatePairMatchType = 'exact' | 'content' | 'file' | 'near-duplicate'
 
 interface DuplicatePairRowMeta {
   pairId: string
@@ -17,7 +18,9 @@ interface DuplicatePairRowMeta {
   role: 'keep' | 'duplicate'
   partnerSampleId: number
   selectedForDelete: boolean
+  selectedDeleteSampleId: number | null
   canDelete: boolean
+  canDeletePartner: boolean
   matchType: DuplicatePairMatchType
   similarityPercent: number
 }
@@ -30,7 +33,6 @@ export type SourcesListColumnWidthKey =
   | 'year'
   | 'albumArtist'
   | 'genre'
-  | 'composer'
   | 'trackNumber'
   | 'discNumber'
   | 'tagBpm'
@@ -62,13 +64,12 @@ export type SourcesListColumnWidths = Record<SourcesListColumnWidthKey, number>
 
 export const DEFAULT_SOURCES_LIST_COLUMN_WIDTHS: SourcesListColumnWidths = {
   name: 260,
-  tags: 160,
+  tags: 168,
   artist: 140,
   album: 140,
   year: 80,
   albumArtist: 140,
   genre: 120,
-  composer: 140,
   trackNumber: 88,
   discNumber: 84,
   tagBpm: 88,
@@ -104,7 +105,6 @@ export interface SourcesListColumnVisibility {
   year: boolean
   albumArtist: boolean
   genre: boolean
-  composer: boolean
   trackNumber: boolean
   discNumber: boolean
   tagBpm: boolean
@@ -132,13 +132,13 @@ export interface SourcesListColumnVisibility {
 }
 
 export const DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY: SourcesListColumnVisibility = {
+  // Keep defaults centered on core sample-browser fields rather than track metadata.
   tags: true,
   artist: false,
   album: false,
   year: false,
   albumArtist: false,
   genre: false,
-  composer: false,
   trackNumber: false,
   discNumber: false,
   tagBpm: false,
@@ -146,17 +146,17 @@ export const DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY: SourcesListColumnVisibility
   isrc: false,
   bpm: true,
   key: true,
-  scale: false,
+  scale: true,
   envelope: false,
   brightness: false,
   noisiness: false,
   warmth: false,
   hardness: false,
   sharpness: false,
-  loudness: false,
-  sampleRate: false,
-  channels: false,
-  format: false,
+  loudness: true,
+  sampleRate: true,
+  channels: true,
+  format: true,
   polyphony: false,
   dateAdded: false,
   dateCreated: false,
@@ -188,8 +188,10 @@ interface SourcesSampleListRowProps {
   showInstrumentColumn?: boolean
   showSimilarity?: boolean
   bulkRenamePreviewName?: string | null
+  bulkRenameHighlightRanges?: BulkRenameHighlightRange[]
   duplicatePairMeta?: DuplicatePairRowMeta
   onToggleDuplicateDeleteTarget?: () => void
+  onKeepDuplicateSample?: () => void
 }
 
 function formatDuration(startTime: number, endTime: number): string {
@@ -210,6 +212,13 @@ function formatLoudness(value: number | null | undefined): string {
   return `${value.toFixed(1)} dB`
 }
 
+function formatFundamentalFrequency(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return '-'
+  const pitch = freqToPitchDisplay(value)
+  if (!pitch) return '-'
+  return `${pitch.noteWithOctave}${pitch.compactCentsLabel}`
+}
+
 function formatDate(value: string | null | undefined): string {
   if (!value) return '-'
   const date = new Date(value)
@@ -222,19 +231,34 @@ function formatTagBpm(value: number | null | undefined): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
 
+function getScaleDisplay(sample: SliceWithTrackExtended): string {
+  if (sample.keyEstimate && sample.keyEstimate.trim()) {
+    return sample.keyEstimate.trim()
+  }
+
+  if (sample.scale && sample.scale.trim()) {
+    const mode = sample.scale.trim().toLowerCase()
+    const tonic = sample.fundamentalFrequency ? freqToNoteName(sample.fundamentalFrequency) : null
+    return tonic ? `${tonic} ${mode}` : mode
+  }
+
+  return '-'
+}
+
 function getDuplicateMatchLabel(matchType: DuplicatePairMatchType): string {
   if (matchType === 'exact') return 'Fingerprint'
   if (matchType === 'content') return 'Content'
+  if (matchType === 'near-duplicate') return 'Near-duplicate'
   return 'File'
 }
 
 const TAG_COLUMN_LEFT_PADDING_PX = 4
 const TAG_CELL_RIGHT_BUFFER_PX = 4
-const TAG_GAP_PX = 4
+const TAG_GAP_PX = 5
 const TAG_CHAR_WIDTH_PX = 6
-const TAG_BADGE_BASE_WIDTH_PX = 10
-const TAG_BADGE_HORIZONTAL_PADDING_PX = 12
-const TAG_BADGE_MIN_VISIBLE_WIDTH_PX = 44
+const TAG_BADGE_BASE_WIDTH_PX = 14
+const TAG_BADGE_HORIZONTAL_PADDING_PX = 16
+const TAG_BADGE_MIN_VISIBLE_WIDTH_PX = 52
 
 function estimateTagBadgeWidth(label: string): number {
   return Math.max(
@@ -297,6 +321,44 @@ function SubjectiveBar({ value }: { value: number | null | undefined }) {
   )
 }
 
+function renderHighlightedRenameText(
+  value: string,
+  ranges: BulkRenameHighlightRange[],
+): ReactNode {
+  if (ranges.length === 0) return value
+
+  const orderedRanges = [...ranges]
+    .filter((range) => range.end > range.start)
+    .sort((a, b) => a.start - b.start)
+
+  if (orderedRanges.length === 0) return value
+
+  const fragments: ReactNode[] = []
+  let cursor = 0
+
+  orderedRanges.forEach((range, index) => {
+    const start = Math.max(cursor, Math.min(range.start, value.length))
+    const end = Math.max(start, Math.min(range.end, value.length))
+    if (start > cursor) {
+      fragments.push(value.slice(cursor, start))
+    }
+    if (end > start) {
+      fragments.push(
+        <span key={`bulk-rename-highlight-${index}`} className="text-sky-300">
+          {value.slice(start, end)}
+        </span>,
+      )
+    }
+    cursor = end
+  })
+
+  if (cursor < value.length) {
+    fragments.push(value.slice(cursor))
+  }
+
+  return fragments
+}
+
 export function SourcesSampleListRow({
   sample,
   isSelected,
@@ -320,8 +382,10 @@ export function SourcesSampleListRow({
   showInstrumentColumn = true,
   showSimilarity = false,
   bulkRenamePreviewName = null,
+  bulkRenameHighlightRanges = [],
   duplicatePairMeta = undefined,
   onToggleDuplicateDeleteTarget,
+  onKeepDuplicateSample,
 }: SourcesSampleListRowProps) {
   const [isEditingName, setIsEditingName] = useState(false)
   const [editingName, setEditingName] = useState(sample.name)
@@ -459,8 +523,8 @@ export function SourcesSampleListRow({
     setShowTagsPopup(true)
   }
 
-  const keyDisplay = (sample.fundamentalFrequency ? freqToNoteName(sample.fundamentalFrequency) : null) || sample.keyEstimate || '-'
-  const scaleDisplay = sample.scale || '-'
+  const keyDisplay = formatFundamentalFrequency(sample.fundamentalFrequency)
+  const scaleDisplay = getScaleDisplay(sample)
   const noisiness = sample.subjectiveNormalized?.noisiness ?? sample.noisiness
   const brightness = sample.subjectiveNormalized?.brightness ?? sample.brightness
   const warmth = sample.subjectiveNormalized?.warmth ?? sample.warmth
@@ -480,11 +544,14 @@ export function SourcesSampleListRow({
     : ''
   const duplicateCanToggleDelete =
     Boolean(duplicatePairMeta && duplicatePairMeta.canDelete && onToggleDuplicateDeleteTarget)
-  const duplicateActionLabel = duplicatePairMeta
-    ? duplicatePairMeta.selectedForDelete
-      ? 'Keep both'
-      : 'Delete this'
-    : ''
+  const duplicateCanKeepThis =
+    Boolean(duplicatePairMeta && duplicatePairMeta.canDeletePartner && onKeepDuplicateSample)
+  const duplicateKeepThisSelected =
+    Boolean(
+      duplicatePairMeta &&
+      duplicatePairMeta.selectedDeleteSampleId === duplicatePairMeta.partnerSampleId,
+    )
+  const duplicateDeleteThisSelected = Boolean(duplicatePairMeta?.selectedForDelete)
   const defaultRowStateClass = duplicatePairMeta
     ? duplicatePairMeta.selectedForDelete
       ? 'bg-red-500/10 border-red-500/60'
@@ -509,7 +576,10 @@ export function SourcesSampleListRow({
           ? 'bg-accent-primary/15 border-accent-primary/40'
           : defaultRowStateClass
       }`}
-      style={minWidth ? { minWidth } : undefined}
+      style={{
+        width: 'max-content',
+        minWidth: minWidth ?? '100%',
+      }}
     >
       <div className="flex items-center gap-1.5 sm:gap-2">
         <CustomCheckbox
@@ -671,37 +741,59 @@ export function SourcesSampleListRow({
             >
               <div className="min-w-0 flex-1">
                 {duplicatePairMeta && duplicateRoleLabel && (
-                  <div className="mb-0.5 flex items-center gap-1.5 text-[10px]">
-                    <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 font-medium ${duplicateRoleBadgeClass}`}>
-                      Pair {duplicatePairMeta.pairIndex} • {duplicateRoleLabel}
-                    </span>
-                    <span className="text-slate-500">
-                      {getDuplicateMatchLabel(duplicatePairMeta.matchType)} {duplicatePairMeta.similarityPercent}%
-                    </span>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        if (!duplicateCanToggleDelete) return
-                        onToggleDuplicateDeleteTarget?.()
-                      }}
-                      disabled={!duplicateCanToggleDelete}
-                      className={`ml-auto inline-flex items-center rounded border px-1.5 py-0.5 font-medium transition-colors ${
-                        !duplicatePairMeta.canDelete
-                          ? 'border-surface-border text-slate-500 cursor-not-allowed'
-                          : duplicatePairMeta.selectedForDelete
-                            ? 'border-red-500/40 bg-red-500/20 text-red-100 hover:bg-red-500/25'
-                            : 'border-red-500/35 text-red-200 hover:bg-red-500/15'
-                      }`}
-                    >
-                      {duplicatePairMeta.canDelete ? duplicateActionLabel : 'Protected'}
-                    </button>
+                  <div className="mb-0.5 space-y-1 text-[10px]">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className={`inline-flex flex-shrink-0 items-center rounded-full px-1.5 py-0.5 font-medium ${duplicateRoleBadgeClass}`}>
+                        Pair {duplicatePairMeta.pairIndex} • {duplicateRoleLabel}
+                      </span>
+                      <span className="truncate text-slate-500">
+                        {getDuplicateMatchLabel(duplicatePairMeta.matchType)} {duplicatePairMeta.similarityPercent}%
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (!duplicateCanKeepThis) return
+                          onKeepDuplicateSample?.()
+                        }}
+                        disabled={!duplicateCanKeepThis}
+                        className={`inline-flex h-5 items-center justify-center whitespace-nowrap rounded border px-2 text-[10px] font-medium transition-colors ${
+                          !duplicatePairMeta.canDeletePartner
+                            ? 'border-surface-border text-slate-500 cursor-not-allowed'
+                            : duplicateKeepThisSelected
+                              ? 'border-emerald-500/45 bg-emerald-500/20 text-emerald-100'
+                              : 'border-emerald-500/35 text-emerald-200 hover:bg-emerald-500/15'
+                        }`}
+                      >
+                        Keep
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (!duplicateCanToggleDelete) return
+                          onToggleDuplicateDeleteTarget?.()
+                        }}
+                        disabled={!duplicateCanToggleDelete}
+                        className={`inline-flex h-5 items-center justify-center whitespace-nowrap rounded border px-2 text-[10px] font-medium transition-colors ${
+                          !duplicatePairMeta.canDelete
+                            ? 'border-surface-border text-slate-500 cursor-not-allowed'
+                            : duplicateDeleteThisSelected
+                              ? 'border-red-500/40 bg-red-500/20 text-red-100 hover:bg-red-500/25'
+                              : 'border-red-500/35 text-red-200 hover:bg-red-500/15'
+                        }`}
+                      >
+                        {duplicatePairMeta.canDelete ? 'Delete' : 'Protected'}
+                      </button>
+                    </div>
                   </div>
                 )}
                 {bulkRenamePreviewName && bulkRenamePreviewName !== sample.name ? (
                   <>
                     <span className="block max-w-full truncate text-sm font-medium text-accent-primary" title={bulkRenamePreviewName}>
-                      {bulkRenamePreviewName}
+                      {renderHighlightedRenameText(bulkRenamePreviewName, bulkRenameHighlightRanges)}
                     </span>
                     <span className="block max-w-full truncate text-[10px] text-slate-500 line-through" title={sample.name}>
                       {sample.name}
@@ -712,11 +804,6 @@ export function SourcesSampleListRow({
                     <span className="block max-w-full truncate text-[13px] font-medium leading-tight text-white" title={sample.name}>
                       {sample.name}
                     </span>
-                    {sample.track.artist && !columnVisibility.artist && (
-                      <span className="block max-w-full truncate text-[10px] text-slate-500" title={sample.track.artist}>
-                        {sample.track.artist}
-                      </span>
-                    )}
                   </>
                 )}
               </div>
@@ -727,7 +814,7 @@ export function SourcesSampleListRow({
 
         {columnVisibility.tags && (
           <div
-            className="hidden sm:flex items-center justify-start gap-1 flex-shrink-0 pl-1 min-w-0"
+            className="flex items-center justify-start gap-1 flex-shrink-0 pl-1 min-w-0"
             style={{ width: columnWidths.tags }}
           >
             {visibleTags.map((tag) => (
@@ -739,13 +826,16 @@ export function SourcesSampleListRow({
                     onTagClick(tag.id)
                   }
                 }}
-                className={`inline-flex max-w-full min-w-0 items-center rounded-full px-1.5 py-0.5 text-[10px] leading-none ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
-                style={{
-                  backgroundColor: tag.color + '25',
-                  color: tag.color,
-                }}
+                className={`relative inline-flex h-6 max-w-full min-w-0 items-center overflow-hidden bg-surface-overlay/80 pl-3 pr-2.5 text-[11px] font-medium uppercase tracking-wide leading-none text-slate-200 ${
+                  onTagClick ? 'cursor-pointer transition-colors hover:bg-surface-base' : ''
+                }`}
                 title={onTagClick ? `Filter by ${tag.name}` : tag.name}
               >
+                <span
+                  className="absolute left-0 top-0 h-full w-[2px]"
+                  style={{ backgroundColor: tag.color }}
+                  aria-hidden="true"
+                />
                 <span className="min-w-0 truncate">{tag.name}</span>
               </span>
             ))}
@@ -757,7 +847,9 @@ export function SourcesSampleListRow({
                 onMouseEnter={handleTagPopupOpen}
                 onMouseLeave={handleTagPopupClose}
               >
-                <span className="text-[10px] leading-none text-slate-500 cursor-default">+{remainingTags}</span>
+                <span className="inline-flex h-6 items-center bg-surface-overlay/70 px-2 text-[11px] leading-none text-slate-400 cursor-default">
+                  +{remainingTags}
+                </span>
                 {showTagsPopup && typeof document !== 'undefined' && createPortal(
                   <div
                     ref={tagsPopupRef}
@@ -786,13 +878,16 @@ export function SourcesSampleListRow({
                               closeTimeoutRef.current = null
                             }
                           }}
-                          className={`inline-flex max-w-40 items-center rounded-full px-1.5 py-0.5 text-[10px] leading-none whitespace-nowrap ${onTagClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
-                          style={{
-                            backgroundColor: tag.color + '25',
-                            color: tag.color,
-                          }}
+                          className={`relative inline-flex h-6 max-w-40 items-center overflow-hidden bg-surface-overlay/80 pl-3 pr-2.5 text-[11px] font-medium uppercase tracking-wide leading-none whitespace-nowrap text-slate-200 ${
+                            onTagClick ? 'cursor-pointer transition-colors hover:bg-surface-base' : ''
+                          }`}
                           title={onTagClick ? `Filter by ${tag.name}` : tag.name}
                         >
+                          <span
+                            className="absolute left-0 top-0 h-full w-[2px]"
+                            style={{ backgroundColor: tag.color }}
+                            aria-hidden="true"
+                          />
                           <span className="truncate">{tag.name}</span>
                         </span>
                       ))}
@@ -806,175 +901,169 @@ export function SourcesSampleListRow({
         )}
 
         {columnVisibility.artist && (
-          <div className="hidden lg:flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.artist }}>
+          <div className="flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.artist }}>
             <span className="text-xs text-slate-400 truncate">{sample.track.artist || '-'}</span>
           </div>
         )}
 
         {columnVisibility.album && (
-          <div className="hidden lg:flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.album }}>
+          <div className="flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.album }}>
             <span className="text-xs text-slate-400 truncate">{sample.track.album || '-'}</span>
           </div>
         )}
 
         {columnVisibility.year && (
-          <div className="hidden lg:flex flex-shrink-0 justify-center" style={{ width: columnWidths.year }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.year }}>
             <span className="text-xs text-slate-400">{sample.track.year ?? '-'}</span>
           </div>
         )}
 
         {columnVisibility.albumArtist && (
-          <div className="hidden xl:flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.albumArtist }}>
+          <div className="flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.albumArtist }}>
             <span className="text-xs text-slate-400 truncate">{sample.track.albumArtist || '-'}</span>
           </div>
         )}
 
         {columnVisibility.genre && (
-          <div className="hidden xl:flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.genre }}>
+          <div className="flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.genre }}>
             <span className="text-xs text-slate-400 truncate">{sample.track.genre || '-'}</span>
           </div>
         )}
 
-        {columnVisibility.composer && (
-          <div className="hidden xl:flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.composer }}>
-            <span className="text-xs text-slate-400 truncate">{sample.track.composer || '-'}</span>
-          </div>
-        )}
-
         {columnVisibility.trackNumber && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.trackNumber }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.trackNumber }}>
             <span className="text-xs text-slate-400">{sample.track.trackNumber ?? '-'}</span>
           </div>
         )}
 
         {columnVisibility.discNumber && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.discNumber }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.discNumber }}>
             <span className="text-xs text-slate-400">{sample.track.discNumber ?? '-'}</span>
           </div>
         )}
 
         {columnVisibility.tagBpm && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.tagBpm }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.tagBpm }}>
             <span className="text-xs text-slate-400">{formatTagBpm(sample.track.tagBpm)}</span>
           </div>
         )}
 
         {columnVisibility.musicalKey && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.musicalKey }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.musicalKey }}>
             <span className="text-xs text-slate-400 truncate">{sample.track.musicalKey || '-'}</span>
           </div>
         )}
 
         {columnVisibility.isrc && (
-          <div className="hidden xl:flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.isrc }}>
+          <div className="flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.isrc }}>
             <span className="text-xs text-slate-400 truncate">{sample.track.isrc || '-'}</span>
           </div>
         )}
 
         {columnVisibility.bpm && (
-          <div className="hidden md:flex flex-shrink-0 justify-center" style={{ width: columnWidths.bpm }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.bpm }}>
             <span className="text-xs text-slate-400">{sample.bpm ? Math.round(sample.bpm) : '-'}</span>
           </div>
         )}
 
         {columnVisibility.key && (
-          <div className="hidden lg:flex flex-shrink-0 justify-center" style={{ width: columnWidths.key }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.key }}>
             <span className="text-xs text-slate-400">{keyDisplay}</span>
           </div>
         )}
 
         {columnVisibility.scale && (
-          <div className="hidden lg:flex flex-shrink-0 justify-center" style={{ width: columnWidths.scale }}>
-            <span className="text-xs text-slate-400 capitalize">{scaleDisplay}</span>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.scale }}>
+            <span className="text-xs text-slate-400 truncate">{scaleDisplay}</span>
           </div>
         )}
 
         {columnVisibility.envelope && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.envelope }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.envelope }}>
             <span className="text-xs text-slate-400 capitalize">{sample.envelopeType || '-'}</span>
           </div>
         )}
 
         {columnVisibility.brightness && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.brightness }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.brightness }}>
             <SubjectiveBar value={brightness} />
           </div>
         )}
 
         {columnVisibility.noisiness && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.noisiness }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.noisiness }}>
             <SubjectiveBar value={noisiness} />
           </div>
         )}
 
         {columnVisibility.warmth && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.warmth }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.warmth }}>
             <SubjectiveBar value={warmth} />
           </div>
         )}
 
         {columnVisibility.hardness && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.hardness }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.hardness }}>
             <SubjectiveBar value={hardness} />
           </div>
         )}
 
         {columnVisibility.sharpness && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.sharpness }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.sharpness }}>
             <SubjectiveBar value={sharpness} />
           </div>
         )}
 
         {columnVisibility.loudness && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.loudness }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.loudness }}>
             <span className="text-xs text-slate-400">{formatLoudness(sample.loudness)}</span>
           </div>
         )}
 
         {columnVisibility.sampleRate && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.sampleRate }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.sampleRate }}>
             <span className="text-xs text-slate-400">{formatSampleRate(sample.sampleRate)}</span>
           </div>
         )}
 
         {columnVisibility.channels && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.channels }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.channels }}>
             <span className="text-xs text-slate-400">{sample.channels ?? '-'}</span>
           </div>
         )}
 
         {columnVisibility.format && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.format }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.format }}>
             <span className="text-xs text-slate-400 uppercase">{sample.format || '-'}</span>
           </div>
         )}
 
         {columnVisibility.polyphony && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.polyphony }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.polyphony }}>
             <span className="text-xs text-slate-400">{sample.polyphony ?? '-'}</span>
           </div>
         )}
 
         {columnVisibility.dateAdded && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateAdded }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateAdded }}>
             <span className="text-xs text-slate-400">{formatDate(sample.dateAdded || sample.createdAt)}</span>
           </div>
         )}
 
         {columnVisibility.dateCreated && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateCreated }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateCreated }}>
             <span className="text-xs text-slate-400">{formatDate(sample.dateCreated)}</span>
           </div>
         )}
 
         {columnVisibility.dateModified && (
-          <div className="hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateModified }}>
+          <div className="flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateModified }}>
             <span className="text-xs text-slate-400">{formatDate(sample.dateModified)}</span>
           </div>
         )}
 
         {columnVisibility.path && (
-          <div className="hidden xl:flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.path }}>
+          <div className="flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.path }}>
             <span className="text-xs text-slate-400 truncate" title={sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || '-'}>
               {sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || '-'}
             </span>

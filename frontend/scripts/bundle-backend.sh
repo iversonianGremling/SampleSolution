@@ -20,17 +20,12 @@ echo "Cleaning previous bundle..."
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR"
 
-# Build backend if not already built
+# Always rebuild backend to avoid embedding stale dist output.
 echo ""
 echo "🔨 Building backend..."
 cd "$BACKEND_DIR"
-
-if [ ! -d "dist" ]; then
-    echo "Running npm run build..."
-    npm run build
-else
-    echo "✓ Backend already built (dist/ exists)"
-fi
+echo "Running npm run build..."
+npm run build
 
 # Copy built backend
 echo ""

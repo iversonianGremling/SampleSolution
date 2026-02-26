@@ -1,0 +1,6 @@
+services:
+  ollama:
+    gpus: all
+
+  ollama-analyzer:
+    gpus: all

@@ -118,11 +118,17 @@ A practical audio sample management and analysis platform for music producers an
 
 #### Requirements
 - Docker + Docker Compose
+- Optional: NVIDIA GPU + NVIDIA Container Toolkit (for GPU-accelerated Ollama)
 - Optional: Google account (OAuth features)
 
 #### Quick start
 ```bash
 docker-compose up -d
+```
+
+Optional GPU mode:
+```bash
+docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
 Optional downloader tool toggles (set in `.env`):
@@ -136,8 +142,26 @@ AUTO_INSTALL_DOWNLOAD_TOOLS=0
 AUTO_INSTALL_YTDLP=0
 AUTO_INSTALL_SPOTDL=0
 
+# Ollama endpoints
+OLLAMA_HOST=http://ollama:11434
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_ANALYZER_HOST=http://ollama-analyzer:11434
+OLLAMA_ANALYZER_MODEL=${OLLAMA_MODEL}
+OLLAMA_CPU_HOST=http://ollama:11434
+OLLAMA_CPU_MODEL=${OLLAMA_MODEL}
+
+# Tag review fallback chain + retry policy
+OLLAMA_TAG_REVIEW_TARGET_CHAIN=analyzer,primary,cpu
+OLLAMA_TAG_REVIEW_RETRIES_PER_TARGET=1
+OLLAMA_TAG_REVIEW_RETRY_DELAY_MS=200
+
 # Hard-disable Spotify import path at backend runtime
 ENABLE_SPOTIFY_IMPORT=1
+
+# Spotify OAuth / API credentials (required for Spotify playlist import)
+SPOTIFY_CLIENT_ID=your-spotify-client-id
+SPOTIFY_CLIENT_SECRET=your-spotify-client-secret
+BACKEND_URL=http://localhost:4000
 
 # Frontend build flags (requires rebuild)
 # Optional override if building frontend manually
@@ -243,7 +267,7 @@ fuser -k 4000/tcp
 fuser -k 3000/tcp
 ```
 
-**OAuth errors:** verify credentials in backend `.env` and Google API setup.
+**OAuth errors:** verify credentials in backend `.env` and provider app setup (Google and/or Spotify).
 
 **TensorFlow warnings on startup:** often informational CPU optimization logs.
 

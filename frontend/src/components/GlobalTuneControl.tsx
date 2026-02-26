@@ -21,19 +21,6 @@ const NOTE_HUES: Record<string, number> = {
 }
 
 const CHROMATIC_NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
-const WHITE_KEYS = ['C', 'D', 'E', 'F', 'G', 'A', 'B'] as const
-const BLACK_KEYS = [
-  { note: 'C#', left: 14 },
-  { note: 'D#', left: 34 },
-  { note: 'F#', left: 74 },
-  { note: 'G#', left: 94 },
-  { note: 'A#', left: 114 },
-] as const
-
-const keyboardWidth = 140
-const whiteKeyWidth = 20
-const blackKeyWidth = 12
-const TUNE_INFO_TEXT = 'To keep previews fast and smooth, tuning always uses Tape mode.'
 
 function TuneInfoIcon() {
   return (
@@ -41,7 +28,6 @@ function TuneInfoIcon() {
       <button
         type="button"
         className="inline-flex h-6 w-6 items-center justify-center rounded border border-surface-border bg-surface-base text-slate-300"
-        title={TUNE_INFO_TEXT}
         aria-label="Tuning info"
       >
         <Info size={12} className="text-slate-400" />
@@ -83,54 +69,30 @@ export function GlobalTuneControl({
             Tune All
           </span>
           <div
-            className="relative h-7 rounded-md border border-surface-border bg-surface-base overflow-hidden"
-            style={{ width: keyboardWidth }}
+            className="h-7 rounded-md border border-surface-border bg-surface-base overflow-hidden flex"
             role="group"
             aria-label="Tune all samples to note"
           >
-            <div className="absolute inset-0 flex">
-              {WHITE_KEYS.map((note) => {
-                const active = tuneTargetNote === note
-                const hue = NOTE_HUES[note]
-                return (
-                  <button
-                    key={note}
-                    type="button"
-                    onClick={() => onTuneTargetNoteChange(active ? null : note)}
-                    className="h-full border-r border-slate-500/20 text-[10px] font-semibold transition-colors"
-                    style={{
-                      width: whiteKeyWidth,
-                      borderRightWidth: note === 'B' ? 0 : 1,
-                      backgroundColor: active ? `hsl(${hue}, 62%, 46%)` : '#f8fafc',
-                      color: active ? '#ffffff' : '#334155',
-                    }}
-                    title={active ? `Clear tuning (${note})` : `Tune all to ${note}`}
-                  >
-                    {note}
-                  </button>
-                )
-              })}
-            </div>
-
-            {BLACK_KEYS.map(({ note, left }) => {
+            {CHROMATIC_NOTES.map((note, idx) => {
               const active = tuneTargetNote === note
               const hue = NOTE_HUES[note]
+              const isSharp = note.includes('#')
+              const inactiveBg = isSharp ? '#1c2330' : '#2a3340'
+              const inactiveText = isSharp ? '#b7c2d4' : '#cad4e4'
               return (
                 <button
                   key={note}
                   type="button"
                   onClick={() => onTuneTargetNoteChange(active ? null : note)}
-                  className="absolute top-0 h-[18px] rounded-b-md border border-slate-900/80 text-[9px] font-semibold transition-colors"
+                  className="h-full min-w-[22px] px-1 border-r border-slate-500/20 text-[10px] font-semibold transition-colors"
                   style={{
-                    left,
-                    width: blackKeyWidth,
-                    backgroundColor: active ? `hsl(${hue}, 62%, 44%)` : '#0f172a',
-                    color: '#f8fafc',
-                    zIndex: 2,
+                    borderRightWidth: idx === CHROMATIC_NOTES.length - 1 ? 0 : 1,
+                    backgroundColor: active ? `hsl(${hue}, 62%, 44%)` : inactiveBg,
+                    color: active ? '#ffffff' : inactiveText,
                   }}
                   title={active ? `Clear tuning (${note})` : `Tune all to ${note}`}
                 >
-                  {note.replace('#', '♯')}
+                  {note}
                 </button>
               )
             })}

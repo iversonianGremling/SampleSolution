@@ -159,9 +159,16 @@ export function LibraryImportModal({
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-surface-base/50" onClick={() => !isSubmitting && onClose()} />
+      <div
+        data-preserve-sources-sidebar="true"
+        className="fixed inset-0 z-40 bg-surface-base/50"
+        onClick={() => !isSubmitting && onClose()}
+      />
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-        <div className="pointer-events-auto w-full max-w-2xl bg-surface-raised border border-surface-border rounded-xl shadow-2xl overflow-hidden">
+        <div
+          data-preserve-sources-sidebar="true"
+          className="pointer-events-auto w-full max-w-2xl bg-surface-raised border border-surface-border rounded-xl shadow-2xl overflow-hidden"
+        >
           <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-surface-border">
             <div>
               <h3 className="text-lg font-semibold text-white">Import Library</h3>

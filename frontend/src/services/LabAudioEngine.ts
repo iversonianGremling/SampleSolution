@@ -1,6 +1,6 @@
 // cspell:ignore soundtouchjs
 import { getGlobalAudioVolume } from './globalAudioVolume'
-import { PitchShifter } from 'soundtouchjs'
+import { SoundTouch, SimpleFilter, WebAudioBufferSource, getWebAudioNode } from 'soundtouchjs'
 
 export type LabPitchMode = 'tape' | 'granular' | 'hq'
 export type FxSlotId = 'filter' | 'distortion' | 'compressor' | 'delay' | 'reverb'
@@ -11,6 +11,7 @@ export interface LabSettings {
   offset: number
   pitchSemitones: number
   pitchMode: LabPitchMode
+  preserveFormants: boolean
   velocity: number
   fadeIn: number
   fadeOut: number
@@ -50,6 +51,7 @@ export const DEFAULT_LAB_SETTINGS: LabSettings = {
   offset: 0,
   pitchSemitones: 0,
   pitchMode: 'hq',
+  preserveFormants: false,
   velocity: 1,
   fadeIn: 0,
   fadeOut: 0,
@@ -87,6 +89,32 @@ export const DEFAULT_LAB_SETTINGS: LabSettings = {
 
 type WaveformListener = (samples: Float32Array) => void
 type AnimationHandle = ReturnType<typeof globalThis.setTimeout> | number
+type PitchShiftQuality = 'granular' | 'hq'
+
+interface SoundTouchProfile {
+  bufferSize: number
+  sequenceMs: number
+  seekWindowMs: number
+  overlapMs: number
+  quickSeek: boolean
+}
+
+const SOUND_TOUCH_PROFILES: Record<PitchShiftQuality, SoundTouchProfile> = {
+  granular: {
+    bufferSize: 2048,
+    sequenceMs: 56,
+    seekWindowMs: 18,
+    overlapMs: 8,
+    quickSeek: true,
+  },
+  hq: {
+    bufferSize: 4096,
+    sequenceMs: 82,
+    seekWindowMs: 24,
+    overlapMs: 12,
+    quickSeek: false,
+  },
+}
 
 interface RealtimeFxChain {
   inputNode: AudioNode
@@ -94,6 +122,8 @@ interface RealtimeFxChain {
   analyser: AnalyserNode
   nodes: AudioNode[]
   velocityGain: GainNode
+  formantLowShelf: BiquadFilterNode
+  formantHighShelf: BiquadFilterNode
   outputGain: GainNode
   highpass: BiquadFilterNode
   peaking: BiquadFilterNode
@@ -302,6 +332,42 @@ const trimBufferFromOffset = (source: AudioBuffer, offsetSeconds: number) => {
   return trimmed
 }
 
+interface FormantCompensationSettings {
+  enabled: boolean
+  lowFrequency: number
+  highFrequency: number
+  lowGainDb: number
+  highGainDb: number
+}
+
+const getFormantCompensationSettings = (
+  settings: Pick<LabSettings, 'pitchMode' | 'pitchSemitones' | 'preserveFormants'>
+): FormantCompensationSettings => {
+  const semitones = Number.isFinite(settings.pitchSemitones) ? settings.pitchSemitones : 0
+
+  if (!settings.preserveFormants || settings.pitchMode === 'tape' || Math.abs(semitones) < 0.01) {
+    return {
+      enabled: false,
+      lowFrequency: 750,
+      highFrequency: 2800,
+      lowGainDb: 0,
+      highGainDb: 0,
+    }
+  }
+
+  const magnitude = clamp(Math.abs(semitones) / 12, 0, 1.5)
+  const baseGain = magnitude * 7
+  const shiftingUp = semitones > 0
+
+  return {
+    enabled: true,
+    lowFrequency: 750,
+    highFrequency: 2800,
+    lowGainDb: shiftingUp ? baseGain * 0.82 : -baseGain * 0.82,
+    highGainDb: shiftingUp ? -baseGain : baseGain,
+  }
+}
+
 const pitchShiftPreservingDuration = async (
   source: AudioBuffer,
   semitones: number,
@@ -338,6 +404,172 @@ const pitchShiftPreservingDuration = async (
   return shifted
 }
 
+const getPitchShiftQualityFromMode = (mode: LabPitchMode): PitchShiftQuality =>
+  mode === 'hq' ? 'hq' : 'granular'
+
+const configureSoundTouchProcessor = (
+  soundTouch: SoundTouch,
+  sampleRate: number,
+  quality: PitchShiftQuality
+): SoundTouchProfile => {
+  const profile = SOUND_TOUCH_PROFILES[quality]
+  soundTouch.stretch.setParameters(
+    sampleRate,
+    profile.sequenceMs,
+    profile.seekWindowMs,
+    profile.overlapMs
+  )
+  soundTouch.stretch.quickSeek = profile.quickSeek
+  return profile
+}
+
+const processPitchAndTempoWithGranularFallback = async (
+  source: AudioBuffer,
+  semitones: number,
+  tempo: number,
+  quality: PitchShiftQuality
+): Promise<AudioBuffer> => {
+  const safeTempo = clamp(tempo, 0.25, 4)
+  const needsPitchShift = Math.abs(semitones) > 0.001
+  const needsTempoChange = Math.abs(safeTempo - 1) > 0.001
+
+  if (!needsPitchShift && !needsTempoChange) {
+    return source
+  }
+
+  const pitched = needsPitchShift
+    ? await pitchShiftPreservingDuration(source, semitones, quality)
+    : source
+
+  if (!needsTempoChange) {
+    return pitched
+  }
+
+  const grainSize = quality === 'hq' ? 4096 : 1024
+  const overlap = quality === 'hq' ? 0.86 : 0.64
+  const stretchFactor = 1 / safeTempo
+  const stretched = new AudioBuffer({
+    numberOfChannels: pitched.numberOfChannels,
+    length: Math.max(1, Math.floor(pitched.length * stretchFactor)),
+    sampleRate: pitched.sampleRate,
+  })
+
+  for (let channel = 0; channel < pitched.numberOfChannels; channel++) {
+    const inData = pitched.getChannelData(channel)
+    const stretchedData = await granularTimeStretch(inData, stretchFactor, grainSize, overlap)
+    const outData = stretched.getChannelData(channel)
+
+    if (stretchedData.length >= outData.length) {
+      outData.set(stretchedData.subarray(0, outData.length))
+    } else {
+      outData.set(stretchedData)
+      outData.fill(0, stretchedData.length)
+    }
+
+    await yieldToMainThread()
+  }
+
+  return stretched
+}
+
+const processPitchAndTempoWithSoundTouch = async (
+  source: AudioBuffer,
+  semitones: number,
+  tempo: number,
+  quality: PitchShiftQuality
+): Promise<AudioBuffer> => {
+  const safeTempo = clamp(tempo, 0.25, 4)
+  const soundTouch = new SoundTouch()
+  const profile = configureSoundTouchProcessor(soundTouch, source.sampleRate, quality)
+
+  soundTouch.pitchSemitones = semitones
+  soundTouch.tempo = safeTempo
+
+  const sourceProvider = new WebAudioBufferSource(source)
+  const filter = new SimpleFilter(sourceProvider, soundTouch, () => {
+    // no-op: offline extraction stops once frames are exhausted
+  })
+
+  const frameBlock = Math.max(1024, profile.bufferSize)
+  const scratch = new Float32Array(frameBlock * 2)
+  const chunks: Float32Array[] = []
+  let totalFrames = 0
+
+  while (true) {
+    const extractedFrames = filter.extract(scratch, frameBlock)
+    if (extractedFrames <= 0) break
+
+    chunks.push(scratch.slice(0, extractedFrames * 2))
+    totalFrames += extractedFrames
+
+    if (chunks.length % 24 === 0) {
+      await yieldToMainThread()
+    }
+  }
+
+  if (totalFrames <= 0) {
+    return source
+  }
+
+  const rendered = new AudioBuffer({
+    numberOfChannels: source.numberOfChannels,
+    length: totalFrames,
+    sampleRate: source.sampleRate,
+  })
+
+  const leftOut = rendered.getChannelData(0)
+  const rightOut = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : null
+  let frameOffset = 0
+
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    const chunk = chunks[chunkIndex]
+    const frames = Math.floor(chunk.length / 2)
+
+    for (let i = 0; i < frames; i++) {
+      const base = i * 2
+      leftOut[frameOffset + i] = chunk[base]
+      if (rightOut) {
+        rightOut[frameOffset + i] = chunk[base + 1]
+      }
+    }
+
+    frameOffset += frames
+
+    if (chunkIndex % 24 === 23) {
+      await yieldToMainThread()
+    }
+  }
+
+  return rendered
+}
+
+const processPitchAndTempoPreservingDuration = async (
+  source: AudioBuffer,
+  semitones: number,
+  tempo: number,
+  quality: PitchShiftQuality
+): Promise<AudioBuffer> => {
+  const safeTempo = clamp(tempo, 0.25, 4)
+  const needsPitchShift = Math.abs(semitones) > 0.001
+  const needsTempoChange = Math.abs(safeTempo - 1) > 0.001
+
+  if (!needsPitchShift && !needsTempoChange) {
+    return source
+  }
+
+  // SoundTouchJS is stereo-first; keep a safe fallback for uncommon channel layouts.
+  if (source.numberOfChannels > 2) {
+    return processPitchAndTempoWithGranularFallback(source, semitones, safeTempo, quality)
+  }
+
+  try {
+    return await processPitchAndTempoWithSoundTouch(source, semitones, safeTempo, quality)
+  } catch (error) {
+    console.warn('SoundTouch pitch processing failed; falling back to granular algorithm.', error)
+    return processPitchAndTempoWithGranularFallback(source, semitones, safeTempo, quality)
+  }
+}
+
 export async function renderLabAudioBuffer(
   source: AudioBuffer,
   settings: LabSettings
@@ -345,49 +577,19 @@ export async function renderLabAudioBuffer(
   const trimmed = trimBufferFromOffset(source, settings.offset)
   const pitchRatio = Math.pow(2, settings.pitchSemitones / 12)
   const isTapeMode = settings.pitchMode === 'tape'
-
-  const pitched =
-    !isTapeMode && Math.abs(settings.pitchSemitones) > 0.001
-      ? await pitchShiftPreservingDuration(
+  const nonTapeQuality = getPitchShiftQualityFromMode(settings.pitchMode)
+  const timePitchProcessed =
+    !isTapeMode
+      ? await processPitchAndTempoPreservingDuration(
           trimmed,
           settings.pitchSemitones,
-          settings.pitchMode === 'hq' ? 'hq' : 'granular'
+          settings.tempo,
+          nonTapeQuality
         )
       : trimmed
 
-  // Apply tempo time-stretching for granular/hq modes
-  const tempoFactor = !isTapeMode ? clamp(settings.tempo, 0.25, 4) : 1
-  let tempoStretched = pitched
-  if (!isTapeMode && Math.abs(tempoFactor - 1) > 0.001) {
-    const quality = settings.pitchMode === 'hq' ? 'hq' : 'granular'
-    const grainSize = quality === 'hq' ? 4096 : 1024
-    const overlap = quality === 'hq' ? 0.86 : 0.64
-    const stretchFactor = 1 / tempoFactor
-
-    const stretched = new AudioBuffer({
-      numberOfChannels: pitched.numberOfChannels,
-      length: Math.max(1, Math.floor(pitched.length * stretchFactor)),
-      sampleRate: pitched.sampleRate,
-    })
-
-    for (let channel = 0; channel < pitched.numberOfChannels; channel++) {
-      const inData = pitched.getChannelData(channel)
-      const stretchedData = await granularTimeStretch(inData, stretchFactor, grainSize, overlap)
-      const outData = stretched.getChannelData(channel)
-      if (stretchedData.length >= outData.length) {
-        outData.set(stretchedData.subarray(0, outData.length))
-      } else {
-        outData.set(stretchedData)
-        outData.fill(0, stretchedData.length)
-      }
-
-      await yieldToMainThread()
-    }
-    tempoStretched = stretched
-  }
-
   const playbackRate = isTapeMode ? clamp(pitchRatio, 0.25, 4) : 1
-  const baseDuration = tempoStretched.duration / playbackRate
+  const baseDuration = timePitchProcessed.duration / playbackRate
   const delayTail = settings.delayEnabled ? clamp(settings.delayTime, 0, 2) * 3.8 : 0
   const reverbTail = settings.reverbEnabled
     ? clamp(settings.reverbSeconds, 0.1, 12) * (1 + clamp(settings.reverbDecay, 0.5, 8) * 0.35)
@@ -395,13 +597,13 @@ export async function renderLabAudioBuffer(
   const totalDuration = Math.max(0.05, baseDuration + delayTail + reverbTail)
 
   const offline = new OfflineAudioContext(
-    tempoStretched.numberOfChannels,
-    Math.ceil(totalDuration * tempoStretched.sampleRate),
-    tempoStretched.sampleRate
+    timePitchProcessed.numberOfChannels,
+    Math.ceil(totalDuration * timePitchProcessed.sampleRate),
+    timePitchProcessed.sampleRate
   )
 
   const sourceNode = offline.createBufferSource()
-  sourceNode.buffer = tempoStretched
+  sourceNode.buffer = timePitchProcessed
   sourceNode.playbackRate.value = playbackRate
 
   const fadeGain = offline.createGain()
@@ -413,8 +615,25 @@ export async function renderLabAudioBuffer(
   sourceNode.connect(fadeGain)
   fadeGain.connect(velocityGain)
 
-  const fxOrder = settings.fxOrder || DEFAULT_FX_ORDER
+  const formantCompensation = getFormantCompensationSettings(settings)
   let serialNode: AudioNode = velocityGain
+  if (formantCompensation.enabled) {
+    const formantLowShelf = offline.createBiquadFilter()
+    formantLowShelf.type = 'lowshelf'
+    formantLowShelf.frequency.value = clamp(formantCompensation.lowFrequency, 80, 4000)
+    formantLowShelf.gain.value = clamp(formantCompensation.lowGainDb, -24, 24)
+
+    const formantHighShelf = offline.createBiquadFilter()
+    formantHighShelf.type = 'highshelf'
+    formantHighShelf.frequency.value = clamp(formantCompensation.highFrequency, 400, 12000)
+    formantHighShelf.gain.value = clamp(formantCompensation.highGainDb, -24, 24)
+
+    serialNode.connect(formantLowShelf)
+    formantLowShelf.connect(formantHighShelf)
+    serialNode = formantHighShelf
+  }
+
+  const fxOrder = settings.fxOrder || DEFAULT_FX_ORDER
 
   for (const slotId of fxOrder) {
     switch (slotId) {
@@ -646,10 +865,43 @@ export async function audioBufferToWavArrayBufferAsync(audioBuffer: AudioBuffer)
   return wav
 }
 
+class RealtimeSoundTouchShifter {
+  private readonly soundTouch: SoundTouch
+  private readonly node: ScriptProcessorNode
+
+  constructor(
+    context: AudioContext,
+    buffer: AudioBuffer,
+    quality: PitchShiftQuality,
+    onEnded?: () => void
+  ) {
+    this.soundTouch = new SoundTouch()
+    const profile = configureSoundTouchProcessor(this.soundTouch, context.sampleRate, quality)
+    const source = new WebAudioBufferSource(buffer)
+    const filter = new SimpleFilter(source, this.soundTouch, onEnded)
+    this.node = getWebAudioNode(context, filter, () => {
+      // no-op: waveform timing is handled elsewhere
+    }, profile.bufferSize)
+  }
+
+  setSettings(tempo: number, pitchSemitones: number) {
+    this.soundTouch.tempo = clamp(tempo, 0.25, 4)
+    this.soundTouch.pitchSemitones = pitchSemitones
+  }
+
+  connect(toNode: AudioNode) {
+    this.node.connect(toNode)
+  }
+
+  disconnect() {
+    this.node.disconnect()
+  }
+}
+
 export class LabAudioEngine {
   private context: AudioContext | null = null
   private activeSource: AudioBufferSourceNode | null = null
-  private activePitchShifter: PitchShifter | null = null
+  private activePitchShifter: RealtimeSoundTouchShifter | null = null
   private activeChain: RealtimeFxChain | null = null
   private activeNodes: AudioNode[] = []
   private analyser: AnalyserNode | null = null
@@ -734,6 +986,10 @@ export class LabAudioEngine {
 
     const fadeGain = ctx.createGain()
     const velocityGain = ctx.createGain()
+    const formantLowShelf = ctx.createBiquadFilter()
+    formantLowShelf.type = 'lowshelf'
+    const formantHighShelf = ctx.createBiquadFilter()
+    formantHighShelf.type = 'highshelf'
 
     const highpass = ctx.createBiquadFilter()
     const peaking = ctx.createBiquadFilter()
@@ -793,6 +1049,8 @@ export class LabAudioEngine {
 
     // Build serial chain based on fxOrder
     fadeGain.connect(velocityGain)
+    velocityGain.connect(formantLowShelf)
+    formantLowShelf.connect(formantHighShelf)
 
     const fxOrder = settings.fxOrder || DEFAULT_FX_ORDER
 
@@ -804,7 +1062,7 @@ export class LabAudioEngine {
       reverb: { input: reverbSplit, output: reverbMerge },
     }
 
-    let currentNode: AudioNode = velocityGain
+    let currentNode: AudioNode = formantHighShelf
     for (const slotId of fxOrder) {
       const mod = moduleIO[slotId]
       if (mod) {
@@ -817,6 +1075,8 @@ export class LabAudioEngine {
     const nodes: AudioNode[] = [
       fadeGain,
       velocityGain,
+      formantLowShelf,
+      formantHighShelf,
       highpass,
       peaking,
       lowpass,
@@ -848,6 +1108,8 @@ export class LabAudioEngine {
       analyser,
       nodes,
       velocityGain,
+      formantLowShelf,
+      formantHighShelf,
       outputGain,
       highpass,
       peaking,
@@ -892,6 +1154,28 @@ export class LabAudioEngine {
       clamp(settings.outputGain, 0, 2) * clamp(getGlobalAudioVolume(), 0, 1),
       now,
       0.015
+    )
+
+    const formantCompensation = getFormantCompensationSettings(settings)
+    chain.formantLowShelf.frequency.setTargetAtTime(
+      clamp(formantCompensation.lowFrequency, 80, 4000),
+      now,
+      0.02
+    )
+    chain.formantLowShelf.gain.setTargetAtTime(
+      formantCompensation.enabled ? clamp(formantCompensation.lowGainDb, -24, 24) : 0,
+      now,
+      0.03
+    )
+    chain.formantHighShelf.frequency.setTargetAtTime(
+      clamp(formantCompensation.highFrequency, 400, 12000),
+      now,
+      0.02
+    )
+    chain.formantHighShelf.gain.setTargetAtTime(
+      formantCompensation.enabled ? clamp(formantCompensation.highGainDb, -24, 24) : 0,
+      now,
+      0.03
     )
 
     chain.highpass.type = settings.highpassEnabled ? 'highpass' : 'allpass'
@@ -1011,9 +1295,10 @@ export class LabAudioEngine {
     }
 
     if (this.activePitchShifter) {
-      this.activePitchShifter.tempo = clamp(settings.tempo, 0.25, 4)
-      this.activePitchShifter.pitchSemitones =
+      this.activePitchShifter.setSettings(
+        clamp(settings.tempo, 0.25, 4),
         settings.pitchMode === 'tape' ? 0 : settings.pitchSemitones
+      )
     }
   }
 
@@ -1085,10 +1370,9 @@ export class LabAudioEngine {
     let playbackDuration = trimmed.duration
 
     if (shouldUseRealtimePitchShifter) {
-      const bufferSize = settings.pitchMode === 'hq' ? 4096 : 2048
-      const shifter = new PitchShifter(ctx, trimmed, bufferSize, notifyEnded)
-      shifter.tempo = clamp(settings.tempo, 0.25, 4)
-      shifter.pitchSemitones = settings.pitchSemitones
+      const quality = getPitchShiftQualityFromMode(settings.pitchMode)
+      const shifter = new RealtimeSoundTouchShifter(ctx, trimmed, quality, notifyEnded)
+      shifter.setSettings(clamp(settings.tempo, 0.25, 4), settings.pitchSemitones)
       shifter.connect(chain.inputNode)
       this.activePitchShifter = shifter
       playbackDuration = trimmed.duration / clamp(settings.tempo, 0.25, 4)

@@ -46,6 +46,7 @@ export const slices = sqliteTable('slices', {
   startTime: real('start_time').notNull(),
   endTime: real('end_time').notNull(),
   filePath: text('file_path'),
+  sampleType: text('sample_type', { enum: ['oneshot', 'loop'] }),
   favorite: integer('favorite').notNull().default(0),
   sampleModified: integer('sample_modified').notNull().default(0),
   sampleModifiedAt: text('sample_modified_at'),
@@ -59,10 +60,10 @@ export const tags = sqliteTable('tags', {
   name: text('name').notNull().unique(),
   color: text('color').notNull(),
   category: text('category', {
-    enum: ['general', 'type', 'energy', 'instrument', 'filename'],
+    enum: ['instrument', 'filename'],
   })
     .notNull()
-    .default('general'),
+    .default('instrument'),
 })
 
 export const trackTags = sqliteTable('track_tags', {
@@ -166,6 +167,8 @@ export const audioFeatures = sqliteTable('audio_features', {
   genreClasses: text('genre_classes'), // JSON: [{genre, confidence}, ...]
   genrePrimary: text('genre_primary'),
   yamnetEmbeddings: text('yamnet_embeddings'), // JSON: 1024-dim array for similarity
+  mlEmbeddings: text('ml_embeddings'), // JSON: model embeddings (e.g. 2048-dim PANNs)
+  mlEmbeddingModel: text('ml_embedding_model'), // e.g. "panns_cnn14" or "yamnet"
   moodClasses: text('mood_classes'), // JSON: [{mood, confidence}, ...]
   // Phase 5: EBU R128 Loudness & Sound Event Detection
   loudnessIntegrated: real('loudness_integrated'), // LUFS

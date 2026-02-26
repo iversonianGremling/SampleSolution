@@ -276,6 +276,45 @@ export function freqToNoteName(hz: number): string | null {
   return NOTES[((midi % 12) + 12) % 12]
 }
 
+export interface PitchDisplayInfo {
+  note: (typeof NOTES)[number]
+  octave: number
+  cents: number
+  noteWithOctave: string
+  centsLabel: string
+  compactCentsLabel: string
+  fullLabel: string
+  compactLabel: string
+}
+
+/**
+ * Convert a frequency in Hz to note+octave and signed cents deviation.
+ */
+export function freqToPitchDisplay(hz: number): PitchDisplayInfo | null {
+  if (!Number.isFinite(hz) || hz <= 0) return null
+
+  const midiFloat = 12 * Math.log2(hz / 440) + 69
+  const nearestMidi = Math.round(midiFloat)
+  const note = NOTES[((nearestMidi % 12) + 12) % 12]
+  const octave = Math.floor(nearestMidi / 12) - 1
+  const cents = Math.round((midiFloat - nearestMidi) * 100)
+  const centsPrefix = cents >= 0 ? '+' : ''
+  const centsLabel = `${centsPrefix}${cents} cents`
+  const compactCentsLabel = `${centsPrefix}${cents}c`
+  const noteWithOctave = `${note}${octave}`
+
+  return {
+    note,
+    octave,
+    cents,
+    noteWithOctave,
+    centsLabel,
+    compactCentsLabel,
+    fullLabel: `${noteWithOctave} ${centsLabel}`,
+    compactLabel: `${noteWithOctave} ${compactCentsLabel}`,
+  }
+}
+
 const DEGREE_NAMES = [
   'Tonic (I)',
   'Neapolitan (bII)',

@@ -1,20 +1,43 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Play, Pause, Heart, Download, Sparkles, Activity, Disc3, Trash2, Wand2, Loader2, Crosshair, X } from 'lucide-react'
+import {
+  Play,
+  Pause,
+  Heart,
+  Download,
+  Plus,
+  Sparkles,
+  Activity,
+  Disc3,
+  Trash2,
+  Wand2,
+  Loader2,
+  Crosshair,
+  X,
+  Pencil,
+} from 'lucide-react'
 import type { SliceWithTrackExtended, Tag, Folder, AudioFeatures } from '../types'
-import { getSliceDownloadUrl, deleteSlice, batchReanalyzeSamples } from '../api/client'
+import { getSliceDownloadUrl, deleteSlice, batchReanalyzeSamples, type UpdateSlicePayload } from '../api/client'
 import { InstrumentIcon } from './InstrumentIcon'
-import { freqToNoteName } from '../utils/musicTheory'
+import { freqToNoteName, freqToPitchDisplay } from '../utils/musicTheory'
 import { SliceWaveform, type SliceWaveformRef } from './SliceWaveform'
 import { DrumRackPadPicker } from './DrumRackPadPicker'
 import { ConfirmModal } from './ConfirmModal'
+import { SampleTypeIcon } from './SampleTypeIcon'
 import { useAppDialog } from '../hooks/useAppDialog'
 import { prepareTunePreviewPlayback } from '../services/tunePreviewAudio'
 import {
   getTunePlaybackMode,
+  getTunePreserveFormants,
   setTunePlaybackMode,
+  setTunePreserveFormants,
   type TunePlaybackMode,
 } from '../utils/tunePlaybackMode'
+import {
+  ENVELOPE_TYPE_OPTIONS,
+  normalizeEnvelopeTypeForEdit,
+  type EnvelopeTypeValue,
+} from '../constants/envelopeTypes'
 
 interface SampleDetailsViewProps {
   sample: SliceWithTrackExtended | null
@@ -26,6 +49,7 @@ interface SampleDetailsViewProps {
   onAddToFolder: (folderId: number, sliceId: number) => void
   onRemoveFromFolder: (folderId: number, sliceId: number) => void
   onUpdateName: (sliceId: number, name: string) => void
+  onUpdateSample?: (sliceId: number, data: UpdateSlicePayload) => void
   onTagClick?: (tagId: number) => void
   onSampleDeleted?: (sliceId: number) => void
   onSelectSample?: (sampleId: number) => void
@@ -43,6 +67,39 @@ const PITCH_ALGORITHM_OPTIONS: Array<{ value: TunePlaybackMode; label: string }>
   { value: 'granular', label: 'Granular' },
   { value: 'hq', label: 'HQ' },
 ]
+const NOTE_OPTIONS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
+
+function normalizeTagName(value: string | null | undefined): string {
+  return (value || '').trim().toLowerCase()
+}
+
+function isOneShotName(value: string | null | undefined): boolean {
+  const normalized = normalizeTagName(value)
+  return normalized === 'oneshot' || normalized === 'one-shot' || normalized === 'one shot'
+}
+
+function isLoopName(value: string | null | undefined): boolean {
+  const normalized = normalizeTagName(value)
+  return normalized === 'loop' || normalized === 'loops'
+}
+
+function normalizeTagCategory(category: string | null | undefined): string {
+  const normalized = (category || 'instrument').trim().toLowerCase()
+  if (
+    normalized === 'sample-type' ||
+    normalized === 'sample type' ||
+    normalized === 'sample_type' ||
+    normalized === 'type'
+  ) {
+    return 'sample-type'
+  }
+  if (normalized === 'instrument' || normalized === 'filename') return normalized
+  return 'instrument'
+}
+
+function isSampleTypeTag(tag: Pick<Tag, 'name' | 'category'>): boolean {
+  return normalizeTagCategory(tag.category) === 'sample-type' || isOneShotName(tag.name) || isLoopName(tag.name)
+}
 
 // Helper component to display a feature value
 function FeatureItem({
@@ -182,6 +239,7 @@ function SimilarSamplesSection({
 
           return (
             <button
+              type="button"
               key={sampleIdNum}
               onMouseEnter={() => handleMouseEnter(sampleIdNum)}
               onMouseLeave={handleMouseLeave}
@@ -207,6 +265,7 @@ function SimilarSamplesSection({
       </div>
       {onFilterBySimilarity && (
         <button
+          type="button"
           onClick={() => onFilterBySimilarity(sampleId, sampleName)}
           className="mt-1.5 w-full px-2.5 py-1.5 bg-accent-warm/10 hover:bg-accent-warm/15 text-accent-warm rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5"
         >
@@ -220,16 +279,17 @@ function SimilarSamplesSection({
 
 export function SampleDetailsView({
   sample,
-  allTags: _allTags,
+  allTags,
   folders: _folders,
   onSelectSample,
   onFilterBySimilarity,
   onToggleFavorite,
-  onAddTag: _onAddTag,
-  onRemoveTag: _onRemoveTag,
+  onAddTag,
+  onRemoveTag,
   onAddToFolder: _onAddToFolder,
   onRemoveFromFolder: _onRemoveFromFolder,
-  onUpdateName: _onUpdateName,
+  onUpdateName,
+  onUpdateSample,
   onTagClick,
   onSampleDeleted,
   pitchSemitones: externalPitch = 0,
@@ -244,9 +304,21 @@ export function SampleDetailsView({
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [deleteSourceFile, setDeleteSourceFile] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [editingName, setEditingName] = useState('')
+  const [isEditingSampleType, setIsEditingSampleType] = useState(false)
+  const [editingSampleType, setEditingSampleType] = useState<'oneshot' | 'loop' | null>(null)
+  const [isEditingEnvelope, setIsEditingEnvelope] = useState(false)
+  const [editingEnvelope, setEditingEnvelope] = useState<EnvelopeTypeValue | ''>('')
+  const [isEditingNote, setIsEditingNote] = useState(false)
+  const [editingNote, setEditingNote] = useState<string | null>(null)
+  const [instrumentToAddId, setInstrumentToAddId] = useState<number | ''>('')
+  const [editingInstrumentTagId, setEditingInstrumentTagId] = useState<number | null>(null)
+  const [replacementInstrumentTagId, setReplacementInstrumentTagId] = useState<number | ''>('')
   const [manualPitch, setManualPitch] = useState(externalPitch)
   const [hasManualPitchOverride, setHasManualPitchOverride] = useState(false)
   const [pitchAlgorithm, setPitchAlgorithm] = useState<TunePlaybackMode>(() => getTunePlaybackMode())
+  const [preserveFormants, setPreserveFormants] = useState<boolean>(() => getTunePreserveFormants())
   const [waveformSourceUrl, setWaveformSourceUrl] = useState<string | null>(null)
   const [waveformPlaybackSemitones, setWaveformPlaybackSemitones] = useState(externalPitch)
   const [isPreparingWaveform, setIsPreparingWaveform] = useState(false)
@@ -273,6 +345,11 @@ export function SampleDetailsView({
   const handlePitchAlgorithmChange = (mode: TunePlaybackMode) => {
     setPitchAlgorithm(mode)
     setTunePlaybackMode(mode)
+  }
+
+  const handlePreserveFormantsChange = (enabled: boolean) => {
+    setPreserveFormants(enabled)
+    setTunePreserveFormants(enabled)
   }
 
   const setPreparedWaveform = useCallback((nextSourceUrl: string | null, nextPlaybackSemitones: number) => {
@@ -316,6 +393,7 @@ export function SampleDetailsView({
           getSliceDownloadUrl(sample.id),
           {
             immediateFallbackToTape: false,
+            preserveFormants: mode !== 'tape' && preserveFormants,
           }
         )
 
@@ -338,7 +416,7 @@ export function SampleDetailsView({
     return () => {
       cancelled = true
     }
-  }, [sample?.id, manualPitch, hasManualPitchOverride, pitchAlgorithm, setPreparedWaveform])
+  }, [sample?.id, manualPitch, hasManualPitchOverride, pitchAlgorithm, preserveFormants, setPreparedWaveform])
 
   useEffect(() => {
     return () => {
@@ -361,6 +439,21 @@ export function SampleDetailsView({
   useEffect(() => {
     setIsPlaying(false)
     setIsWaveformReady(false)
+    const nextFundamentalNote =
+      sample?.fundamentalFrequency != null
+        ? freqToNoteName(sample.fundamentalFrequency)
+        : null
+    setIsEditingName(false)
+    setEditingName(sample?.name ?? '')
+    setIsEditingSampleType(false)
+    setEditingSampleType(sample?.sampleType ?? null)
+    setIsEditingEnvelope(false)
+    setEditingEnvelope(normalizeEnvelopeTypeForEdit(sample?.envelopeType))
+    setIsEditingNote(false)
+    setEditingNote(nextFundamentalNote)
+    setInstrumentToAddId('')
+    setEditingInstrumentTagId(null)
+    setReplacementInstrumentTagId('')
     setManualPitch(externalPitch)
     setHasManualPitchOverride(false)
     if (waveformRef.current) {
@@ -433,7 +526,125 @@ export function SampleDetailsView({
 
   const duration = sample.endTime - sample.startTime
   const fundamentalNote = sample.fundamentalFrequency != null ? freqToNoteName(sample.fundamentalFrequency) : null
+  const fundamentalPitch = sample.fundamentalFrequency != null ? freqToPitchDisplay(sample.fundamentalFrequency) : null
   const isAutoPitch = externalPitch !== 0 && Math.abs(manualPitch - externalPitch) < 0.01
+  const sampleTypeLabel = sample.sampleType === 'oneshot' ? 'One-shot' : sample.sampleType === 'loop' ? 'Loop' : 'Unspecified'
+  const allInstrumentTags = allTags.filter((tag) => normalizeTagCategory(tag.category) === 'instrument' && !isSampleTypeTag(tag))
+  const instrumentTags = sample.tags.filter((tag) => normalizeTagCategory(tag.category) === 'instrument' && !isSampleTypeTag(tag))
+  const instrumentTagIds = new Set(instrumentTags.map((tag) => tag.id))
+  const availableInstrumentTags = allInstrumentTags.filter((tag) => !instrumentTagIds.has(tag.id))
+  const replacementInstrumentOptions = allInstrumentTags.filter((tag) => tag.id !== editingInstrumentTagId)
+  const editingInstrumentTag = editingInstrumentTagId == null
+    ? null
+    : instrumentTags.find((tag) => tag.id === editingInstrumentTagId) || null
+
+  const updateSampleField = (patch: UpdateSlicePayload) => {
+    if (onUpdateSample) {
+      onUpdateSample(sample.id, patch)
+      return
+    }
+
+    if (typeof patch.name === 'string') {
+      onUpdateName(sample.id, patch.name)
+    }
+  }
+
+  const commitNameEdit = () => {
+    const trimmed = editingName.trim()
+    if (!trimmed) {
+      void showAlert({
+        title: 'Invalid Name',
+        message: 'Sample name cannot be empty.',
+      })
+      return
+    }
+
+    if (trimmed !== sample.name) {
+      updateSampleField({ name: trimmed })
+    }
+    setIsEditingName(false)
+  }
+
+  const cancelNameEdit = () => {
+    setEditingName(sample.name)
+    setIsEditingName(false)
+  }
+
+  const commitSampleTypeEdit = () => {
+    if (editingSampleType !== (sample.sampleType ?? null)) {
+      updateSampleField({ sampleType: editingSampleType })
+    }
+    setIsEditingSampleType(false)
+  }
+
+  const cancelSampleTypeEdit = () => {
+    setEditingSampleType(sample.sampleType ?? null)
+    setIsEditingSampleType(false)
+  }
+
+  const commitEnvelopeEdit = () => {
+    const normalized = editingEnvelope || null
+    const currentEnvelope = normalizeEnvelopeTypeForEdit(sample.envelopeType) || null
+    if (normalized !== currentEnvelope) {
+      updateSampleField({ envelopeType: normalized })
+    }
+    setIsEditingEnvelope(false)
+  }
+
+  const cancelEnvelopeEdit = () => {
+    setEditingEnvelope(normalizeEnvelopeTypeForEdit(sample.envelopeType))
+    setIsEditingEnvelope(false)
+  }
+
+  const commitNoteEdit = () => {
+    const normalized = editingNote || null
+    const currentNote = fundamentalNote || null
+    if (normalized !== currentNote) {
+      updateSampleField({ note: normalized })
+    }
+    setIsEditingNote(false)
+  }
+
+  const cancelNoteEdit = () => {
+    setEditingNote(fundamentalNote)
+    setIsEditingNote(false)
+  }
+
+  const commitAddInstrument = () => {
+    if (instrumentToAddId === '') return
+    onAddTag(sample.id, Number(instrumentToAddId))
+    setInstrumentToAddId('')
+  }
+
+  const beginInstrumentEdit = (tagId: number) => {
+    setEditingInstrumentTagId(tagId)
+    setReplacementInstrumentTagId('')
+  }
+
+  const cancelInstrumentEdit = () => {
+    setEditingInstrumentTagId(null)
+    setReplacementInstrumentTagId('')
+  }
+
+  const commitInstrumentEdit = () => {
+    if (editingInstrumentTagId == null) return
+    if (replacementInstrumentTagId === '') {
+      cancelInstrumentEdit()
+      return
+    }
+
+    const replacementId = Number(replacementInstrumentTagId)
+    if (!Number.isFinite(replacementId) || replacementId <= 0 || replacementId === editingInstrumentTagId) {
+      cancelInstrumentEdit()
+      return
+    }
+
+    if (!instrumentTagIds.has(replacementId)) {
+      onAddTag(sample.id, replacementId)
+    }
+    onRemoveTag(sample.id, editingInstrumentTagId)
+    cancelInstrumentEdit()
+  }
 
   return (
     <div className="h-full flex flex-col bg-surface-base overflow-hidden">
@@ -441,8 +652,52 @@ export function SampleDetailsView({
       <div className="px-3 py-2.5 border-b border-surface-border bg-surface-raised flex-shrink-0">
         <div className="flex items-start justify-between gap-2 mb-2">
           <div className="flex-1 min-w-0">
-            <h2 className="text-sm font-semibold text-text-primary truncate">{sample.name}</h2>
+            {isEditingName ? (
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={editingName}
+                  onChange={(event) => setEditingName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') commitNameEdit()
+                    if (event.key === 'Escape') cancelNameEdit()
+                  }}
+                  className="w-full rounded border border-surface-border bg-surface-base px-2 py-0.5 text-sm font-semibold text-text-primary focus:outline-none focus:border-accent-primary/70"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={commitNameEdit}
+                  className="text-[11px] text-emerald-300 hover:text-emerald-200"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelNameEdit}
+                  className="text-[11px] text-text-muted hover:text-text-primary"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-sm font-semibold text-text-primary truncate">{sample.name}</h2>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingName(true)}
+                  className="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay"
+                  title="Edit name"
+                >
+                  <Pencil size={11} />
+                </button>
+              </div>
+            )}
             <p className="text-xs text-text-muted truncate mt-0.5">{sample.track?.title || 'Unknown track'}</p>
+            <div className="mt-1 inline-flex items-center gap-1 rounded-full border border-surface-border bg-surface-overlay/70 px-2 py-0.5 text-[10px] text-text-secondary">
+              <SampleTypeIcon sampleType={sample.sampleType ?? null} size={11} className="text-text-secondary" />
+              <span>{sampleTypeLabel}</span>
+            </div>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
@@ -601,6 +856,19 @@ export function SampleDetailsView({
                       </option>
                     ))}
                   </select>
+                  <button
+                    type="button"
+                    onClick={() => handlePreserveFormantsChange(!preserveFormants)}
+                    disabled={pitchAlgorithm === 'tape'}
+                    className={`h-6 px-2 rounded border text-[10px] uppercase tracking-wide transition-colors ${
+                      preserveFormants
+                        ? 'border-emerald-400/70 bg-emerald-500/20 text-emerald-200'
+                        : 'border-surface-border bg-surface-raised text-text-muted'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                    title="Preserve vocal formants when using Granular/HQ pitch modes"
+                  >
+                    Formants
+                  </button>
                 </div>
               </div>
               {!hasManualPitchOverride && isAutoPitch && (
@@ -617,12 +885,56 @@ export function SampleDetailsView({
                 <FeatureItem label="Duration" value={duration} unit="s" />
                 {sample.bpm != null && <FeatureItem label="BPM" value={Math.round(sample.bpm)} decimals={0} />}
                 {sample.keyEstimate != null && <FeatureItem label="Key" value={sample.keyEstimate} isText />}
-                {fundamentalNote != null && (
-                  <div>
-                    <div className="text-[11px] text-slate-500">Note</div>
+                <div>
+                  <div className="text-[11px] text-slate-500">Note</div>
+                  {isEditingNote ? (
+                    <div className="flex items-center gap-1.5">
+                      <select
+                        value={editingNote ?? ''}
+                        onChange={(event) => setEditingNote(event.target.value || null)}
+                        className="h-6 rounded border border-surface-border bg-surface-raised px-1.5 text-[11px] text-text-primary focus:outline-none focus:border-accent-primary/70"
+                      >
+                        <option value="">Unspecified</option>
+                        {NOTE_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={commitNoteEdit}
+                        className="text-[11px] text-emerald-300 hover:text-emerald-200"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelNoteEdit}
+                        className="text-[11px] text-text-muted hover:text-text-primary"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <div className="text-[13px] text-white font-mono">{fundamentalNote}</div>
-                      {onTuneToNote && (
+                      {fundamentalPitch ? (
+                        <div className="text-[13px] text-white font-mono">
+                          {fundamentalPitch.noteWithOctave}
+                          <span className="ml-1 text-[10px] text-slate-400">{fundamentalPitch.compactCentsLabel}</span>
+                        </div>
+                      ) : (
+                        <div className="text-[13px] text-text-muted">Unspecified</div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingNote(true)}
+                        className="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay"
+                        title="Edit note"
+                      >
+                        <Pencil size={11} />
+                      </button>
+                      {onTuneToNote && fundamentalNote && (
                         <button
                           onClick={() => onTuneToNote(tuneTargetNote === fundamentalNote ? null : fundamentalNote)}
                           className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border transition-colors ${
@@ -638,44 +950,217 @@ export function SampleDetailsView({
                         </button>
                       )}
                     </div>
+                  )}
+                </div>
+                <div className="col-span-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] text-slate-500">Instruments</div>
+                    <div className="text-[10px] text-text-muted">{instrumentTags.length}</div>
                   </div>
-                )}
-                {sample.instrumentPrimary != null && (
-                  <div>
-                    <div className="text-[11px] text-slate-500">Instrument</div>
-                    <div className="flex items-center gap-1.5">
-                      <InstrumentIcon type={sample.instrumentPrimary} size={14} />
-                      <div className="text-[13px] text-white">{sample.instrumentPrimary}</div>
-                    </div>
-                  </div>
-                )}
-                {sample.envelopeType != null && <FeatureItem label="Envelope" value={sample.envelopeType} isText />}
-              </div>
-            </div>
 
-            {/* Tags */}
-            {sample.tags != null && sample.tags.length > 0 && (
-              <div>
-                <h3 className="section-label mb-2">Tags</h3>
-                <div className="flex flex-wrap gap-1.5">
-                  {sample.tags.map((tag) => (
-                    <button
-                      key={tag.id}
-                      onClick={() => onTagClick?.(tag.id)}
-                      className="px-1.5 py-0.5 rounded-md text-[11px] transition-colors"
-                      style={{
-                        backgroundColor: `${tag.color || '#64748b'}20`,
-                        color: tag.color || '#94a3b8',
-                        borderWidth: '1px',
-                        borderColor: `${tag.color || '#64748b'}40`,
+                  {instrumentTags.length > 0 ? (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {instrumentTags.map((tag) => (
+                        <div
+                          key={tag.id}
+                          className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px]"
+                          style={{
+                            backgroundColor: `${tag.color}25`,
+                            color: tag.color,
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => onTagClick?.(tag.id)}
+                            className={`inline-flex items-center gap-1 ${onTagClick ? 'hover:opacity-80 transition-opacity' : ''}`}
+                            title={onTagClick ? `Filter by ${tag.name}` : undefined}
+                          >
+                            <InstrumentIcon type={tag.name} size={11} />
+                            <span>{tag.name}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => beginInstrumentEdit(tag.id)}
+                            className="rounded p-0.5 text-text-muted hover:text-text-primary hover:bg-surface-overlay"
+                            title={`Replace ${tag.name}`}
+                          >
+                            <Pencil size={10} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRemoveTag(sample.id, tag.id)}
+                            className="rounded p-0.5 text-text-muted hover:text-red-300 hover:bg-surface-overlay"
+                            title={`Remove ${tag.name}`}
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-1.5 text-[12px] text-text-muted">
+                      {sample.instrumentPrimary ? `Detected: ${sample.instrumentPrimary}` : 'No instruments assigned.'}
+                    </div>
+                  )}
+
+                  {editingInstrumentTag && (
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded border border-surface-border bg-surface-raised px-2 py-1.5">
+                      <span className="text-[11px] text-text-muted">
+                        Replace {editingInstrumentTag.name}:
+                      </span>
+                      <select
+                        value={replacementInstrumentTagId}
+                        onChange={(event) => {
+                          const next = Number(event.target.value)
+                          setReplacementInstrumentTagId(Number.isFinite(next) && next > 0 ? next : '')
+                        }}
+                        className="h-6 min-w-[130px] rounded border border-surface-border bg-surface-base px-1.5 text-[11px] text-text-primary focus:outline-none focus:border-accent-primary/70"
+                      >
+                        <option value="">Select instrument</option>
+                        {replacementInstrumentOptions.map((tag) => (
+                          <option key={tag.id} value={tag.id}>
+                            {tag.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={commitInstrumentEdit}
+                        disabled={replacementInstrumentTagId === ''}
+                        className="text-[11px] text-emerald-300 hover:text-emerald-200 disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelInstrumentEdit}
+                        className="text-[11px] text-text-muted hover:text-text-primary"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <select
+                      value={instrumentToAddId}
+                      onChange={(event) => {
+                        const next = Number(event.target.value)
+                        setInstrumentToAddId(Number.isFinite(next) && next > 0 ? next : '')
                       }}
+                      className="h-6 min-w-[150px] rounded border border-surface-border bg-surface-raised px-1.5 text-[11px] text-text-primary focus:outline-none focus:border-accent-primary/70"
                     >
-                      {tag.name}
+                      <option value="">Add instrument...</option>
+                      {availableInstrumentTags.map((tag) => (
+                        <option key={tag.id} value={tag.id}>
+                          {tag.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={commitAddInstrument}
+                      disabled={instrumentToAddId === ''}
+                      className="h-6 w-6 rounded border border-surface-border bg-surface-raised text-text-muted hover:text-text-primary hover:border-surface-overlay disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                      title="Add instrument"
+                    >
+                      <Plus size={11} />
                     </button>
-                  ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500">Sample Type</div>
+                  {isEditingSampleType ? (
+                    <div className="flex items-center gap-1.5">
+                      <select
+                        value={editingSampleType ?? ''}
+                        onChange={(event) => {
+                          const next = event.target.value as 'oneshot' | 'loop' | ''
+                          setEditingSampleType(next === '' ? null : next)
+                        }}
+                        className="h-6 rounded border border-surface-border bg-surface-raised px-1.5 text-[11px] text-text-primary focus:outline-none focus:border-accent-primary/70"
+                      >
+                        <option value="">Unspecified</option>
+                        <option value="oneshot">One-shot</option>
+                        <option value="loop">Loop</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={commitSampleTypeEdit}
+                        className="text-[11px] text-emerald-300 hover:text-emerald-200"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelSampleTypeEdit}
+                        className="text-[11px] text-text-muted hover:text-text-primary"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-[13px] text-white">
+                      <SampleTypeIcon sampleType={sample.sampleType ?? null} size={13} className="text-slate-300" />
+                      <span>{sampleTypeLabel}</span>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingSampleType(true)}
+                        className="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay"
+                        title="Edit sample type"
+                      >
+                        <Pencil size={11} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500">Envelope</div>
+                  {isEditingEnvelope ? (
+                    <div className="flex items-center gap-1.5">
+                      <select
+                        value={editingEnvelope}
+                        onChange={(event) => setEditingEnvelope(event.target.value as EnvelopeTypeValue | '')}
+                        className="h-6 min-w-[110px] rounded border border-surface-border bg-surface-raised px-1.5 text-[11px] text-text-primary focus:outline-none focus:border-accent-primary/70"
+                      >
+                        <option value="">Unspecified</option>
+                        {ENVELOPE_TYPE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={commitEnvelopeEdit}
+                        className="text-[11px] text-emerald-300 hover:text-emerald-200"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelEnvelopeEdit}
+                        className="text-[11px] text-text-muted hover:text-text-primary"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-[13px] text-text-primary">
+                      <span>{sample.envelopeType || 'Unspecified'}</span>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingEnvelope(true)}
+                        className="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay"
+                        title="Edit envelope"
+                      >
+                        <Pencil size={11} />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
+            </div>
 
             {/* Similar Samples */}
             <SimilarSamplesSection

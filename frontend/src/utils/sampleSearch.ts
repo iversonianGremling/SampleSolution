@@ -17,14 +17,14 @@ export type SampleSearchCustomField =
 export const SAMPLE_SEARCH_SCOPE_OPTIONS: Array<{ value: SampleSearchScope; label: string }> = [
   { value: 'all', label: 'All fields' },
   { value: 'name', label: 'Name + title' },
-  { value: 'tags', label: 'Tags' },
+  { value: 'tags', label: 'Instruments' },
   { value: 'custom', label: 'Custom' },
 ]
 
 export const SAMPLE_SEARCH_CUSTOM_FIELD_OPTIONS: Array<{ value: SampleSearchCustomField; label: string }> = [
   { value: 'sample_name', label: 'Sample name' },
   { value: 'track_title', label: 'Track title' },
-  { value: 'tags', label: 'Tags' },
+  { value: 'tags', label: 'Instruments' },
   { value: 'artist', label: 'Artist' },
   { value: 'album', label: 'Album' },
   { value: 'album_artist', label: 'Album artist' },
@@ -39,8 +39,8 @@ const CUSTOM_FIELD_LABELS = new Map<SampleSearchCustomField, string>(
 )
 
 export const DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS: SampleSearchCustomField[] = [
-  'artist',
-  'album',
+  'sample_name',
+  'tags',
   'path',
 ]
 
@@ -118,7 +118,7 @@ export function getSampleSearchScopeDescriptor(
     case 'name':
       return 'sample names and track titles'
     case 'tags':
-      return 'tags'
+      return 'instruments'
     case 'custom':
       return selectedCustomFieldCount > 0
         ? `${selectedCustomFieldCount} custom field${selectedCustomFieldCount === 1 ? '' : 's'}`
@@ -141,7 +141,7 @@ export function getSampleSearchScopeHint(
     case 'name':
       return 'Only matches sample names and track titles.'
     case 'tags':
-      return 'Only matches tag names.'
+      return 'Only matches instrument names.'
     case 'custom': {
       const selectedFieldsLabel = formatCustomFieldLabelList(customFields)
       if (!selectedFieldsLabel) {
@@ -155,7 +155,7 @@ export function getSampleSearchScopeHint(
       return 'Only matches collection names linked by folder.'
     case 'all':
     default:
-      return 'Matches names, tags, artist metadata, and collection names.'
+      return 'Matches names, instruments, artist metadata, and collection names.'
   }
 }
 

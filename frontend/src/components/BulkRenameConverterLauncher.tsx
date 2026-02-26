@@ -2,11 +2,14 @@ import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CheckCircle2, RefreshCw, RotateCcw, Wand2, X } from 'lucide-react'
 import * as api from '../api/client'
+import { useToast } from '../contexts/ToastContext'
+import { useAppDialog } from '../hooks/useAppDialog'
 import { useAllSlices } from '../hooks/useTracks'
 import type { SliceWithTrack } from '../types'
 import {
   applyBulkRenameRules,
   DEFAULT_BULK_RENAME_RULES,
+  getBulkRenameRegexError,
   type BulkRenameRules,
   type NameCaseMode,
   type NumberingPosition,
@@ -73,6 +76,8 @@ export function BulkRenameConverterLauncher() {
   const [isApplying, setIsApplying] = useState(false)
   const [summary, setSummary] = useState<ApplySummary | null>(null)
 
+  const { showToast } = useToast()
+  const { confirm } = useAppDialog()
   const queryClient = useQueryClient()
   const { data: allSlices = [], isLoading, error } = useAllSlices()
 
@@ -115,6 +120,7 @@ export function BulkRenameConverterLauncher() {
   const remainingPreviewCount = Math.max(0, renamePreview.length - visiblePreviewRows.length)
   const canApply = renamePreview.length > 0 && !isLoading && !isApplying
   const loadErrorMessage = error ? getErrorMessage(error) : null
+  const regexError = getBulkRenameRegexError(rules)
 
   const updateRule = <K extends keyof BulkRenameRules>(key: K, value: BulkRenameRules[K]) => {
     setRules((prev) => ({ ...prev, [key]: value }))
@@ -134,9 +140,12 @@ export function BulkRenameConverterLauncher() {
   const applyRenames = async () => {
     if (!canApply) return
 
-    const confirmed = window.confirm(
-      `Apply rename/conversion rules to ${renamePreview.length} sample${renamePreview.length === 1 ? '' : 's'}?`
-    )
+    const confirmed = await confirm({
+      title: 'Apply Bulk Rename?',
+      message: `Apply rename/conversion rules to ${renamePreview.length} sample${renamePreview.length === 1 ? '' : 's'}?`,
+      confirmText: 'Apply',
+      cancelText: 'Cancel',
+    })
     if (!confirmed) return
 
     setSummary(null)
@@ -173,11 +182,25 @@ export function BulkRenameConverterLauncher() {
         queryClient.invalidateQueries({ queryKey: ['scopedSamples'] }),
       ])
 
-      setSummary({
+      const nextSummary = {
         attempted: renamePreview.length,
         updated: completed,
         failed: failures.length,
         errors: failures.slice(0, 5),
+      }
+      setSummary(nextSummary)
+      showToast({
+        kind: nextSummary.failed === 0 ? 'success' : 'warning',
+        message: `Bulk rename complete: updated ${nextSummary.updated}/${nextSummary.attempted}${nextSummary.failed > 0 ? `, failed ${nextSummary.failed}` : ''}.`,
+      })
+      setRules((prev) => ({
+        ...prev,
+        filterText: '',
+      }))
+    } catch (err) {
+      showToast({
+        kind: 'error',
+        message: `Bulk rename failed: ${getErrorMessage(err)}`,
       })
     } finally {
       setIsApplying(false)
@@ -285,29 +308,56 @@ export function BulkRenameConverterLauncher() {
                     type="text"
                     value={rules.searchText}
                     onChange={(e) => updateRule('searchText', e.target.value)}
-                    placeholder="Text to replace"
+                    placeholder={rules.matchRegex ? 'Regex pattern to match' : 'Text to match'}
                     className={inputClassName}
                   />
-                  <label className="inline-flex items-center gap-2 text-xs text-slate-400">
-                    <input
-                      type="checkbox"
-                      checked={rules.caseSensitive}
-                      onChange={(e) => updateRule('caseSensitive', e.target.checked)}
-                      className="accent-accent-primary"
-                    />
-                    Case-sensitive match
-                  </label>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="inline-flex items-center gap-2 text-xs text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={rules.caseSensitive}
+                        onChange={(e) => updateRule('caseSensitive', e.target.checked)}
+                        className="accent-accent-primary"
+                      />
+                      Case-sensitive match
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-xs text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={rules.matchRegex}
+                        onChange={(e) => updateRule('matchRegex', e.target.checked)}
+                        className="accent-accent-primary"
+                      />
+                      Regex match (native JS)
+                    </label>
+                  </div>
+                  {regexError && (
+                    <div className="text-[11px] text-red-300">Regex error: {regexError}</div>
+                  )}
                 </div>
 
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-slate-400">Replace With</label>
+                  <label className="inline-flex items-center gap-2 text-xs text-slate-400">
+                    <input
+                      type="checkbox"
+                      checked={rules.replaceMatches}
+                      onChange={(e) => updateRule('replaceMatches', e.target.checked)}
+                      className="accent-accent-primary"
+                    />
+                    Replace matched text
+                  </label>
                   <input
                     type="text"
                     value={rules.replaceText}
                     onChange={(e) => updateRule('replaceText', e.target.value)}
-                    placeholder="Replacement text"
+                    placeholder={rules.matchRegex ? 'Replacement text ($1, $2...)' : 'Replacement text'}
+                    disabled={!rules.replaceMatches}
                     className={inputClassName}
                   />
+                  {!rules.replaceMatches && (
+                    <div className="text-[11px] text-slate-500">Find text will only target samples; names are unchanged unless other rules apply.</div>
+                  )}
                 </div>
               </div>
 

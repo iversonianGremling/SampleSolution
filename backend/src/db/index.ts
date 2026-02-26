@@ -56,6 +56,7 @@ function initDatabase() {
       start_time REAL NOT NULL,
       end_time REAL NOT NULL,
       file_path TEXT,
+      sample_type TEXT,
       sample_modified INTEGER NOT NULL DEFAULT 0,
       sample_modified_at TEXT,
       created_at TEXT NOT NULL
@@ -65,7 +66,7 @@ function initDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
       color TEXT NOT NULL,
-      category TEXT NOT NULL DEFAULT 'general'
+      category TEXT NOT NULL DEFAULT 'instrument'
     );
 
     CREATE TABLE IF NOT EXISTS track_tags (
@@ -128,7 +129,7 @@ function initDatabase() {
   const hasCategory = tagsColumns.some(col => col.name === 'category')
   if (!hasCategory) {
     console.log('[DB] Migrating: Adding category column to tags table')
-    sqlite.exec("ALTER TABLE tags ADD COLUMN category TEXT NOT NULL DEFAULT 'general'")
+    sqlite.exec("ALTER TABLE tags ADD COLUMN category TEXT NOT NULL DEFAULT 'instrument'")
   }
 
   // Migration: Remove deprecated tempo/spectral tags and all links.
@@ -146,6 +147,46 @@ function initDatabase() {
 
       DELETE FROM tags
       WHERE category IN ('tempo', 'spectral');
+    `)
+  }
+
+  // Migration: Clean up junk tag categories — only instrument and filename are valid now.
+  // Delete tags with category general/type/character/energy (cascade handles junction rows).
+  const junkCategoryCount = sqlite
+    .prepare(`
+      SELECT COUNT(*) as count
+      FROM tags
+      WHERE lower(category) IN ('general', 'type', 'character', 'energy')
+    `)
+    .get() as { count: number }
+  if ((junkCategoryCount?.count || 0) > 0) {
+    console.log(`[DB] Migrating: Removing ${junkCategoryCount.count} tags with deprecated categories (general/type/character/energy)`)
+    sqlite.exec(`
+      DELETE FROM slice_tags
+      WHERE tag_id IN (SELECT id FROM tags WHERE lower(category) IN ('general', 'type', 'character', 'energy'));
+
+      DELETE FROM track_tags
+      WHERE tag_id IN (SELECT id FROM tags WHERE lower(category) IN ('general', 'type', 'character', 'energy'));
+
+      DELETE FROM tags
+      WHERE lower(category) IN ('general', 'type', 'character', 'energy');
+    `)
+  }
+
+  // Normalize any remaining non-standard categories to instrument
+  const nonStandardCategoryCount = sqlite
+    .prepare(`
+      SELECT COUNT(*) as count
+      FROM tags
+      WHERE lower(category) NOT IN ('instrument', 'filename')
+    `)
+    .get() as { count: number }
+  if ((nonStandardCategoryCount?.count || 0) > 0) {
+    console.log('[DB] Migrating: Normalizing remaining tag categories to instrument')
+    sqlite.exec(`
+      UPDATE tags
+      SET category = 'instrument'
+      WHERE lower(category) NOT IN ('instrument', 'filename');
     `)
   }
 
@@ -169,6 +210,22 @@ function initDatabase() {
     sqlite
       .prepare(`DELETE FROM tags WHERE id IN (${tagIdPlaceholders})`)
       .run(...reducibleTagIds)
+  }
+
+  // Migration: Add sample_type column to slices if it doesn't exist
+  const slicesColsForSampleType = sqlite.prepare("PRAGMA table_info(slices)").all() as { name: string }[]
+  const hasSampleType = slicesColsForSampleType.some(col => col.name === 'sample_type')
+  if (!hasSampleType) {
+    console.log('[DB] Migrating: Adding sample_type column to slices table')
+    sqlite.exec("ALTER TABLE slices ADD COLUMN sample_type TEXT")
+    // Backfill from audio_features
+    sqlite.exec(`
+      UPDATE slices SET sample_type = 'oneshot'
+      WHERE id IN (SELECT slice_id FROM audio_features WHERE is_one_shot = 1);
+      UPDATE slices SET sample_type = 'loop'
+      WHERE sample_type IS NULL AND id IN (SELECT slice_id FROM audio_features WHERE is_loop = 1);
+    `)
+    console.log('[DB] Migrated: Backfilled sample_type from audio_features')
   }
 
   // Migration: Add favorite column to slices if it doesn't exist
@@ -516,6 +573,17 @@ function initDatabase() {
   if (!hasPolyphony) {
     console.log('[DB] Migrating: Adding polyphony column to audio_features')
     sqlite.exec(`ALTER TABLE audio_features ADD COLUMN polyphony INTEGER;`)
+  }
+
+  // Migration: Add PANNs ML embedding columns to audio_features
+  const audioFeaturesMLCols = sqlite.prepare("PRAGMA table_info(audio_features)").all() as { name: string }[]
+  const hasMlEmbeddings = audioFeaturesMLCols.some(col => col.name === 'ml_embeddings')
+  if (!hasMlEmbeddings) {
+    console.log('[DB] Migrating: Adding ml_embeddings and ml_embedding_model columns to audio_features')
+    sqlite.exec(`
+      ALTER TABLE audio_features ADD COLUMN ml_embeddings TEXT;
+      ALTER TABLE audio_features ADD COLUMN ml_embedding_model TEXT;
+    `)
   }
 
   // Migration: Create collections table

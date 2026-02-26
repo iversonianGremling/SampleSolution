@@ -188,6 +188,32 @@ export const handlers = [
     } as Tag)
   }),
 
+  http.put('/api/tags/:id', async ({ params, request }) => {
+    const body = await request.json() as Partial<Tag>
+    return HttpResponse.json({
+      id: Number(params.id),
+      name: (body.name || 'updated-tag').toLowerCase(),
+      color: body.color || '#3b82f6',
+      category: body.category || 'instrument',
+    } as Tag)
+  }),
+
+  http.post('/api/tags/merge', async ({ request }) => {
+    const body = await request.json() as {
+      sourceTagId: number
+      targetTagId: number
+      deleteSourceTag?: boolean
+    }
+    return HttpResponse.json({
+      success: true,
+      sourceTagId: body.sourceTagId,
+      targetTagId: body.targetTagId,
+      mergedSlices: 0,
+      mergedTracks: 0,
+      deletedSourceTag: Boolean(body.deleteSourceTag),
+    })
+  }),
+
   http.delete('/api/tags/:id', () => {
     return HttpResponse.json({ success: true })
   }),

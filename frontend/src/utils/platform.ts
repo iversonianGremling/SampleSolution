@@ -14,6 +14,9 @@ interface ElectronAPI {
   getGPUInfo: () => Promise<any>;
   selectDirectory?: (options?: { defaultPath?: string; title?: string }) => Promise<string | null>;
   selectImportPath?: (options?: { defaultPath?: string; title?: string }) => Promise<string | null>;
+  getSetting?: (key: string) => Promise<string | null>;
+  setSetting?: (key: string, value: string) => Promise<boolean>;
+  removeSetting?: (key: string) => Promise<boolean>;
 }
 
 declare global {

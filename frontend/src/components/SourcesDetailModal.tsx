@@ -4,7 +4,7 @@ import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Sciss
 import type { SliceWithTrackExtended, Tag, Folder, AudioFeatures } from '../types'
 import { getSliceDownloadUrl, updateTrack } from '../api/client'
 import { InstrumentIcon } from './InstrumentIcon'
-import { freqToNoteName } from '../utils/musicTheory'
+import { freqToPitchDisplay } from '../utils/musicTheory'
 import { SliceWaveform, type SliceWaveformRef } from './SliceWaveform'
 import { DrumRackPadPicker } from './DrumRackPadPicker'
 
@@ -151,6 +151,7 @@ function SimilarSamplesSection({
 
           return (
             <button
+              type="button"
               key={sampleIdNum}
               onMouseEnter={() => handleMouseEnter(sampleIdNum)}
               onMouseLeave={handleMouseLeave}
@@ -192,6 +193,7 @@ function SimilarSamplesSection({
       </div>
       {onFilterBySimilarity && (
         <button
+          type="button"
           onClick={() => onFilterBySimilarity(sampleId, sampleName)}
           className="mt-2 w-full px-3 py-2 bg-accent-primary/10 hover:bg-accent-primary/20 text-accent-primary rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
         >
@@ -278,6 +280,10 @@ export function SourcesDetailModal({
     },
     enabled: !!sample && activeTab === 'advanced',
   })
+  const fundamentalPitch =
+    audioFeatures?.fundamentalFrequency != null
+      ? freqToPitchDisplay(audioFeatures.fundamentalFrequency)
+      : null
 
   // Entrance animation
   useEffect(() => {
@@ -706,9 +712,9 @@ export function SourcesDetailModal({
               )}
             </div>
 
-            {/* Tags */}
+            {/* Instruments */}
             <div>
-              <label className="text-sm font-medium text-slate-400 block mb-2">Tags</label>
+              <label className="text-sm font-medium text-slate-400 block mb-2">Instruments</label>
               <div className="flex flex-wrap gap-2">
                 {sample.tags.map(tag => (
                   <span
@@ -935,7 +941,15 @@ export function SourcesDetailModal({
                           <h4 className="text-sm font-semibold text-white mb-3">Fundamental Frequency</h4>
                           <div className="grid grid-cols-2 gap-3">
                             <FeatureItem label="Frequency" value={audioFeatures.fundamentalFrequency} unit="Hz" decimals={1} />
-                            <FeatureItem label="Note" value={freqToNoteName(audioFeatures.fundamentalFrequency)} isText />
+                            <div>
+                              <div className="text-xs text-slate-500">Note</div>
+                              <div className="text-sm text-white font-mono">
+                                {fundamentalPitch?.noteWithOctave ?? '-'}
+                                {fundamentalPitch && (
+                                  <span className="ml-1 text-xs text-slate-400">{fundamentalPitch.compactCentsLabel}</span>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         </div>
                       )
@@ -1036,7 +1050,7 @@ export function SourcesDetailModal({
                 type="text"
                 value={tagSearchQuery}
                 onChange={(e) => setTagSearchQuery(e.target.value)}
-                placeholder="Search tags..."
+                placeholder="Search instruments..."
                 className="w-full pl-7 pr-2 py-1.5 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
                 autoFocus
                 onClick={(e) => e.stopPropagation()}
@@ -1064,7 +1078,7 @@ export function SourcesDetailModal({
                 </button>
               ))
             ) : (
-              <div className="px-3 py-2 text-sm text-slate-500">No tags found</div>
+              <div className="px-3 py-2 text-sm text-slate-500">No instruments found</div>
             )}
           </div>
         </div>

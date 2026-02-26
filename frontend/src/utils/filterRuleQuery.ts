@@ -218,7 +218,7 @@ const FILTER_RULE_FIELD_CONFIGS: FilterRuleFieldConfig[] = [
   },
   {
     id: 'tag',
-    label: 'Tag',
+    label: 'Instruments',
     type: 'multi_enum',
     getValue: (sample) => getTagNames(sample),
   },

@@ -30,12 +30,45 @@ services:
       - PORT=4000
       - DATA_DIR=/app/data
       - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - OLLAMA_ANALYZER_HOST=${OLLAMA_ANALYZER_HOST:-http://ollama-analyzer:11434}
+      - OLLAMA_ANALYZER_MODEL=${OLLAMA_ANALYZER_MODEL:-${OLLAMA_MODEL:-llama3.2:3b}}
+      - OLLAMA_CPU_HOST=${OLLAMA_CPU_HOST:-http://ollama:11434}
+      - OLLAMA_CPU_MODEL=${OLLAMA_CPU_MODEL:-${OLLAMA_MODEL:-llama3.2:3b}}
+      - OLLAMA_DEBUG=${OLLAMA_DEBUG:-0}
+      - OLLAMA_DEBUG_MAX_CHARS=${OLLAMA_DEBUG_MAX_CHARS:-500}
+      - OLLAMA_MAX_CONCURRENT_GENERATE=${OLLAMA_MAX_CONCURRENT_GENERATE:-1}
+      - OLLAMA_GENERATE_FAILURE_THRESHOLD=${OLLAMA_GENERATE_FAILURE_THRESHOLD:-2}
+      - OLLAMA_GENERATE_FAILURE_COOLDOWN_MS=${OLLAMA_GENERATE_FAILURE_COOLDOWN_MS:-30000}
+      - OLLAMA_CPU_MAX_CONCURRENT_GENERATE=${OLLAMA_CPU_MAX_CONCURRENT_GENERATE:-1}
+      - OLLAMA_CPU_GENERATE_FAILURE_THRESHOLD=${OLLAMA_CPU_GENERATE_FAILURE_THRESHOLD:-2}
+      - OLLAMA_CPU_GENERATE_FAILURE_COOLDOWN_MS=${OLLAMA_CPU_GENERATE_FAILURE_COOLDOWN_MS:-30000}
+      - OLLAMA_TAG_REVIEW_TARGET_CHAIN=${OLLAMA_TAG_REVIEW_TARGET_CHAIN:-analyzer,primary,cpu}
+      - OLLAMA_TAG_REVIEW_RETRIES_PER_TARGET=${OLLAMA_TAG_REVIEW_RETRIES_PER_TARGET:-1}
+      - OLLAMA_TAG_REVIEW_RETRY_DELAY_MS=${OLLAMA_TAG_REVIEW_RETRY_DELAY_MS:-200}
+      - OLLAMA_TAG_REVIEW_HEALTH_TIMEOUT_MS=${OLLAMA_TAG_REVIEW_HEALTH_TIMEOUT_MS:-800}
+      - OLLAMA_TAG_REVIEW_BATCH_TIMEOUT_MS=${OLLAMA_TAG_REVIEW_BATCH_TIMEOUT_MS:-90000}
+      - OLLAMA_TAG_AUDIT_TARGET_CHAIN=${OLLAMA_TAG_AUDIT_TARGET_CHAIN:-primary,analyzer,cpu}
+      - OLLAMA_TAG_AUDIT_RETRIES_PER_TARGET=${OLLAMA_TAG_AUDIT_RETRIES_PER_TARGET:-1}
+      - OLLAMA_TAG_AUDIT_RETRY_DELAY_MS=${OLLAMA_TAG_AUDIT_RETRY_DELAY_MS:-200}
+      - OLLAMA_TAG_AUDIT_HEALTH_TIMEOUT_MS=${OLLAMA_TAG_AUDIT_HEALTH_TIMEOUT_MS:-800}
+      - OLLAMA_TAG_AUDIT_TIMEOUT_MS=${OLLAMA_TAG_AUDIT_TIMEOUT_MS:-90000}
+      - OLLAMA_TAG_REVIEW=${OLLAMA_TAG_REVIEW:-1}
+      - BATCH_REANALYZE_REVIEW_BATCH_SIZE=${BATCH_REANALYZE_REVIEW_BATCH_SIZE:-5}
+      - BATCH_REANALYZE_AUDIT=${BATCH_REANALYZE_AUDIT:-1}
+      - BATCH_REANALYZE_AUDIT_BATCH_SIZE=${BATCH_REANALYZE_AUDIT_BATCH_SIZE:-30}
+      - BATCH_REANALYZE_REFEED_TIMEOUT_MS=${BATCH_REANALYZE_REFEED_TIMEOUT_MS:-90000}
+      - BATCH_REANALYZE_AUDIT_MAX_REPORT_ISSUES=${BATCH_REANALYZE_AUDIT_MAX_REPORT_ISSUES:-200}
+      - AUDIO_ANALYSIS_MAX_CONCURRENT=${AUDIO_ANALYSIS_MAX_CONCURRENT:-1}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
       - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
       - SESSION_SECRET=${SESSION_SECRET}
       - FRONTEND_URL=${FRONTEND_URL}
+      - BACKEND_URL=${BACKEND_URL}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
       - ENABLE_SPOTIFY_IMPORT=${ENABLE_SPOTIFY_IMPORT:-1}
       - AUTO_INSTALL_DOWNLOAD_TOOLS=${AUTO_INSTALL_DOWNLOAD_TOOLS:-0}
       - AUTO_INSTALL_YTDLP=${AUTO_INSTALL_YTDLP:-0}
@@ -45,7 +78,10 @@ services:
       - RCLONE_SHARE_BASE_PATH=${RCLONE_SHARE_BASE_PATH:-sample-share}
       - RCLONE_SHARE_LOCAL_LIBRARY_ROOT=${RCLONE_SHARE_LOCAL_LIBRARY_ROOT:-/app/data/shared-libraries}
     depends_on:
-      - ollama
+      ollama:
+        condition: service_started
+      ollama-analyzer:
+        condition: service_started
     networks:
       - app-network
     restart: unless-stopped
@@ -64,6 +100,90 @@ services:
         reservations:
           memory: 4G
 
+  ollama-analyzer:
+    image: ollama/ollama
+    volumes:
+      - ollama_analyzer_data:/root/.ollama
+    networks:
+      - app-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          memory: 4G
+
+  ollama-pull:
+    image: ollama/ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+    depends_on:
+      ollama:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        set -e;
+        MODEL="$${OLLAMA_MODEL:-llama3.2:3b}";
+        MAX_ATTEMPTS="$${OLLAMA_PULL_MAX_ATTEMPTS:-12}";
+        RETRY_DELAY_SECONDS="$${OLLAMA_PULL_RETRY_DELAY_SECONDS:-5}";
+        echo "[ollama-pull] waiting for ollama server...";
+        until ollama list >/dev/null 2>&1; do sleep 2; done;
+        ATTEMPT=1;
+        while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+          echo "[ollama-pull] pulling $${MODEL} (attempt $${ATTEMPT}/$${MAX_ATTEMPTS})";
+          if ollama pull "$${MODEL}"; then
+            echo "[ollama-pull] model ready";
+            exit 0;
+          fi;
+          if [ "$${ATTEMPT}" -ge "$${MAX_ATTEMPTS}" ]; then
+            echo "[ollama-pull] model pull failed after $${MAX_ATTEMPTS} attempts";
+            exit 1;
+          fi;
+          ATTEMPT=$((ATTEMPT + 1));
+          echo "[ollama-pull] retrying in $${RETRY_DELAY_SECONDS}s";
+          sleep "$${RETRY_DELAY_SECONDS}";
+        done
+    networks:
+      - app-network
+    restart: "no"
+
+  ollama-analyzer-pull:
+    image: ollama/ollama
+    environment:
+      - OLLAMA_HOST=http://ollama-analyzer:11434
+      - OLLAMA_MODEL=${OLLAMA_ANALYZER_MODEL:-${OLLAMA_MODEL:-llama3.2:3b}}
+    depends_on:
+      ollama-analyzer:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        set -e;
+        MODEL="$${OLLAMA_MODEL:-llama3.2:3b}";
+        MAX_ATTEMPTS="$${OLLAMA_PULL_MAX_ATTEMPTS:-12}";
+        RETRY_DELAY_SECONDS="$${OLLAMA_PULL_RETRY_DELAY_SECONDS:-5}";
+        echo "[ollama-analyzer-pull] waiting for ollama analyzer server...";
+        until ollama list >/dev/null 2>&1; do sleep 2; done;
+        ATTEMPT=1;
+        while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+          echo "[ollama-analyzer-pull] pulling $${MODEL} (attempt $${ATTEMPT}/$${MAX_ATTEMPTS})";
+          if ollama pull "$${MODEL}"; then
+            echo "[ollama-analyzer-pull] model ready";
+            exit 0;
+          fi;
+          if [ "$${ATTEMPT}" -ge "$${MAX_ATTEMPTS}" ]; then
+            echo "[ollama-analyzer-pull] model pull failed after $${MAX_ATTEMPTS} attempts";
+            exit 1;
+          fi;
+          ATTEMPT=$((ATTEMPT + 1));
+          echo "[ollama-analyzer-pull] retrying in $${RETRY_DELAY_SECONDS}s";
+          sleep "$${RETRY_DELAY_SECONDS}";
+        done
+    networks:
+      - app-network
+    restart: "no"
+
 networks:
   app-network:
     driver: bridge
@@ -71,3 +191,4 @@ networks:
 volumes:
   sample_data:
   ollama_data:
+  ollama_analyzer_data:

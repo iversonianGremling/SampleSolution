@@ -1,4 +1,5 @@
 import type { Folder, SliceWithTrackExtended, Tag } from './index'
+import type { UpdateSlicePayload } from '../api/client'
 
 export type WorkspaceTab = 'details' | 'rack' | 'lab'
 
@@ -14,6 +15,7 @@ export interface WorkspaceState {
   onAddToFolder: (folderId: number, sliceId: number) => void
   onRemoveFromFolder: (folderId: number, sliceId: number) => void
   onUpdateName: (sliceId: number, name: string) => void
+  onUpdateSample: (sliceId: number, data: UpdateSlicePayload) => void
   onTagClick: (tagId: number) => void
   onSelectSample: (sampleId: number) => void
   onFilterBySimilarity: (sampleId: number, sampleName: string) => void

@@ -12,6 +12,18 @@ function scopeToString(scope: SourceScope): string {
       return `youtube:${scope.trackId}`
     case 'local':
       return 'local'
+    case 'soundcloud':
+      return 'soundcloud'
+    case 'soundcloud-track':
+      return `soundcloud:${scope.trackId}`
+    case 'spotify':
+      return 'spotify'
+    case 'spotify-track':
+      return `spotify:${scope.trackId}`
+    case 'bandcamp':
+      return 'bandcamp'
+    case 'bandcamp-track':
+      return `bandcamp:${scope.trackId}`
     case 'folder':
       return `folder:${scope.path}`
     case 'library':
@@ -60,8 +72,6 @@ export interface AudioFilterParams {
   minSimilarity?: number
   brightnessMin?: number
   brightnessMax?: number
-  harmonicityMin?: number
-  harmonicityMax?: number
   noisinessMin?: number
   noisinessMax?: number
   attackMin?: number
@@ -72,6 +82,8 @@ export interface AudioFilterParams {
   saturationMax?: number
   surfaceMin?: number
   surfaceMax?: number
+  rhythmicMin?: number
+  rhythmicMax?: number
   densityMin?: number
   densityMax?: number
   ambienceMin?: number
@@ -145,8 +157,6 @@ export function useScopedSamples(
         minSimilarity: audioFilters?.minSimilarity,
         brightnessMin: audioFilters?.brightnessMin,
         brightnessMax: audioFilters?.brightnessMax,
-        harmonicityMin: audioFilters?.harmonicityMin,
-        harmonicityMax: audioFilters?.harmonicityMax,
         noisinessMin: audioFilters?.noisinessMin,
         noisinessMax: audioFilters?.noisinessMax,
         attackMin: audioFilters?.attackMin,
@@ -157,6 +167,8 @@ export function useScopedSamples(
         saturationMax: audioFilters?.saturationMax,
         surfaceMin: audioFilters?.surfaceMin,
         surfaceMax: audioFilters?.surfaceMax,
+        rhythmicMin: audioFilters?.rhythmicMin,
+        rhythmicMax: audioFilters?.rhythmicMax,
         densityMin: audioFilters?.densityMin,
         densityMax: audioFilters?.densityMax,
         ambienceMin: audioFilters?.ambienceMin,

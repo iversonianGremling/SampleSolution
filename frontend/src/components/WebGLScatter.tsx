@@ -266,22 +266,19 @@ export function WebGLScatter({
   const previousHoverRef = useRef<number | null>(null)
   const previousSelectionRef = useRef<Set<number>>(new Set())
 
-  // Transform coordinates from -1..1 to screen space with uniform scaling (perfect circles)
+  // Transform coordinates from -1..1 to screen space using full available panel area.
+  // Keep edge padding so points never touch container borders.
   const transformX = useCallback(
     (x: number) => {
-      const effectiveSize = Math.min(actualContainerSize.width, actualContainerSize.height)
-      const contentSize = effectiveSize - PADDING * 2
-      const centerOffsetX = (actualContainerSize.width - effectiveSize) / 2
-      return PADDING + centerOffsetX + ((x + 1) / 2) * contentSize
+      const contentWidth = Math.max(1, actualContainerSize.width - PADDING * 2)
+      return PADDING + ((x + 1) / 2) * contentWidth
     },
     [actualContainerSize]
   )
   const transformY = useCallback(
     (y: number) => {
-      const effectiveSize = Math.min(actualContainerSize.width, actualContainerSize.height)
-      const contentSize = effectiveSize - PADDING * 2
-      const centerOffsetY = (actualContainerSize.height - effectiveSize) / 2
-      return PADDING + centerOffsetY + ((1 - y) / 2) * contentSize
+      const contentHeight = Math.max(1, actualContainerSize.height - PADDING * 2)
+      return PADDING + ((1 - y) / 2) * contentHeight
     },
     [actualContainerSize]
   )
@@ -660,8 +657,13 @@ export function WebGLScatter({
       animationRef.current = null
     }
 
-    // Apply minimum distance spacing (convert pixels to normalized coordinates)
-    const minDistanceNormalized = (MIN_POINT_DISTANCE / (Math.max(width, height) - PADDING * 2)) * 2
+    // Apply minimum distance spacing (convert pixels to normalized coordinates).
+    // Use the smaller drawable axis so spacing stays consistent when the panel is wide.
+    const drawableMinAxis = Math.max(
+      1,
+      Math.min(actualContainerSize.width, actualContainerSize.height) - PADDING * 2,
+    )
+    const minDistanceNormalized = (MIN_POINT_DISTANCE / drawableMinAxis) * 2
     const spreadPoints = applyMinimumDistance(points, minDistanceNormalized)
 
     const currentIds = new Set(spreadPoints.map((p) => p.id))

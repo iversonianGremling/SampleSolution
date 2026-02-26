@@ -439,7 +439,7 @@ export function SourcesTagFilter({
                     ? 'bg-accent-primary/20 border-accent-primary/40 text-accent-primary'
                     : 'bg-surface-raised border-surface-border text-slate-400'
                 }`}
-                title={`${item.count} tag${item.count !== 1 ? 's' : ''}`}
+                title={`${item.count} instrument${item.count !== 1 ? 's' : ''}`}
               >
                 <span className="capitalize">{item.category}</span>
                 <span className="text-[10px] text-slate-500">
@@ -453,7 +453,7 @@ export function SourcesTagFilter({
         <div className="space-y-2">
           <div className="rounded-md border border-surface-border/80 bg-surface-raised/30 px-2.5 py-2">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
-              <span className="text-[11px] uppercase tracking-wide text-slate-500 sm:w-28 sm:pt-1">With tags</span>
+              <span className="text-[11px] uppercase tracking-wide text-slate-500 sm:w-28 sm:pt-1">With instruments</span>
 
               <div className="flex-1 flex flex-wrap items-start gap-1.5 min-h-[28px]">
                 {selectedTagObjects.map(tag => (
@@ -461,6 +461,7 @@ export function SourcesTagFilter({
                     key={`selected-tag-${tag.id}`}
                     className="relative inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors"
                     style={{ backgroundColor: `${tag.color}25`, color: tag.color }}
+                    title={tag.name}
                   >
                     {tag.name}
                     <span className="text-[10px] text-slate-400">{getTagCount(tag)}</span>
@@ -486,7 +487,7 @@ export function SourcesTagFilter({
                         className="absolute left-0 top-full mt-1 z-30 w-52 p-2 bg-surface-raised border border-surface-border rounded-lg shadow-xl space-y-2"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <div className="text-xs text-slate-400 font-medium">Turn tag into folder</div>
+                        <div className="text-xs text-slate-400 font-medium">Turn instrument into folder</div>
                         <input
                           type="text"
                           value={folderFromTagName}
@@ -575,7 +576,7 @@ export function SourcesTagFilter({
                           type="text"
                           value={addSearchQuery}
                           onChange={(e) => setAddSearchQuery(e.target.value)}
-                          placeholder="Search tags/folders..."
+                          placeholder="Search instruments/folders..."
                           className="w-full pl-7 pr-2 py-1.5 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
                           autoFocus
                         />
@@ -596,7 +597,11 @@ export function SourcesTagFilter({
                             className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-surface-base flex items-center gap-2"
                           >
                             {renderItemIcon(item)}
-                            <span className="truncate" style={item.kind === 'tag' ? { color: item.color } : undefined}>
+                            <span
+                              className="truncate"
+                              style={item.kind === 'tag' ? { color: item.color } : undefined}
+                              title={item.name}
+                            >
                               {item.name}
                             </span>
                             {item.kind === 'tag' && (
@@ -605,7 +610,7 @@ export function SourcesTagFilter({
                               </span>
                             )}
                             <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">
-                              {item.kind}
+                              {item.kind === 'tag' ? 'instrument' : 'folder'}
                             </span>
                           </button>
                         ))}
@@ -630,7 +635,7 @@ export function SourcesTagFilter({
                                   setNewTagName('')
                                 }
                               }}
-                              placeholder="Tag name..."
+                              placeholder="Instrument name..."
                               className="w-full px-2 py-1.5 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
                               autoFocus
                             />
@@ -671,7 +676,7 @@ export function SourcesTagFilter({
                             className="w-full px-3 py-2 text-left text-sm text-slate-400 hover:bg-surface-base flex items-center gap-2"
                           >
                             <Plus size={14} />
-                            Create new tag...
+                            Create new instrument...
                           </button>
                         )}
                       </>
@@ -697,6 +702,7 @@ export function SourcesTagFilter({
                         color: '#fca5a5',
                         borderColor: 'rgba(239, 68, 68, 0.35)',
                       }}
+                      title={tag.name}
                     >
                       <Minus size={12} />
                       {tag.name}
@@ -752,7 +758,7 @@ export function SourcesTagFilter({
                             type="text"
                             value={excludeSearchQuery}
                             onChange={(e) => setExcludeSearchQuery(e.target.value)}
-                            placeholder="Search tags/folders..."
+                            placeholder="Search instruments/folders..."
                             className="w-full pl-7 pr-2 py-1.5 text-sm bg-surface-base border border-surface-border rounded text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
                             autoFocus
                           />
@@ -773,7 +779,11 @@ export function SourcesTagFilter({
                               className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-surface-base flex items-center gap-2"
                             >
                               {renderItemIcon(item)}
-                              <span className="truncate" style={item.kind === 'tag' ? { color: item.color } : undefined}>
+                              <span
+                                className="truncate"
+                                style={item.kind === 'tag' ? { color: item.color } : undefined}
+                                title={item.name}
+                              >
                                 {item.name}
                               </span>
                               {item.kind === 'tag' && (
@@ -782,7 +792,7 @@ export function SourcesTagFilter({
                                 </span>
                               )}
                               <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">
-                                {item.kind}
+                                {item.kind === 'tag' ? 'instrument' : 'folder'}
                               </span>
                             </button>
                           ))}

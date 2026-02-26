@@ -4,8 +4,9 @@
 
 1. Copy `.env.example` to `.env` and fill in your credentials
 2. Run `docker-compose up -d`
+   - Optional GPU mode: `docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up -d`
 3. Access the app at `http://localhost:3000`
-4. Pull the Ollama model: `docker exec -it sample_solution-ollama-1 ollama pull llama3.2:3b`
+4. Verify Ollama models are present (auto-pulled by compose): `docker exec -it sample_solution-ollama-1 ollama list`
 
 ## Google Cloud Setup (Required for YouTube Features)
 
@@ -60,8 +61,23 @@ GOOGLE_CLIENT_ID=123456789-abcdef.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
 GOOGLE_REDIRECT_URI=http://localhost:4000/api/auth/google/callback
 FRONTEND_URL=http://localhost:3000
+BACKEND_URL=http://localhost:4000
+SPOTIFY_CLIENT_ID=your-spotify-client-id
+SPOTIFY_CLIENT_SECRET=your-spotify-client-secret
 SESSION_SECRET=generate-a-random-string-here
 ```
+
+### Step 6: Spotify OAuth Setup (Optional, for Spotify playlist import)
+
+1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and create an app
+2. In app settings, add this redirect URI:
+   - `http://localhost:4000/api/spotify/callback`
+3. Copy the app Client ID and Client Secret into your `.env` as:
+   - `SPOTIFY_CLIENT_ID`
+   - `SPOTIFY_CLIENT_SECRET`
+4. If not using localhost, set `BACKEND_URL` to your real backend origin and add:
+   - `${BACKEND_URL}/api/spotify/callback`
+   to the Spotify app redirect URI list
 
 ## AI Classification Setup
 
@@ -78,27 +94,29 @@ The app uses two different AI approaches for categorization:
 
 **No setup required** - runs automatically in the backend container.
 
-### 2. Ollama (LLM) - For Full Tracks (Optional)
+### 2. Ollama (LLM) - For Track Metadata + Sample Tag QA (Optional)
 
 **Metadata-based tagging** using Ollama LLM:
 
 - **What**: Analyzes YouTube video title and description
 - **When**: Manual trigger via UI (sparkle icon on tracks)
 - **Output**: Genre, mood, era tags based on video metadata
-- **Dependencies**: Ollama container with llama3.2:3b model
+- **Dependencies**: Primary Ollama + analyzer Ollama containers (both default to llama3.2:3b)
+- **Review fallback chain**: `analyzer -> primary -> cpu` with retries/circuit-breaker-aware failover
 
 **Setup** (only if you want Ollama for track metadata tagging):
 
 ```bash
-# After starting the containers
+# After starting the containers (only needed if auto-pull failed)
 docker exec -it sample_solution-ollama-1 ollama pull llama3.2:3b
+docker exec -it sample_solution-ollama-analyzer-1 ollama pull llama3.2:3b
 ```
 
-This downloads the llama3.2:3b model (~2GB) for metadata-based tag extraction.
+This downloads the llama3.2:3b model (~2GB each) for metadata tagging and post-analysis tag QA.
 
 #### Alternative Ollama Models
 
-If you want to use a different model, update the `OLLAMA_MODEL` environment variable:
+If you want to use a different model, update `OLLAMA_MODEL` (and optionally `OLLAMA_ANALYZER_MODEL` / `OLLAMA_CPU_MODEL`):
 
 - `llama3.2:1b` - Smaller, faster, less accurate (~1GB)
 - `llama3.2:3b` - Recommended balance (~2GB)
@@ -120,13 +138,14 @@ If you want to use a different model, update the `OLLAMA_MODEL` environment vari
 
 For production on Proxmox:
 
-1. Update `GOOGLE_REDIRECT_URI` and `FRONTEND_URL` to your actual domain/IP
+1. Update `GOOGLE_REDIRECT_URI`, `FRONTEND_URL`, and `BACKEND_URL` to your actual domain/IP
 2. Generate a secure `SESSION_SECRET`:
    ```bash
    openssl rand -base64 32
    ```
 3. In Google Cloud Console, add your production redirect URI to the OAuth credentials
-4. Consider setting up HTTPS with a reverse proxy (nginx/traefik)
+4. In Spotify Developer Dashboard, add `${BACKEND_URL}/api/spotify/callback` to your app redirect URIs (if using Spotify playlist import)
+5. Consider setting up HTTPS with a reverse proxy (nginx/traefik)
 
 ## Troubleshooting
 
@@ -138,7 +157,9 @@ For production on Proxmox:
 - For production, submit your app for Google verification
 
 ### "Ollama model not found"
-- Run: `docker exec -it sample_solution-ollama-1 ollama pull llama3.2:3b`
+- Run:
+  - `docker exec -it sample_solution-ollama-1 ollama pull llama3.2:3b`
+  - `docker exec -it sample_solution-ollama-analyzer-1 ollama pull llama3.2:3b`
 
 ### "yt-dlp download failed"
 - YouTube may have updated their site. Update yt-dlp:
@@ -149,6 +170,7 @@ For production on Proxmox:
 ### Container can't connect to Ollama
 - Ensure all containers are on the same network
 - Check with: `docker network inspect sample_solution_app-network`
+- Confirm `OLLAMA_HOST` and `OLLAMA_ANALYZER_HOST` env values match reachable service names
 
 ### Audio analysis fails for slices
 - Ensure Python dependencies (Essentia, Librosa) are installed in the backend container

@@ -24,9 +24,26 @@ interface UseDimensionReductionResult {
 const DEFAULT_OPTIONS: UseDimensionReductionOptions = {
   method: 'umap',
   nNeighbors: 15,
-  minDist: 0.1,
+  minDist: 0.2,
   perplexity: 30,
   seed: 42,
+}
+
+function getQuantile(sortedValues: number[], quantile: number): number {
+  if (sortedValues.length === 0) return 0
+  const clampedQuantile = Math.max(0, Math.min(1, quantile))
+  const position = (sortedValues.length - 1) * clampedQuantile
+  const lowerIndex = Math.floor(position)
+  const upperIndex = Math.ceil(position)
+  if (lowerIndex === upperIndex) return sortedValues[lowerIndex]
+  const blend = position - lowerIndex
+  return sortedValues[lowerIndex] * (1 - blend) + sortedValues[upperIndex] * blend
+}
+
+function normalizeProjectionAxis(value: number, low: number, high: number): number {
+  if (high <= low) return 0
+  const clampedValue = Math.max(low, Math.min(high, value))
+  return ((clampedValue - low) / (high - low)) * 2 - 1
 }
 
 export function useDimensionReduction(
@@ -97,17 +114,32 @@ export function useDimensionReduction(
           resultPoints.push([result.entry(i, 0), result.entry(i, 1)])
         }
 
-        // Normalize to -1 to 1 range for easier rendering
+        // Robustly normalize to reduce outlier-driven stretching.
+        // Use central quantiles instead of hard min/max so dense structure
+        // remains readable and points do not over-spread.
         const xValues = resultPoints.map((p) => p[0])
         const yValues = resultPoints.map((p) => p[1])
-        const xMin = Math.min(...xValues)
-        const xMax = Math.max(...xValues)
-        const yMin = Math.min(...yValues)
-        const yMax = Math.max(...yValues)
+        const sortedXValues = [...xValues].sort((a, b) => a - b)
+        const sortedYValues = [...yValues].sort((a, b) => a - b)
+        let xLow = getQuantile(sortedXValues, 0.02)
+        let xHigh = getQuantile(sortedXValues, 0.98)
+        let yLow = getQuantile(sortedYValues, 0.02)
+        let yHigh = getQuantile(sortedYValues, 0.98)
+
+        if (xHigh <= xLow) {
+          xLow = sortedXValues[0] ?? 0
+          xHigh = sortedXValues[sortedXValues.length - 1] ?? 0
+        }
+        if (yHigh <= yLow) {
+          yLow = sortedYValues[0] ?? 0
+          yHigh = sortedYValues[sortedYValues.length - 1] ?? 0
+        }
+
+        const viewportScale = 0.85
 
         const normalized = resultPoints.map(([x, y]) => [
-          xMax !== xMin ? ((x - xMin) / (xMax - xMin)) * 2 - 1 : 0,
-          yMax !== yMin ? ((y - yMin) / (yMax - yMin)) * 2 - 1 : 0,
+          normalizeProjectionAxis(x, xLow, xHigh) * viewportScale,
+          normalizeProjectionAxis(y, yLow, yHigh) * viewportScale,
         ] as [number, number])
 
         setPoints(normalized)

@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
   Upload,
   Loader2,
@@ -17,6 +18,8 @@ import {
   ChevronUp,
 } from 'lucide-react'
 import {
+  useBatchAddSlicesToFolder,
+  useCreateFolder,
   useImportLinks,
   useImportLocalFiles,
   useImportSpotify,
@@ -27,20 +30,35 @@ import {
   useUpdateYtdlp,
   useUpdateSpotdl,
 } from '../hooks/useTracks'
-import { getSpotifyAuthUrl } from '../api/client'
-import type { ImportResult } from '../types'
+import { getCollections, getFolders, getSpotifyAuthUrl } from '../api/client'
+import type { Collection, Folder, ImportResult } from '../types'
 import type { BatchImportResult } from '../api/client'
+import { ImportDestinationPrompt, type ImportDestinationChoice } from './ImportDestinationPrompt'
 import {
   isDownloadToolsUiVisible,
   isSpotdlIntegrationEnabled,
   SPOTDL_INTEGRATION_EVENT,
   SPOTDL_INTEGRATION_STORAGE_KEY,
 } from '../utils/spotdlIntegration'
+import { assignImportsPreservingStructure, type ImportStructureMode } from '../utils/importStructure'
 
 type ImportMode = 'youtube' | 'spotify' | 'soundcloud' | 'local' | 'folder'
+type LocalImportSourceKind = 'files' | 'folder'
+const LARGE_IMPORT_PROMPT_FILE_THRESHOLD = 16
+
+type FileWithRelativePath = File & {
+  webkitRelativePath?: string
+}
 
 interface LinkImportProps {
   onTracksAdded: () => void
+}
+
+interface PendingLocalImportRequest {
+  files: File[]
+  sourceKind: LocalImportSourceKind
+  importType: 'sample' | 'track'
+  selectedFolderName: string | null
 }
 
 const isRequestAbortError = (error: unknown): boolean => {
@@ -69,8 +87,7 @@ const isRequestAbortError = (error: unknown): boolean => {
 // ── Help Modal ────────────────────────────────────────────────────────────────
 const YTDLP_SITES = [
   'YouTube, YouTube Music, YouTube Shorts, YouTube Live',
-  'SoundCloud (tracks, playlists, user pages)',
-  'Bandcamp (tracks, albums)',
+  'Music and audio hosting platforms (tracks, playlists, albums)',
   'Vimeo',
   'Dailymotion',
   'Twitch VODs & clips',
@@ -107,7 +124,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
         <div className="p-5 space-y-4 overflow-y-auto">
           <p className="text-sm text-slate-400">
             The importer supports <span className="text-white font-medium">1000+</span> sites. Paste any
-            URL from the list below (and many more) into the YouTube or SoundCloud tabs.
+            URL from the list below (and many more) into one of the link tabs.
           </p>
 
           <ul className="space-y-1.5">
@@ -535,6 +552,8 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
   const [folderResult, setFolderResult] = useState<BatchImportResult | null>(null)
   const [selectedFolderName, setSelectedFolderName] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [isFolderDragging, setIsFolderDragging] = useState(false)
+  const [pendingLocalImportRequest, setPendingLocalImportRequest] = useState<PendingLocalImportRequest | null>(null)
   const [localImportType, setLocalImportType] = useState<'sample' | 'track'>('sample')
   const [folderImportType, setFolderImportType] = useState<'sample' | 'track'>('sample')
   const [showHelp, setShowHelp] = useState(false)
@@ -545,10 +564,29 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
 
   const importLinks = useImportLinks()
   const importLocalFiles = useImportLocalFiles()
+  const batchAddSlicesToFolder = useBatchAddSlicesToFolder()
+  const createFolder = useCreateFolder()
   const importSpotify = useImportSpotify()
   const importSoundCloud = useImportSoundCloud()
-  const { data: spotifyStatus, refetch: refetchSpotifyStatus } = useSpotifyStatus()
+  const { data: spotifyStatus, refetch: refetchSpotifyStatus } = useSpotifyStatus({
+    enabled: spotdlEnabled && mode === 'spotify',
+  })
   const disconnectSpotify = useDisconnectSpotify()
+  const shouldLoadImportDestinations = pendingLocalImportRequest !== null
+  const { data: destinationFolders = [], isLoading: isDestinationFoldersLoading } = useQuery({
+    queryKey: ['folders'],
+    queryFn: () => getFolders(),
+    enabled: shouldLoadImportDestinations,
+  })
+  const { data: destinationCollections = [], isLoading: isDestinationCollectionsLoading } = useQuery({
+    queryKey: ['collections'],
+    queryFn: () => getCollections(),
+    enabled: shouldLoadImportDestinations,
+  })
+  const destinationFolderMap = useMemo(
+    () => new Map((destinationFolders as Folder[]).map((folder) => [folder.id, folder])),
+    [destinationFolders],
+  )
 
   // Handle Spotify OAuth redirect back
   useEffect(() => {
@@ -613,42 +651,195 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
     if (res.success.length > 0) onTracksAdded()
   }
 
-  const handleLocalFilesImport = async (files: File[]) => {
-    if (files.length === 0) return
-    const res = await importLocalFiles.mutateAsync({ files, importType: localImportType })
-    setLocalResult(res)
-    if (res.successful > 0) onTracksAdded()
+  const shouldPromptForDestination = (sourceKind: LocalImportSourceKind, fileCount: number) =>
+    sourceKind === 'folder' || fileCount >= LARGE_IMPORT_PROMPT_FILE_THRESHOLD
+
+  const resolveDroppedFolderName = (files: File[]): string | null => {
+    for (const file of files) {
+      const relativePath = (file as FileWithRelativePath).webkitRelativePath
+      if (!relativePath || !relativePath.includes('/')) continue
+      const [folderName] = relativePath.split('/')
+      if (folderName) return folderName
+    }
+    return null
   }
 
-  const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || [])
-    const audioFiles = files.filter((f) => /\.(wav|mp3|flac|aiff|ogg|m4a)$/i.test(f.name))
+  const executeLocalImport = async ({
+    files,
+    sourceKind,
+    importType,
+    destinationFolderId,
+    destinationCollectionId,
+    destinationFolder,
+    structureMode,
+    bypassParentFolder,
+  }: {
+    files: File[]
+    sourceKind: LocalImportSourceKind
+    importType: 'sample' | 'track'
+    destinationFolderId: number | null
+    destinationCollectionId: number | null
+    destinationFolder: ImportDestinationChoice['destinationFolder']
+    structureMode: ImportStructureMode
+    bypassParentFolder: boolean
+  }) => {
+    if (files.length === 0) return
 
-    if (audioFiles.length === 0) {
+    const res = await importLocalFiles.mutateAsync({ files, importType, sourceKind })
+
+    if (sourceKind === 'folder') {
+      setFolderResult(res)
+    } else {
+      setLocalResult(res)
+    }
+
+    const shouldAssignToCollectionRoot =
+      destinationFolderId === null &&
+      destinationCollectionId !== null &&
+      sourceKind === 'folder' &&
+      structureMode === 'preserve'
+
+    if (destinationFolderId !== null || shouldAssignToCollectionRoot) {
+      const successfulImports = res.results
+        .map((entry, index) =>
+          entry.success && typeof entry.sliceId === 'number'
+            ? { sliceId: entry.sliceId, file: files[index] }
+            : null)
+        .filter((entry): entry is { sliceId: number; file: File } => entry !== null)
+      const importedSliceIds = successfulImports.map((entry) => entry.sliceId)
+
+      if (importedSliceIds.length > 0) {
+        const shouldPreserveStructure = sourceKind === 'folder' && structureMode === 'preserve'
+
+        if (shouldPreserveStructure) {
+          const resolvedDestinationFolder = destinationFolder ||
+            (destinationFolderId !== null ? destinationFolderMap.get(destinationFolderId) || null : null)
+
+          if (resolvedDestinationFolder) {
+            await assignImportsPreservingStructure({
+              destinationFolder: {
+                id: resolvedDestinationFolder.id,
+                name: resolvedDestinationFolder.name,
+                parentId: resolvedDestinationFolder.parentId ?? null,
+                collectionId: resolvedDestinationFolder.collectionId ?? null,
+              },
+              successfulImports,
+              existingFolders: destinationFolders as Folder[],
+              createFolder: (data) => createFolder.mutateAsync(data),
+              assignSlicesToFolder: (folderId, sliceIds) =>
+                batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
+              bypassParentFolder,
+            })
+          } else if (destinationCollectionId !== null) {
+            await assignImportsPreservingStructure({
+              destinationCollectionId,
+              successfulImports,
+              existingFolders: destinationFolders as Folder[],
+              createFolder: (data) => createFolder.mutateAsync(data),
+              assignSlicesToFolder: (folderId, sliceIds) =>
+                batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
+              bypassParentFolder,
+            })
+          } else {
+            if (destinationFolderId !== null) {
+              await batchAddSlicesToFolder.mutateAsync({
+                folderId: destinationFolderId,
+                sliceIds: importedSliceIds,
+              })
+            }
+          }
+        } else {
+          if (destinationFolderId !== null) {
+            await batchAddSlicesToFolder.mutateAsync({
+              folderId: destinationFolderId,
+              sliceIds: importedSliceIds,
+            })
+          }
+        }
+      }
+    }
+
+    if (res.successful > 0) {
+      onTracksAdded()
+    }
+  }
+
+  const requestLocalImport = async ({
+    files,
+    sourceKind,
+    importType,
+    selectedFolderName: nextSelectedFolderName,
+  }: {
+    files: File[]
+    sourceKind: LocalImportSourceKind
+    importType: 'sample' | 'track'
+    selectedFolderName: string | null
+  }) => {
+    const audioFiles = files.filter((file) => /\.(wav|mp3|flac|aiff|ogg|m4a)$/i.test(file.name))
+
+    if (nextSelectedFolderName) {
+      setSelectedFolderName(nextSelectedFolderName)
+    }
+
+    if (audioFiles.length === 0 && sourceKind === 'folder') {
       setFolderResult({ total: 0, successful: 0, failed: 0, results: [] })
       return
     }
 
-    const pathParts = files[0].webkitRelativePath.split('/')
-    setSelectedFolderName(pathParts[0] || 'Selected folder')
+    if (audioFiles.length === 0) return
 
-    const res = await importLocalFiles.mutateAsync({ files: audioFiles, importType: folderImportType })
-    setFolderResult(res)
-    if (res.successful > 0) onTracksAdded()
+    if (shouldPromptForDestination(sourceKind, audioFiles.length)) {
+      setPendingLocalImportRequest({
+        files: audioFiles,
+        sourceKind,
+        importType,
+        selectedFolderName: nextSelectedFolderName,
+      })
+      return
+    }
+
+    await executeLocalImport({
+      files: audioFiles,
+      sourceKind,
+      importType,
+      destinationFolderId: null,
+      destinationCollectionId: null,
+      destinationFolder: null,
+      structureMode: 'flatten',
+      bypassParentFolder: false,
+    })
+  }
+
+  const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    const pathParts = ((files[0] as FileWithRelativePath | undefined)?.webkitRelativePath || '').split('/')
+    await requestLocalImport({
+      files,
+      sourceKind: 'folder',
+      importType: folderImportType,
+      selectedFolderName: pathParts[0] || 'Selected folder',
+    })
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    handleLocalFilesImport(Array.from(e.target.files || []))
+    void requestLocalImport({
+      files: Array.from(e.target.files || []),
+      sourceKind: 'files',
+      importType: localImportType,
+      selectedFolderName: null,
+    })
   }
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
-    const files = Array.from(e.dataTransfer.files).filter((f) =>
-      /\.(wav|mp3|flac|aiff|ogg|m4a)$/i.test(f.name)
-    )
-    if (files.length > 0) handleLocalFilesImport(files)
-  }, [])
+    void requestLocalImport({
+      files: Array.from(e.dataTransfer.files || []),
+      sourceKind: 'files',
+      importType: localImportType,
+      selectedFolderName: null,
+    })
+  }, [localImportType])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -660,19 +851,67 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
     setIsDragging(false)
   }, [])
 
+  const handleFolderDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsFolderDragging(false)
+    const files = Array.from(e.dataTransfer.files || [])
+    void requestLocalImport({
+      files,
+      sourceKind: 'folder',
+      importType: folderImportType,
+      selectedFolderName: resolveDroppedFolderName(files) || 'Selected folder',
+    })
+  }, [folderImportType])
+
+  const handleFolderDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsFolderDragging(true)
+  }, [])
+
+  const handleFolderDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsFolderDragging(false)
+  }, [])
+
+  const handleDestinationPromptConfirm = (choice: ImportDestinationChoice) => {
+    if (!pendingLocalImportRequest) return
+    const request = pendingLocalImportRequest
+    setPendingLocalImportRequest(null)
+    if (request.selectedFolderName) {
+      setSelectedFolderName(request.selectedFolderName)
+    }
+    void executeLocalImport({
+      files: request.files,
+      sourceKind: request.sourceKind,
+      importType: choice.importType,
+      destinationFolderId: choice.folderId,
+      destinationCollectionId: choice.collectionId,
+      destinationFolder: choice.destinationFolder,
+      structureMode: choice.structureMode,
+      bypassParentFolder: choice.bypassParentFolder,
+    })
+  }
+
+  const handleDestinationPromptCancel = () => {
+    setPendingLocalImportRequest(null)
+  }
+
   const handleClear = () => {
     setText('')
     setResult(null)
     setLocalResult(null)
     setFolderResult(null)
     setSelectedFolderName(null)
+    setPendingLocalImportRequest(null)
+    setIsDragging(false)
+    setIsFolderDragging(false)
     if (folderInputRef.current) folderInputRef.current.value = ''
   }
 
   const modes: { id: ImportMode; label: string; icon: React.ReactNode }[] = [
     { id: 'youtube', label: 'YouTube', icon: <Link size={14} /> },
-    ...(spotdlEnabled ? [{ id: 'spotify' as const, label: 'Spotify', icon: <Music2 size={14} /> }] : []),
-    { id: 'soundcloud', label: 'SoundCloud', icon: <Waves size={14} /> },
+    ...(spotdlEnabled ? [{ id: 'spotify' as const, label: 'Account Links', icon: <Music2 size={14} /> }] : []),
+    { id: 'soundcloud', label: 'Audio Links', icon: <Waves size={14} /> },
     { id: 'local', label: 'Local Files', icon: <HardDrive size={14} /> },
     { id: 'folder', label: 'Folder', icon: <FolderOpen size={14} /> },
   ]
@@ -681,11 +920,28 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
     importLinks.isPending ||
     importSpotify.isPending ||
     importSoundCloud.isPending ||
-    importLocalFiles.isPending
+    importLocalFiles.isPending ||
+    batchAddSlicesToFolder.isPending ||
+    createFolder.isPending
 
   return (
     <>
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      {pendingLocalImportRequest && (
+        <ImportDestinationPrompt
+          isOpen={Boolean(pendingLocalImportRequest)}
+          sourceKind={pendingLocalImportRequest.sourceKind}
+          importCount={pendingLocalImportRequest.files.length}
+          sourceFiles={pendingLocalImportRequest.files}
+          initialImportType={pendingLocalImportRequest.importType}
+          folders={destinationFolders as Folder[]}
+          collections={destinationCollections as Collection[]}
+          isLoading={isDestinationFoldersLoading || isDestinationCollectionsLoading}
+          isSubmitting={importLocalFiles.isPending || batchAddSlicesToFolder.isPending || createFolder.isPending}
+          onCancel={handleDestinationPromptCancel}
+          onConfirm={handleDestinationPromptConfirm}
+        />
+      )}
 
       <div className="space-y-3">
         {/* Main import card */}
@@ -694,9 +950,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
             <div>
               <h2 className="font-semibold text-white">Import Samples</h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                {spotdlEnabled
-                  ? 'YouTube, Spotify, SoundCloud, or local files'
-                  : 'YouTube, SoundCloud, or local files'}
+                YouTube, external links, or local files
               </p>
             </div>
             <button
@@ -784,9 +1038,9 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                     <li>• Public links work without connecting</li>
                   </ul>
                   <div className="font-mono mt-2 space-y-0.5">
-                    <div>https://open.spotify.com/track/TRACK_ID</div>
-                    <div>https://open.spotify.com/playlist/PLAYLIST_ID</div>
-                    <div>https://open.spotify.com/album/ALBUM_ID</div>
+                    <div>https://example.com/track/TRACK_ID</div>
+                    <div>https://example.com/playlist/PLAYLIST_ID</div>
+                    <div>https://example.com/album/ALBUM_ID</div>
                   </div>
                 </div>
 
@@ -795,7 +1049,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                   <div className="flex items-center justify-between bg-surface-overlay/30 rounded-lg px-3 py-2.5 border border-surface-border">
                     <span className="text-sm text-slate-300 flex items-center gap-2">
                       <span className={`w-2 h-2 rounded-full ${spotifyStatus.connected ? 'bg-green-500' : 'bg-slate-500'}`} />
-                      {spotifyStatus.connected ? 'Connected to Spotify' : 'Not connected'}
+                      {spotifyStatus.connected ? 'Account connected' : 'Not connected'}
                     </span>
                     {spotifyStatus.connected ? (
                       <button
@@ -809,7 +1063,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                         href={getSpotifyAuthUrl()}
                         className="text-xs px-3 py-1 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors"
                       >
-                        Connect Spotify
+                        Connect account
                       </a>
                     )}
                   </div>
@@ -817,12 +1071,11 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                   <div className="flex items-start gap-2 text-xs text-yellow-400 bg-yellow-400/10 rounded-lg p-3 border border-yellow-400/20">
                     <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
                     <div>
-                      <div className="font-medium">Spotify credentials not configured</div>
+                      <div className="font-medium">Credentials not configured</div>
                       <div className="text-yellow-400/70 mt-0.5">
-                        Set <code className="font-mono">SPOTIFY_CLIENT_ID</code> and{' '}
-                        <code className="font-mono">SPOTIFY_CLIENT_SECRET</code> in your{' '}
+                        Set the required client ID and client secret values in{' '}
                         <code className="font-mono">.env</code> to enable OAuth &amp; private playlists.
-                        Public URLs still work without OAuth.
+                        Public URLs still work without account connection.
                       </div>
                     </div>
                   </div>
@@ -831,7 +1084,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                 <textarea
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder="Paste Spotify track, playlist, or album URLs…"
+                  placeholder="Paste track, playlist, or album URLs…"
                   rows={7}
                   className="w-full px-4 py-3 bg-surface-base border border-surface-border rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary font-mono text-sm resize-none"
                 />
@@ -868,15 +1121,15 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
                     <li>• Playlist URLs contain <code className="font-mono text-slate-300">/sets/</code> in the path</li>
                   </ul>
                   <div className="font-mono mt-2 space-y-0.5">
-                    <div>https://soundcloud.com/artist/track-name</div>
-                    <div>https://soundcloud.com/artist/sets/playlist-name</div>
+                    <div>https://example.com/artist/track-name</div>
+                    <div>https://example.com/artist/sets/playlist-name</div>
                   </div>
                 </div>
 
                 <textarea
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder="Paste SoundCloud track or playlist URLs…"
+                  placeholder="Paste track or playlist URLs…"
                   rows={8}
                   className="w-full px-4 py-3 bg-surface-base border border-surface-border rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary font-mono text-sm resize-none"
                 />
@@ -991,11 +1244,22 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
 
                 <div
                   onClick={() => folderInputRef.current?.click()}
-                  className="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors border-surface-border hover:border-slate-500 hover:bg-surface-overlay/30"
+                  onDrop={handleFolderDrop}
+                  onDragOver={handleFolderDragOver}
+                  onDragLeave={handleFolderDragLeave}
+                  className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                    isFolderDragging
+                      ? 'border-accent-primary bg-accent-primary/10'
+                      : 'border-surface-border hover:border-slate-500 hover:bg-surface-overlay/30'
+                  }`}
                 >
                   <FolderOpen className="mx-auto mb-3 text-yellow-500" size={36} />
                   <div className="text-white font-medium text-sm">
-                    {selectedFolderName ? `Selected: ${selectedFolderName}` : 'Click to select a folder'}
+                    {isFolderDragging
+                      ? 'Drop folder files here'
+                      : selectedFolderName
+                      ? `Selected: ${selectedFolderName}`
+                      : 'Click to select or drag & drop a folder'}
                   </div>
                   <div className="text-xs text-slate-400 mt-1">
                     All audio files in the folder will be imported

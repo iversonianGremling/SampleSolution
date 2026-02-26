@@ -37,6 +37,7 @@ export interface Slice {
   startTime: number
   endTime: number
   filePath: string | null
+  sampleType?: 'oneshot' | 'loop' | null
   favorite: boolean
   sampleModified?: boolean
   sampleModifiedAt?: string | null
@@ -56,6 +57,8 @@ export interface Slice {
   noisiness?: number | null
   loudness?: number | null
   roughness?: number | null
+  stereoWidth?: number | null
+  rhythmicRegularity?: number | null
   scale?: string | null
   sampleRate?: number | null
   channels?: number | null
@@ -81,6 +84,7 @@ export interface Slice {
     dynamics?: number | null
     saturation?: number | null
     surface?: number | null
+    rhythmic?: number | null
     density?: number | null
     ambience?: number | null
     stereoWidth?: number | null
@@ -214,6 +218,7 @@ export interface AudioFeatures {
   brightness?: number | null
   warmth?: number | null
   hardness?: number | null
+  noisiness?: number | null
   roughness?: number | null
   sharpness?: number | null
   // Phase 1: Advanced Spectral Features
@@ -301,6 +306,7 @@ export interface FeatureWeights {
   brightness: number
   warmth: number
   hardness: number
+  noisiness: number
   roughness: number
   sharpness: number
   // Phase 2: Stereo features
@@ -335,6 +341,7 @@ export interface FeatureWeights {
   crestFactor: number
   transientSpectralCentroid: number
   transientSpectralFlatness: number
+  sampleTypeConfidence: number
 }
 
 export interface SamplePoint {
@@ -393,6 +400,13 @@ export interface YouTubeSourceNode {
   sliceCount: number
 }
 
+export interface StreamingSourceNode {
+  id: number
+  title: string
+  thumbnailUrl: string
+  sliceCount: number
+}
+
 export interface FolderNode {
   path: string
   name: string
@@ -411,6 +425,11 @@ export interface LibrarySourceNode {
 export interface SourceTree {
   youtube: YouTubeSourceNode[]
   local: { count: number }
+  streaming?: {
+    soundcloud: { count: number; tracks: StreamingSourceNode[] }
+    spotify: { count: number; tracks: StreamingSourceNode[] }
+    bandcamp: { count: number; tracks: StreamingSourceNode[] }
+  }
   folders: FolderNode[]
   libraries?: LibrarySourceNode[]
 }
@@ -420,6 +439,12 @@ export type SourceScope =
   | { type: 'youtube' }
   | { type: 'youtube-video'; trackId: number }
   | { type: 'local' }
+  | { type: 'soundcloud' }
+  | { type: 'soundcloud-track'; trackId: number }
+  | { type: 'spotify' }
+  | { type: 'spotify-track'; trackId: number }
+  | { type: 'bandcamp' }
+  | { type: 'bandcamp-track'; trackId: number }
   | { type: 'folder'; path: string }
   | { type: 'library'; libraryId: string }
   | { type: 'my-folder'; folderId: number }

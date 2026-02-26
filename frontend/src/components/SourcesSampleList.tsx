@@ -11,11 +11,18 @@ import {
 } from './SourcesSampleListRow'
 import { CustomCheckbox } from './CustomCheckbox'
 import { createDragPreview } from './DragPreview'
+import { useAppDialog } from '../hooks/useAppDialog'
 import type { SliceWithTrackExtended } from '../types'
 import { createManagedAudio, releaseManagedAudio } from '../services/globalAudioVolume'
 import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
 import { freqToNoteName } from '../utils/musicTheory'
 import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
+import type { BulkRenameHighlightRange } from '../utils/bulkRename'
+import {
+  hydratePersistedSettingFromElectron,
+  readPersistedSetting,
+  writePersistedSetting,
+} from '../utils/persistentSettings'
 
 type SortField =
   | 'name'
@@ -25,7 +32,6 @@ type SortField =
   | 'year'
   | 'albumArtist'
   | 'genre'
-  | 'composer'
   | 'trackNumber'
   | 'discNumber'
   | 'tagBpm'
@@ -54,7 +60,7 @@ type SortField =
 type SortOrder = 'asc' | 'desc'
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
-type DuplicatePairMatchType = 'exact' | 'content' | 'file'
+type DuplicatePairMatchType = 'exact' | 'content' | 'file' | 'near-duplicate'
 
 interface DuplicatePairListMeta {
   pairId: string
@@ -64,6 +70,7 @@ interface DuplicatePairListMeta {
   selectedForDelete: boolean
   selectedDeleteSampleId: number | null
   canDelete: boolean
+  canDeletePartner: boolean
   matchType: DuplicatePairMatchType
   similarityPercent: number
 }
@@ -78,16 +85,32 @@ type ResizeState = {
 
 const COLUMN_VISIBILITY_STORAGE_KEY = 'sources-list-column-visibility-v1'
 const COLUMN_WIDTHS_STORAGE_KEY = 'sources-list-column-widths-v1'
+const LIST_VIEW_STATE_STORAGE_KEY = 'sources-list-view-state-v1'
+const LIST_VIEW_PRESETS_STORAGE_KEY = 'sources-list-view-presets-v1'
+
+interface StoredListViewState {
+  columnVisibility: SourcesListColumnVisibility
+  columnWidths: SourcesListColumnWidths
+  sortField: SortField | null
+  sortOrder: SortOrder
+}
+
+interface ListViewPreset {
+  id: string
+  name: string
+  state: StoredListViewState
+  createdAt: string
+  updatedAt: string
+}
 
 const MIN_COLUMN_WIDTHS: SourcesListColumnWidths = {
   name: 96,
-  tags: 100,
+  tags: 110,
   artist: 100,
   album: 100,
   year: 56,
   albumArtist: 110,
   genre: 100,
-  composer: 110,
   trackNumber: 72,
   discNumber: 72,
   tagBpm: 72,
@@ -119,20 +142,19 @@ const MIN_COLUMN_WIDTHS: SourcesListColumnWidths = {
 const MAX_COLUMN_WIDTH = 520
 
 const COLUMN_OPTIONS: Array<{ key: ColumnKey; label: string }> = [
-  { key: 'tags', label: 'Tags' },
+  { key: 'tags', label: 'Instruments' },
   { key: 'artist', label: 'Artist' },
   { key: 'album', label: 'Album' },
   { key: 'year', label: 'Year' },
   { key: 'albumArtist', label: 'Album Artist' },
   { key: 'genre', label: 'Genre' },
-  { key: 'composer', label: 'Composer' },
   { key: 'trackNumber', label: 'Track #' },
   { key: 'discNumber', label: 'Disc #' },
-  { key: 'tagBpm', label: 'Tag BPM' },
-  { key: 'musicalKey', label: 'Tag Key' },
+  { key: 'tagBpm', label: 'Detected BPM' },
+  { key: 'musicalKey', label: 'Detected Key' },
   { key: 'isrc', label: 'ISRC' },
   { key: 'bpm', label: 'BPM' },
-  { key: 'key', label: 'Key' },
+  { key: 'key', label: 'Fundamental' },
   { key: 'scale', label: 'Scale' },
   { key: 'envelope', label: 'Envelope' },
   { key: 'brightness', label: 'Brightness Bar' },
@@ -141,7 +163,7 @@ const COLUMN_OPTIONS: Array<{ key: ColumnKey; label: string }> = [
   { key: 'hardness', label: 'Hardness Bar' },
   { key: 'sharpness', label: 'Sharpness Bar' },
   { key: 'loudness', label: 'Loudness' },
-  { key: 'sampleRate', label: 'Sample Rate' },
+  { key: 'sampleRate', label: 'SR' },
   { key: 'channels', label: 'Channels' },
   { key: 'format', label: 'Format' },
   { key: 'polyphony', label: 'Polyphony' },
@@ -153,51 +175,11 @@ const COLUMN_OPTIONS: Array<{ key: ColumnKey; label: string }> = [
 
 const DEFAULT_LIST_ROW_HEIGHT_PX = 40
 const LIST_ROW_OVERSCAN = 4
-const MAX_RENDERED_LIST_ROWS = 80
+const MIN_RENDERED_LIST_ROWS = 24
+const MIN_VIRTUALIZED_ROW_HEIGHT_PX = Math.max(20, Math.floor(DEFAULT_LIST_ROW_HEIGHT_PX * 0.5))
+const MAX_VIRTUALIZED_ROW_HEIGHT_PX = DEFAULT_LIST_ROW_HEIGHT_PX * 3
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
-
-type ColumnMinBreakpoint = 'sm' | 'md' | 'lg' | 'xl'
-
-const BREAKPOINT_MIN_WIDTH: Record<ColumnMinBreakpoint, number> = {
-  sm: 640,
-  md: 768,
-  lg: 1024,
-  xl: 1280,
-}
-
-const COLUMN_MIN_BREAKPOINT: Partial<Record<ColumnKey, ColumnMinBreakpoint>> = {
-  tags: 'sm',
-  artist: 'lg',
-  album: 'lg',
-  year: 'lg',
-  albumArtist: 'xl',
-  genre: 'xl',
-  composer: 'xl',
-  trackNumber: 'xl',
-  discNumber: 'xl',
-  tagBpm: 'xl',
-  musicalKey: 'xl',
-  isrc: 'xl',
-  bpm: 'md',
-  key: 'lg',
-  scale: 'lg',
-  envelope: 'xl',
-  brightness: 'xl',
-  noisiness: 'xl',
-  warmth: 'xl',
-  hardness: 'xl',
-  sharpness: 'xl',
-  loudness: 'xl',
-  sampleRate: 'xl',
-  channels: 'xl',
-  format: 'xl',
-  polyphony: 'xl',
-  dateAdded: 'xl',
-  dateCreated: 'xl',
-  dateModified: 'xl',
-  path: 'xl',
-}
 
 const OPTIONAL_COLUMNS: ColumnKey[] = [
   'tags',
@@ -206,7 +188,6 @@ const OPTIONAL_COLUMNS: ColumnKey[] = [
   'year',
   'albumArtist',
   'genre',
-  'composer',
   'trackNumber',
   'discNumber',
   'tagBpm',
@@ -242,8 +223,22 @@ function getPathDisplay(sample: SliceWithTrackExtended): string | null {
   return sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || null
 }
 
-function getKeyDisplay(sample: SliceWithTrackExtended): string | null {
-  return (sample.fundamentalFrequency ? freqToNoteName(sample.fundamentalFrequency) : null) || sample.keyEstimate || null
+function getKeySortValue(sample: SliceWithTrackExtended): number | null {
+  return sample.fundamentalFrequency ?? null
+}
+
+function getScaleSortValue(sample: SliceWithTrackExtended): string | null {
+  if (sample.keyEstimate && sample.keyEstimate.trim()) {
+    return sample.keyEstimate.trim().toLowerCase()
+  }
+
+  if (sample.scale && sample.scale.trim()) {
+    const mode = sample.scale.trim().toLowerCase()
+    const tonic = sample.fundamentalFrequency ? freqToNoteName(sample.fundamentalFrequency) : null
+    return tonic ? `${tonic} ${mode}`.toLowerCase() : mode
+  }
+
+  return null
 }
 
 function getSortValue(sample: SliceWithTrackExtended, field: SortField): string | number | null {
@@ -262,8 +257,6 @@ function getSortValue(sample: SliceWithTrackExtended, field: SortField): string 
       return sample.track.albumArtist?.toLowerCase() ?? null
     case 'genre':
       return sample.track.genre?.toLowerCase() ?? null
-    case 'composer':
-      return sample.track.composer?.toLowerCase() ?? null
     case 'trackNumber':
       return sample.track.trackNumber ?? null
     case 'discNumber':
@@ -277,9 +270,9 @@ function getSortValue(sample: SliceWithTrackExtended, field: SortField): string 
     case 'bpm':
       return sample.bpm ?? null
     case 'key':
-      return getKeyDisplay(sample)?.toLowerCase() ?? null
+      return getKeySortValue(sample)
     case 'scale':
-      return sample.scale?.toLowerCase() ?? null
+      return getScaleSortValue(sample)
     case 'envelope':
       return sample.envelopeType?.toLowerCase() ?? null
     case 'brightness':
@@ -336,7 +329,7 @@ interface SourcesSampleListProps {
   loopEnabled?: boolean
   tuneTargetNote?: string | null
   tunePlaybackMode?: TunePlaybackMode
-  bulkRenamePreviewById?: Map<number, { nextName: string; hasChange: boolean }>
+  bulkRenamePreviewById?: Map<number, { nextName: string; hasChange: boolean; highlightRanges: BulkRenameHighlightRange[] }>
   similarityMode?: {
     enabled: boolean
     referenceSampleId: number
@@ -344,58 +337,170 @@ interface SourcesSampleListProps {
   } | null
   duplicatePairMetaBySampleId?: Map<number, DuplicatePairListMeta>
   onToggleDuplicateDeleteTarget?: (sampleId: number) => void
+  onKeepDuplicateSample?: (sampleId: number) => void
 }
 
-function loadColumnVisibility(): SourcesListColumnVisibility {
-  if (typeof window === 'undefined') {
-    return DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY
+function sanitizeColumnVisibility(
+  value: Partial<SourcesListColumnVisibility> | null | undefined,
+): SourcesListColumnVisibility {
+  return {
+    ...DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY,
+    ...(value ?? {}),
+    envelope: value?.envelope ?? DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY.envelope,
+    loudness: value?.loudness ?? DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY.loudness,
   }
+}
 
+function parseColumnVisibility(raw: string | null): SourcesListColumnVisibility | null {
+  if (!raw) return null
   try {
-    const raw = window.localStorage.getItem(COLUMN_VISIBILITY_STORAGE_KEY)
-    if (!raw) return DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY
     const parsed = JSON.parse(raw) as Partial<SourcesListColumnVisibility>
+    return sanitizeColumnVisibility(parsed)
+  } catch {
+    return null
+  }
+}
+
+function sanitizeColumnWidths(
+  value: Partial<SourcesListColumnWidths> | null | undefined,
+): SourcesListColumnWidths {
+  const parsed = value ?? {}
+  const sanitizedEntries = (Object.keys(DEFAULT_SOURCES_LIST_COLUMN_WIDTHS) as SourcesListColumnWidthKey[])
+    .map((key) => {
+      const width = parsed[key]
+      if (typeof width !== 'number' || !Number.isFinite(width)) {
+        return [key, DEFAULT_SOURCES_LIST_COLUMN_WIDTHS[key]] as const
+      }
+      const min = MIN_COLUMN_WIDTHS[key]
+      return [key, Math.max(min, Math.min(MAX_COLUMN_WIDTH, width))] as const
+    })
+
+  return Object.fromEntries(sanitizedEntries) as SourcesListColumnWidths
+}
+
+function parseColumnWidths(raw: string | null): SourcesListColumnWidths | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<SourcesListColumnWidths>
+    return sanitizeColumnWidths(parsed)
+  } catch {
+    return null
+  }
+}
+
+function parseSortField(value: unknown): SortField | null {
+  return typeof value === 'string' ? (value as SortField) : null
+}
+
+function parseSortOrder(value: unknown): SortOrder {
+  return value === 'desc' ? 'desc' : 'asc'
+}
+
+function parseStoredListViewState(raw: string | null): StoredListViewState | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as {
+      columnVisibility?: Partial<SourcesListColumnVisibility>
+      columnWidths?: Partial<SourcesListColumnWidths>
+      sortField?: unknown
+      sortOrder?: unknown
+    }
     return {
-      ...DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY,
-      ...parsed,
-      envelope: parsed.envelope ?? false,
-      loudness: parsed.loudness ?? true,
+      columnVisibility: sanitizeColumnVisibility(parsed.columnVisibility),
+      columnWidths: sanitizeColumnWidths(parsed.columnWidths),
+      sortField: parseSortField(parsed.sortField),
+      sortOrder: parseSortOrder(parsed.sortOrder),
     }
   } catch {
-    return DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY
+    return null
   }
 }
 
-function loadColumnWidths(): SourcesListColumnWidths {
-  if (typeof window === 'undefined') {
-    return DEFAULT_SOURCES_LIST_COLUMN_WIDTHS
-  }
-
+function parseStoredListViewPresets(raw: string | null): ListViewPreset[] | null {
+  if (!raw) return null
   try {
-    const raw = window.localStorage.getItem(COLUMN_WIDTHS_STORAGE_KEY)
-    if (!raw) return DEFAULT_SOURCES_LIST_COLUMN_WIDTHS
-    const parsed = JSON.parse(raw) as Partial<SourcesListColumnWidths>
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
 
-    const sanitizedEntries = (Object.keys(DEFAULT_SOURCES_LIST_COLUMN_WIDTHS) as SourcesListColumnWidthKey[])
-      .map((key) => {
-        const value = parsed[key]
-        if (typeof value !== 'number' || !Number.isFinite(value)) {
-          return [key, DEFAULT_SOURCES_LIST_COLUMN_WIDTHS[key]] as const
+    const normalized = parsed
+      .map((item, index) => {
+        if (!item || typeof item !== 'object') return null
+        const preset = item as {
+          id?: unknown
+          name?: unknown
+          createdAt?: unknown
+          updatedAt?: unknown
+          state?: {
+            columnVisibility?: Partial<SourcesListColumnVisibility>
+            columnWidths?: Partial<SourcesListColumnWidths>
+            sortField?: unknown
+            sortOrder?: unknown
+          }
         }
-        const min = MIN_COLUMN_WIDTHS[key]
-        return [key, Math.max(min, Math.min(MAX_COLUMN_WIDTH, value))] as const
+        const state = preset.state
+        const name = typeof preset.name === 'string' ? preset.name.trim() : ''
+        if (!name) return null
+        return {
+          id: typeof preset.id === 'string' && preset.id.trim() ? preset.id : `list-view-preset-${index}-${Date.now()}`,
+          name,
+          createdAt: typeof preset.createdAt === 'string' ? preset.createdAt : new Date().toISOString(),
+          updatedAt: typeof preset.updatedAt === 'string' ? preset.updatedAt : new Date().toISOString(),
+          state: {
+            columnVisibility: sanitizeColumnVisibility(state?.columnVisibility),
+            columnWidths: sanitizeColumnWidths(state?.columnWidths),
+            sortField: parseSortField(state?.sortField),
+            sortOrder: parseSortOrder(state?.sortOrder),
+          },
+        } satisfies ListViewPreset
       })
+      .filter((value): value is ListViewPreset => Boolean(value))
 
-    return Object.fromEntries(sanitizedEntries) as SourcesListColumnWidths
+    return normalized
   } catch {
-    return DEFAULT_SOURCES_LIST_COLUMN_WIDTHS
+    return []
+  }
+}
+
+function loadInitialListViewState(): StoredListViewState {
+  const persisted = parseStoredListViewState(readPersistedSetting(LIST_VIEW_STATE_STORAGE_KEY))
+  if (persisted) return persisted
+
+  const legacyColumnVisibility =
+    parseColumnVisibility(readPersistedSetting(COLUMN_VISIBILITY_STORAGE_KEY)) ??
+    DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY
+  const legacyColumnWidths =
+    parseColumnWidths(readPersistedSetting(COLUMN_WIDTHS_STORAGE_KEY)) ??
+    DEFAULT_SOURCES_LIST_COLUMN_WIDTHS
+
+  return {
+    columnVisibility: legacyColumnVisibility,
+    columnWidths: legacyColumnWidths,
+    sortField: null,
+    sortOrder: 'asc',
+  }
+}
+
+function loadInitialListViewPresets(): ListViewPreset[] {
+  return parseStoredListViewPresets(readPersistedSetting(LIST_VIEW_PRESETS_STORAGE_KEY)) ?? []
+}
+
+function snapshotListViewState(
+  columnVisibility: SourcesListColumnVisibility,
+  columnWidths: SourcesListColumnWidths,
+  sortField: SortField | null,
+  sortOrder: SortOrder,
+): StoredListViewState {
+  return {
+    columnVisibility: { ...columnVisibility },
+    columnWidths: { ...columnWidths },
+    sortField,
+    sortOrder,
   }
 }
 
 function getRowMinWidth(
   columnVisibility: SourcesListColumnVisibility,
   columnWidths: SourcesListColumnWidths,
-  viewportWidth: number,
   showSimilarity = false,
   showInstrumentColumn = true,
 ): number {
@@ -416,8 +521,6 @@ function getRowMinWidth(
 
   for (const key of OPTIONAL_COLUMNS) {
     if (!columnVisibility[key]) continue
-    const minBreakpoint = COLUMN_MIN_BREAKPOINT[key]
-    if (minBreakpoint && viewportWidth < BREAKPOINT_MIN_WIDTH[minBreakpoint]) continue
     width += columnWidths[key]
   }
 
@@ -446,22 +549,26 @@ export function SourcesSampleList({
   loopEnabled = false,
   tuneTargetNote = null,
   tunePlaybackMode: _tunePlaybackMode = 'tape',
-  bulkRenamePreviewById = new Map<number, { nextName: string; hasChange: boolean }>(),
+  bulkRenamePreviewById = new Map<number, { nextName: string; hasChange: boolean; highlightRanges: BulkRenameHighlightRange[] }>(),
   similarityMode = null,
   duplicatePairMetaBySampleId = new Map<number, DuplicatePairListMeta>(),
   onToggleDuplicateDeleteTarget,
+  onKeepDuplicateSample,
 }: SourcesSampleListProps) {
+  const { confirm, prompt, dialogNode } = useAppDialog()
   const [playingId, setPlayingId] = useState<number | null>(null)
+  const [initialListViewState] = useState<StoredListViewState>(() => loadInitialListViewState())
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const listContainerRef = useRef<HTMLDivElement>(null)
   const headerRef = useRef<HTMLDivElement>(null)
   const rowsContainerRef = useRef<HTMLDivElement>(null)
-  const [sortField, setSortField] = useState<SortField | null>(null)
-  const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
-  const [columnVisibility, setColumnVisibility] = useState<SourcesListColumnVisibility>(loadColumnVisibility)
-  const [columnWidths, setColumnWidths] = useState<SourcesListColumnWidths>(loadColumnWidths)
-  const [viewportWidth, setViewportWidth] = useState(() =>
-    typeof window === 'undefined' ? BREAKPOINT_MIN_WIDTH.xl : window.innerWidth
+  const [sortField, setSortField] = useState<SortField | null>(initialListViewState.sortField)
+  const [sortOrder, setSortOrder] = useState<SortOrder>(initialListViewState.sortOrder)
+  const [columnVisibility, setColumnVisibility] = useState<SourcesListColumnVisibility>(initialListViewState.columnVisibility)
+  const [columnWidths, setColumnWidths] = useState<SourcesListColumnWidths>(initialListViewState.columnWidths)
+  const [savedPresets, setSavedPresets] = useState<ListViewPreset[]>(loadInitialListViewPresets)
+  const [isStorageReady, setIsStorageReady] = useState(
+    () => typeof window === 'undefined' || !window.electron?.getSetting
   )
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
@@ -472,7 +579,8 @@ export function SourcesSampleList({
   const columnsMenuPopoverRef = useRef<HTMLDivElement>(null)
   const columnsMenuButtonRef = useRef<HTMLButtonElement>(null)
   const resizeStateRef = useRef<ResizeState | null>(null)
-  const isDuplicatePairMode = duplicatePairMetaBySampleId.size > 0
+  const isDuplicatePairMode =
+    Boolean(onToggleDuplicateDeleteTarget) && duplicatePairMetaBySampleId.size > 0
 
   const preparePlaybackForSample = (sample: SliceWithTrackExtended) =>
     prepareSamplePreviewPlayback(sample, tuneTargetNote)
@@ -485,31 +593,71 @@ export function SourcesSampleList({
         audioRef.current = null
       }
     }
-  }, [])
+  }, [isLoading, samples.length])
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(COLUMN_VISIBILITY_STORAGE_KEY, JSON.stringify(columnVisibility))
+    if (typeof window === 'undefined' || !window.electron?.getSetting) {
+      setIsStorageReady(true)
+      return
     }
-  }, [columnVisibility])
+
+    let cancelled = false
+
+    const hydrateFromElectron = async () => {
+      const [stateRaw, legacyVisibilityRaw, legacyWidthsRaw, presetsRaw] = await Promise.all([
+        hydratePersistedSettingFromElectron(LIST_VIEW_STATE_STORAGE_KEY),
+        hydratePersistedSettingFromElectron(COLUMN_VISIBILITY_STORAGE_KEY),
+        hydratePersistedSettingFromElectron(COLUMN_WIDTHS_STORAGE_KEY),
+        hydratePersistedSettingFromElectron(LIST_VIEW_PRESETS_STORAGE_KEY),
+      ])
+
+      if (cancelled) return
+
+      const persistedState = parseStoredListViewState(stateRaw)
+      if (persistedState) {
+        setSortField(persistedState.sortField)
+        setSortOrder(persistedState.sortOrder)
+        setColumnVisibility(persistedState.columnVisibility)
+        setColumnWidths(persistedState.columnWidths)
+      } else {
+        const legacyVisibility = parseColumnVisibility(legacyVisibilityRaw)
+        const legacyWidths = parseColumnWidths(legacyWidthsRaw)
+        if (legacyVisibility) {
+          setColumnVisibility(legacyVisibility)
+        }
+        if (legacyWidths) {
+          setColumnWidths(legacyWidths)
+        }
+      }
+
+      const parsedPresets = parseStoredListViewPresets(presetsRaw)
+      if (parsedPresets) {
+        setSavedPresets(parsedPresets)
+      }
+
+      setIsStorageReady(true)
+    }
+
+    void hydrateFromElectron()
+
+    return () => {
+      cancelled = true
+    }
+  }, [isLoading, samples.length])
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(columnWidths))
-    }
-  }, [columnWidths])
+    if (!isStorageReady) return
+    const nextState = snapshotListViewState(columnVisibility, columnWidths, sortField, sortOrder)
+    writePersistedSetting(LIST_VIEW_STATE_STORAGE_KEY, JSON.stringify(nextState))
+    // Keep legacy keys populated for backward compatibility with older clients.
+    writePersistedSetting(COLUMN_VISIBILITY_STORAGE_KEY, JSON.stringify(columnVisibility))
+    writePersistedSetting(COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(columnWidths))
+  }, [isStorageReady, columnVisibility, columnWidths, sortField, sortOrder])
 
   useEffect(() => {
-    if (typeof window === 'undefined') return
-
-    const handleResize = () => {
-      setViewportWidth(window.innerWidth)
-    }
-
-    handleResize()
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
-  }, [])
+    if (!isStorageReady) return
+    writePersistedSetting(LIST_VIEW_PRESETS_STORAGE_KEY, JSON.stringify(savedPresets))
+  }, [isStorageReady, savedPresets])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -602,7 +750,7 @@ export function SourcesSampleList({
         resizeObserver.disconnect()
       }
     }
-  }, [])
+  }, [isLoading, samples.length])
 
   const handlePlay = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -730,12 +878,6 @@ export function SourcesSampleList({
     }
   }
 
-  useEffect(() => {
-    if (!isDuplicatePairMode) return
-    setSortField(null)
-    setSortOrder('asc')
-  }, [isDuplicatePairMode])
-
   const handleSortClick = (field: SortField) => {
     if (isDuplicatePairMode) return
     if (sortField === field) {
@@ -831,8 +973,8 @@ export function SourcesSampleList({
   )
 
   const rowMinWidth = useMemo(
-    () => getRowMinWidth(columnVisibility, columnWidths, viewportWidth, similarityMode?.enabled, showInstrumentColumn),
-    [columnVisibility, columnWidths, viewportWidth, similarityMode?.enabled, showInstrumentColumn]
+    () => getRowMinWidth(columnVisibility, columnWidths, similarityMode?.enabled, showInstrumentColumn),
+    [columnVisibility, columnWidths, similarityMode?.enabled, showInstrumentColumn]
   )
   const controlsColumnWidth = Math.max(
     72,
@@ -850,14 +992,38 @@ export function SourcesSampleList({
       }
     }
 
-    const rowHeight = measuredRowHeight ?? DEFAULT_LIST_ROW_HEIGHT_PX
+    const measuredOrDefaultRowHeight = measuredRowHeight ?? DEFAULT_LIST_ROW_HEIGHT_PX
+    const rowHeight = clamp(
+      measuredOrDefaultRowHeight,
+      MIN_VIRTUALIZED_ROW_HEIGHT_PX,
+      MAX_VIRTUALIZED_ROW_HEIGHT_PX,
+    )
+    const safeViewportRowHeight = Math.max(1, Math.min(rowHeight, DEFAULT_LIST_ROW_HEIGHT_PX))
+    const minRowsToFillViewport =
+      viewportHeight > 0
+        ? Math.ceil(viewportHeight / safeViewportRowHeight) + LIST_ROW_OVERSCAN * 2
+        : 0
+    const renderedRowBudget = Math.max(MIN_RENDERED_LIST_ROWS, minRowsToFillViewport)
+
+    const buildRowWindow = (targetRow: number) => {
+      const maxStartRow = Math.max(0, totalRows - renderedRowBudget)
+      const startRow = clamp(targetRow, 0, maxStartRow)
+      const endRowExclusive = Math.min(totalRows, startRow + renderedRowBudget)
+      return {
+        startIndex: startRow,
+        endIndex: endRowExclusive,
+        topSpacer: startRow * rowHeight,
+        bottomSpacer: Math.max(0, totalRows - endRowExclusive) * rowHeight,
+      }
+    }
+
     if (viewportHeight <= 0 || rowHeight <= 0) {
-      const fallbackEndIndex = Math.min(totalRows, MAX_RENDERED_LIST_ROWS)
+      // Avoid blank regions while viewport metrics are unavailable.
       return {
         startIndex: 0,
-        endIndex: fallbackEndIndex,
+        endIndex: totalRows,
         topSpacer: 0,
-        bottomSpacer: Math.max(0, totalRows - fallbackEndIndex) * rowHeight,
+        bottomSpacer: 0,
       }
     }
 
@@ -866,45 +1032,22 @@ export function SourcesSampleList({
 
     const rawStartRow = Math.floor(visibleTop / rowHeight) - LIST_ROW_OVERSCAN
     const rawEndRowExclusive = Math.ceil(visibleBottom / rowHeight) + LIST_ROW_OVERSCAN
+
+    if (rawEndRowExclusive <= 0) {
+      return buildRowWindow(0)
+    }
+
+    if (rawStartRow >= totalRows) {
+      return buildRowWindow(totalRows - renderedRowBudget)
+    }
+
     const startRow = clamp(rawStartRow, 0, totalRows)
     const endRowExclusive = clamp(rawEndRowExclusive, 0, totalRows)
-
     if (startRow >= endRowExclusive) {
-      if (rawEndRowExclusive <= 0) {
-        const fallbackEndIndex = Math.min(totalRows, MAX_RENDERED_LIST_ROWS)
-        return {
-          startIndex: 0,
-          endIndex: fallbackEndIndex,
-          topSpacer: 0,
-          bottomSpacer: Math.max(0, totalRows - fallbackEndIndex) * rowHeight,
-        }
-      }
-
-      if (rawStartRow >= totalRows) {
-        const fallbackStartRow = Math.max(0, totalRows - MAX_RENDERED_LIST_ROWS)
-        return {
-          startIndex: fallbackStartRow,
-          endIndex: totalRows,
-          topSpacer: fallbackStartRow * rowHeight,
-          bottomSpacer: 0,
-        }
-      }
-
-      return {
-        startIndex: startRow,
-        endIndex: startRow,
-        topSpacer: startRow * rowHeight,
-        bottomSpacer: Math.max(0, totalRows - startRow) * rowHeight,
-      }
+      return buildRowWindow(startRow)
     }
 
-    const cappedEndRowExclusive = Math.min(endRowExclusive, startRow + MAX_RENDERED_LIST_ROWS)
-    return {
-      startIndex: startRow,
-      endIndex: cappedEndRowExclusive,
-      topSpacer: startRow * rowHeight,
-      bottomSpacer: Math.max(0, totalRows - cappedEndRowExclusive) * rowHeight,
-    }
+    return buildRowWindow(startRow)
   }, [sortedSamples.length, scrollTop, viewportHeight, measuredRowHeight])
 
   const visibleSamples = useMemo(
@@ -981,13 +1124,109 @@ export function SourcesSampleList({
     }))
   }
 
+  const applyPreset = (preset: ListViewPreset) => {
+    setColumnVisibility(preset.state.columnVisibility)
+    setColumnWidths(preset.state.columnWidths)
+    setSortField(preset.state.sortField)
+    setSortOrder(preset.state.sortOrder)
+  }
+
+  const saveCurrentAsPreset = async () => {
+    const inputName = await prompt({
+      title: 'Save List Preset',
+      message: 'Enter a name for this list view preset.',
+      placeholder: 'Preset name',
+      confirmText: 'Save preset',
+      validate: (value) => {
+        if (!value.trim()) {
+          return 'Preset name is required.'
+        }
+        return null
+      },
+    })
+    const presetName = inputName?.trim()
+    if (!presetName) return
+
+    const currentState = snapshotListViewState(columnVisibility, columnWidths, sortField, sortOrder)
+    const timestamp = new Date().toISOString()
+    const existing = savedPresets.find(
+      (preset) => preset.name.toLowerCase() === presetName.toLowerCase(),
+    )
+
+    if (existing) {
+      const shouldOverwrite = await confirm({
+        title: 'Overwrite Preset?',
+        message: `Preset "${existing.name}" already exists. Overwrite it?`,
+        confirmText: 'Overwrite',
+        cancelText: 'Cancel',
+      })
+      if (!shouldOverwrite) return
+
+      setSavedPresets((current) =>
+        current.map((preset) =>
+          preset.id === existing.id
+            ? {
+                ...preset,
+                name: presetName,
+                updatedAt: timestamp,
+                state: currentState,
+              }
+            : preset
+        ),
+      )
+      return
+    }
+
+    setSavedPresets((current) => [
+      {
+        id: `list-view-preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: presetName,
+        state: currentState,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      ...current,
+    ])
+  }
+
+  const updatePreset = (presetId: string) => {
+    const currentState = snapshotListViewState(columnVisibility, columnWidths, sortField, sortOrder)
+    const timestamp = new Date().toISOString()
+    setSavedPresets((current) =>
+      current.map((preset) =>
+        preset.id === presetId
+          ? {
+              ...preset,
+              updatedAt: timestamp,
+              state: currentState,
+            }
+          : preset
+      ),
+    )
+  }
+
+  const deletePreset = async (presetId: string) => {
+    const preset = savedPresets.find((item) => item.id === presetId)
+    if (!preset) return
+    const confirmed = await confirm({
+      title: 'Delete Preset',
+      message: `Delete preset "${preset.name}"?`,
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      isDestructive: true,
+    })
+    if (!confirmed) return
+
+    setSavedPresets((current) => current.filter((item) => item.id !== presetId))
+  }
+
   const toggleColumnsMenu = () => {
     if (showColumnsMenu) {
       setShowColumnsMenu(false)
       return
     }
 
-    const MENU_WIDTH = 224 // Tailwind w-56
+    const MENU_WIDTH = 256 // Tailwind w-64
     const VIEWPORT_PADDING = 8
     const button = columnsMenuButtonRef.current
 
@@ -1057,11 +1296,12 @@ export function SourcesSampleList({
   )
 
   return (
-    <div className={`sources-list-compact flex flex-col h-full overflow-hidden ${isDuplicatePairMode ? 'bg-surface-base/30' : ''}`}>
-      <div ref={listContainerRef} className="flex-1 overflow-auto">
+    <div className={`sources-list-compact flex min-h-0 flex-col h-full overflow-hidden ${isDuplicatePairMode ? 'bg-surface-base/30' : ''}`}>
+      <div ref={listContainerRef} className="flex-1 min-h-0 overflow-auto">
         <div
           ref={headerRef}
           className="sticky top-0 border-b border-surface-border flex-shrink-0 z-20 bg-surface-raised/95 backdrop-blur-sm relative"
+          style={{ minWidth: rowMinWidth }}
         >
           <div className="grid">
             <div className="col-start-1 row-start-1 flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 pr-2" style={{ minWidth: rowMinWidth }}>
@@ -1113,22 +1353,22 @@ export function SourcesSampleList({
             </div>
 
             {columnVisibility.tags && (
-              <div className="relative hidden sm:flex flex-shrink-0 text-left pl-1" style={{ width: columnWidths.tags }}>
+              <div className="relative flex flex-shrink-0 text-left pl-1" style={{ width: columnWidths.tags }}>
                 <button
                   onClick={() => handleSortClick('tags')}
                   className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
                     sortField === 'tags' ? 'text-accent-primary' : ''
                   }`}
                 >
-                  <span className="truncate">Tags</span>
+                  <span className="truncate">Instruments</span>
                   {getSortIcon('tags')}
                 </button>
-                {renderResizeHandle('tags', 'hidden sm:block')}
+                {renderResizeHandle('tags')}
               </div>
             )}
 
             {columnVisibility.artist && (
-              <div className="relative hidden lg:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.artist }}>
+              <div className="relative flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.artist }}>
                 <button
                   onClick={() => handleSortClick('artist')}
                   className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
@@ -1138,11 +1378,11 @@ export function SourcesSampleList({
                   <span className="truncate">Artist</span>
                   {getSortIcon('artist')}
                 </button>
-                {renderResizeHandle('artist', 'hidden lg:block')}
+                {renderResizeHandle('artist')}
               </div>
             )}
             {columnVisibility.album && (
-              <div className="relative hidden lg:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.album }}>
+              <div className="relative flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.album }}>
                 <button
                   onClick={() => handleSortClick('album')}
                   className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
@@ -1152,11 +1392,11 @@ export function SourcesSampleList({
                   <span className="truncate">Album</span>
                   {getSortIcon('album')}
                 </button>
-                {renderResizeHandle('album', 'hidden lg:block')}
+                {renderResizeHandle('album')}
               </div>
             )}
             {columnVisibility.year && (
-              <div className="relative hidden lg:flex flex-shrink-0 justify-center" style={{ width: columnWidths.year }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.year }}>
                 <button
                   onClick={() => handleSortClick('year')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1166,12 +1406,12 @@ export function SourcesSampleList({
                   Year
                   {getSortIcon('year')}
                 </button>
-                {renderResizeHandle('year', 'hidden lg:block')}
+                {renderResizeHandle('year')}
               </div>
             )}
 
             {columnVisibility.albumArtist && (
-              <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.albumArtist }}>
+              <div className="relative flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.albumArtist }}>
                 <button
                   onClick={() => handleSortClick('albumArtist')}
                   className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
@@ -1181,12 +1421,12 @@ export function SourcesSampleList({
                   <span className="truncate">Alb Artist</span>
                   {getSortIcon('albumArtist')}
                 </button>
-                {renderResizeHandle('albumArtist', 'hidden xl:block')}
+                {renderResizeHandle('albumArtist')}
               </div>
             )}
 
             {columnVisibility.genre && (
-              <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.genre }}>
+              <div className="relative flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.genre }}>
                 <button
                   onClick={() => handleSortClick('genre')}
                   className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
@@ -1196,27 +1436,12 @@ export function SourcesSampleList({
                   <span className="truncate">Genre</span>
                   {getSortIcon('genre')}
                 </button>
-                {renderResizeHandle('genre', 'hidden xl:block')}
-              </div>
-            )}
-
-            {columnVisibility.composer && (
-              <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.composer }}>
-                <button
-                  onClick={() => handleSortClick('composer')}
-                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
-                    sortField === 'composer' ? 'text-accent-primary' : ''
-                  }`}
-                >
-                  <span className="truncate">Composer</span>
-                  {getSortIcon('composer')}
-                </button>
-                {renderResizeHandle('composer', 'hidden xl:block')}
+                {renderResizeHandle('genre')}
               </div>
             )}
 
             {columnVisibility.trackNumber && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.trackNumber }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.trackNumber }}>
                 <button
                   onClick={() => handleSortClick('trackNumber')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1226,12 +1451,12 @@ export function SourcesSampleList({
                   Trk
                   {getSortIcon('trackNumber')}
                 </button>
-                {renderResizeHandle('trackNumber', 'hidden xl:block')}
+                {renderResizeHandle('trackNumber')}
               </div>
             )}
 
             {columnVisibility.discNumber && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.discNumber }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.discNumber }}>
                 <button
                   onClick={() => handleSortClick('discNumber')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1241,42 +1466,42 @@ export function SourcesSampleList({
                   Disc
                   {getSortIcon('discNumber')}
                 </button>
-                {renderResizeHandle('discNumber', 'hidden xl:block')}
+                {renderResizeHandle('discNumber')}
               </div>
             )}
 
             {columnVisibility.tagBpm && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.tagBpm }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.tagBpm }}>
                 <button
                   onClick={() => handleSortClick('tagBpm')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
                     sortField === 'tagBpm' ? 'text-accent-primary' : ''
                   }`}
                 >
-                  Tag BPM
+                  Detected BPM
                   {getSortIcon('tagBpm')}
                 </button>
-                {renderResizeHandle('tagBpm', 'hidden xl:block')}
+                {renderResizeHandle('tagBpm')}
               </div>
             )}
 
             {columnVisibility.musicalKey && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.musicalKey }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.musicalKey }}>
                 <button
                   onClick={() => handleSortClick('musicalKey')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
                     sortField === 'musicalKey' ? 'text-accent-primary' : ''
                   }`}
                 >
-                  Tag Key
+                  Detected Key
                   {getSortIcon('musicalKey')}
                 </button>
-                {renderResizeHandle('musicalKey', 'hidden xl:block')}
+                {renderResizeHandle('musicalKey')}
               </div>
             )}
 
             {columnVisibility.isrc && (
-              <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.isrc }}>
+              <div className="relative flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.isrc }}>
                 <button
                   onClick={() => handleSortClick('isrc')}
                   className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
@@ -1286,12 +1511,12 @@ export function SourcesSampleList({
                   <span className="truncate">ISRC</span>
                   {getSortIcon('isrc')}
                 </button>
-                {renderResizeHandle('isrc', 'hidden xl:block')}
+                {renderResizeHandle('isrc')}
               </div>
             )}
 
             {columnVisibility.bpm && (
-              <div className="relative hidden md:flex flex-shrink-0 items-center justify-center" style={{ width: columnWidths.bpm }}>
+              <div className="relative flex flex-shrink-0 items-center justify-center" style={{ width: columnWidths.bpm }}>
                 <button
                   onClick={() => handleSortClick('bpm')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1301,27 +1526,27 @@ export function SourcesSampleList({
                   BPM
                   {getSortIcon('bpm')}
                 </button>
-                {renderResizeHandle('bpm', 'hidden md:block')}
+                {renderResizeHandle('bpm')}
               </div>
             )}
 
             {columnVisibility.key && (
-              <div className="relative hidden lg:flex flex-shrink-0 items-center justify-center" style={{ width: columnWidths.key }}>
+              <div className="relative flex flex-shrink-0 items-center justify-center" style={{ width: columnWidths.key }}>
                 <button
                   onClick={() => handleSortClick('key')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
                     sortField === 'key' ? 'text-accent-primary' : ''
                   }`}
                 >
-                  Key
+                  Fund
                   {getSortIcon('key')}
                 </button>
-                {renderResizeHandle('key', 'hidden lg:block')}
+                {renderResizeHandle('key')}
               </div>
             )}
 
             {columnVisibility.scale && (
-              <div className="relative hidden lg:flex flex-shrink-0 justify-center" style={{ width: columnWidths.scale }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.scale }}>
                 <button
                   onClick={() => handleSortClick('scale')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1331,11 +1556,11 @@ export function SourcesSampleList({
                   Scale
                   {getSortIcon('scale')}
                 </button>
-                {renderResizeHandle('scale', 'hidden lg:block')}
+                {renderResizeHandle('scale')}
               </div>
             )}
             {columnVisibility.envelope && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.envelope }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.envelope }}>
                 <button
                   onClick={() => handleSortClick('envelope')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1345,11 +1570,11 @@ export function SourcesSampleList({
                   Env
                   {getSortIcon('envelope')}
                 </button>
-                {renderResizeHandle('envelope', 'hidden xl:block')}
+                {renderResizeHandle('envelope')}
               </div>
             )}
             {columnVisibility.brightness && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.brightness }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.brightness }}>
                 <button
                   onClick={() => handleSortClick('brightness')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1359,11 +1584,11 @@ export function SourcesSampleList({
                   Bright
                   {getSortIcon('brightness')}
                 </button>
-                {renderResizeHandle('brightness', 'hidden xl:block')}
+                {renderResizeHandle('brightness')}
               </div>
             )}
             {columnVisibility.noisiness && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.noisiness }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.noisiness }}>
                 <button
                   onClick={() => handleSortClick('noisiness')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1373,11 +1598,11 @@ export function SourcesSampleList({
                   Noisy
                   {getSortIcon('noisiness')}
                 </button>
-                {renderResizeHandle('noisiness', 'hidden xl:block')}
+                {renderResizeHandle('noisiness')}
               </div>
             )}
             {columnVisibility.warmth && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.warmth }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.warmth }}>
                 <button
                   onClick={() => handleSortClick('warmth')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1387,11 +1612,11 @@ export function SourcesSampleList({
                   Warmth
                   {getSortIcon('warmth')}
                 </button>
-                {renderResizeHandle('warmth', 'hidden xl:block')}
+                {renderResizeHandle('warmth')}
               </div>
             )}
             {columnVisibility.hardness && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.hardness }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.hardness }}>
                 <button
                   onClick={() => handleSortClick('hardness')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1401,11 +1626,11 @@ export function SourcesSampleList({
                   Hard
                   {getSortIcon('hardness')}
                 </button>
-                {renderResizeHandle('hardness', 'hidden xl:block')}
+                {renderResizeHandle('hardness')}
               </div>
             )}
             {columnVisibility.sharpness && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.sharpness }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.sharpness }}>
                 <button
                   onClick={() => handleSortClick('sharpness')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1415,11 +1640,11 @@ export function SourcesSampleList({
                   Sharp
                   {getSortIcon('sharpness')}
                 </button>
-                {renderResizeHandle('sharpness', 'hidden xl:block')}
+                {renderResizeHandle('sharpness')}
               </div>
             )}
             {columnVisibility.loudness && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.loudness }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.loudness }}>
                 <button
                   onClick={() => handleSortClick('loudness')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1429,25 +1654,25 @@ export function SourcesSampleList({
                   Loud
                   {getSortIcon('loudness')}
                 </button>
-                {renderResizeHandle('loudness', 'hidden xl:block')}
+                {renderResizeHandle('loudness')}
               </div>
             )}
             {columnVisibility.sampleRate && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.sampleRate }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.sampleRate }}>
                 <button
                   onClick={() => handleSortClick('sampleRate')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
                     sortField === 'sampleRate' ? 'text-accent-primary' : ''
                   }`}
                 >
-                  Rate
+                  SR
                   {getSortIcon('sampleRate')}
                 </button>
-                {renderResizeHandle('sampleRate', 'hidden xl:block')}
+                {renderResizeHandle('sampleRate')}
               </div>
             )}
             {columnVisibility.channels && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.channels }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.channels }}>
                 <button
                   onClick={() => handleSortClick('channels')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1457,11 +1682,11 @@ export function SourcesSampleList({
                   Ch
                   {getSortIcon('channels')}
                 </button>
-                {renderResizeHandle('channels', 'hidden xl:block')}
+                {renderResizeHandle('channels')}
               </div>
             )}
             {columnVisibility.format && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.format }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.format }}>
                 <button
                   onClick={() => handleSortClick('format')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1471,11 +1696,11 @@ export function SourcesSampleList({
                   Fmt
                   {getSortIcon('format')}
                 </button>
-                {renderResizeHandle('format', 'hidden xl:block')}
+                {renderResizeHandle('format')}
               </div>
             )}
             {columnVisibility.polyphony && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.polyphony }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.polyphony }}>
                 <button
                   onClick={() => handleSortClick('polyphony')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1485,11 +1710,11 @@ export function SourcesSampleList({
                   Poly
                   {getSortIcon('polyphony')}
                 </button>
-                {renderResizeHandle('polyphony', 'hidden xl:block')}
+                {renderResizeHandle('polyphony')}
               </div>
             )}
             {columnVisibility.dateAdded && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateAdded }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateAdded }}>
                 <button
                   onClick={() => handleSortClick('dateAdded')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1499,11 +1724,11 @@ export function SourcesSampleList({
                   Added
                   {getSortIcon('dateAdded')}
                 </button>
-                {renderResizeHandle('dateAdded', 'hidden xl:block')}
+                {renderResizeHandle('dateAdded')}
               </div>
             )}
             {columnVisibility.dateCreated && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateCreated }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateCreated }}>
                 <button
                   onClick={() => handleSortClick('dateCreated')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1513,11 +1738,11 @@ export function SourcesSampleList({
                   Created
                   {getSortIcon('dateCreated')}
                 </button>
-                {renderResizeHandle('dateCreated', 'hidden xl:block')}
+                {renderResizeHandle('dateCreated')}
               </div>
             )}
             {columnVisibility.dateModified && (
-              <div className="relative hidden xl:flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateModified }}>
+              <div className="relative flex flex-shrink-0 justify-center" style={{ width: columnWidths.dateModified }}>
                 <button
                   onClick={() => handleSortClick('dateModified')}
                   className={`w-full flex items-center justify-center section-label transition-colors hover:text-text-secondary ${
@@ -1527,11 +1752,11 @@ export function SourcesSampleList({
                   Modified
                   {getSortIcon('dateModified')}
                 </button>
-                {renderResizeHandle('dateModified', 'hidden xl:block')}
+                {renderResizeHandle('dateModified')}
               </div>
             )}
             {columnVisibility.path && (
-              <div className="relative hidden xl:flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.path }}>
+              <div className="relative flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.path }}>
                 <button
                   onClick={() => handleSortClick('path')}
                   className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
@@ -1541,7 +1766,7 @@ export function SourcesSampleList({
                   <span className="truncate">Path</span>
                   {getSortIcon('path')}
                 </button>
-                {renderResizeHandle('path', 'hidden xl:block')}
+                {renderResizeHandle('path')}
               </div>
             )}
 
@@ -1581,7 +1806,7 @@ export function SourcesSampleList({
           <div className="divide-y divide-surface-border">
             {visibleSamples.map((sample) => {
               const renamePreview = bulkRenamePreviewById.get(sample.id)
-              const duplicatePairMeta = duplicatePairMetaBySampleId.get(sample.id)
+              const duplicatePairMeta = isDuplicatePairMode ? duplicatePairMetaBySampleId.get(sample.id) : undefined
               return (
                 <SourcesSampleListRow
                   key={sample.id}
@@ -1607,9 +1832,13 @@ export function SourcesSampleList({
                   showInstrumentColumn={showInstrumentColumn}
                   showSimilarity={similarityMode?.enabled}
                   bulkRenamePreviewName={renamePreview?.hasChange ? renamePreview.nextName : null}
+                  bulkRenameHighlightRanges={renamePreview?.hasChange ? renamePreview.highlightRanges : []}
                   duplicatePairMeta={duplicatePairMeta}
                   onToggleDuplicateDeleteTarget={
                     duplicatePairMeta ? () => onToggleDuplicateDeleteTarget?.(sample.id) : undefined
+                  }
+                  onKeepDuplicateSample={
+                    duplicatePairMeta ? () => onKeepDuplicateSample?.(sample.id) : undefined
                   }
                 />
               )
@@ -1625,12 +1854,12 @@ export function SourcesSampleList({
       {showColumnsMenu && typeof document !== 'undefined' && createPortal(
         <div
           ref={columnsMenuPopoverRef}
-          className="fixed w-56 bg-surface-raised border border-surface-border rounded-lg shadow-xl z-[120] p-2"
+          className="fixed w-64 bg-surface-raised border border-surface-border rounded-lg shadow-xl z-[120] p-2"
           style={{ top: columnsMenuPosition.top, left: columnsMenuPosition.left }}
         >
           <div className="text-[11px] text-slate-500 px-2 py-1">Columns</div>
           <div className="px-2 pb-1 text-[10px] text-slate-500">Drag the <GripVertical size={10} className="inline" /> handles in the header to resize.</div>
-          <div className="max-h-64 overflow-y-auto">
+          <div className="max-h-56 overflow-y-auto">
             {COLUMN_OPTIONS.map((option) => (
               <label key={option.key} className="flex items-center gap-2 px-2 py-1.5 text-xs text-slate-300 hover:bg-surface-base rounded cursor-pointer">
                 <input
@@ -1655,9 +1884,79 @@ export function SourcesSampleList({
           >
             Reset widths
           </button>
+          <button
+            onClick={() => {
+              setSortField(null)
+              setSortOrder('asc')
+            }}
+            className="mt-1 w-full px-2 py-1.5 text-xs text-slate-300 bg-surface-base border border-surface-border rounded hover:bg-surface-overlay transition-colors"
+          >
+            Reset sort
+          </button>
+
+          <div className="mt-2 border-t border-surface-border pt-2">
+            <div className="flex items-center justify-between px-1">
+              <div className="text-[11px] text-slate-500">Presets</div>
+              <button
+                type="button"
+                onClick={() => {
+                  void saveCurrentAsPreset()
+                }}
+                className="rounded border border-surface-border bg-surface-base px-2 py-1 text-[10px] text-slate-300 hover:bg-surface-overlay transition-colors"
+                title="Save current list view as preset"
+              >
+                Save current
+              </button>
+            </div>
+
+            {savedPresets.length === 0 ? (
+              <div className="px-2 py-2 text-[10px] text-slate-500">No presets saved yet.</div>
+            ) : (
+              <div className="mt-1 max-h-36 space-y-1 overflow-y-auto">
+                {savedPresets.map((preset) => (
+                  <div key={preset.id} className="rounded border border-surface-border bg-surface-base/70 p-1.5">
+                    <button
+                      type="button"
+                      onClick={() => applyPreset(preset)}
+                      className="w-full truncate text-left text-[11px] text-slate-200 hover:text-white"
+                      title={`Apply preset: ${preset.name}`}
+                    >
+                      {preset.name}
+                    </button>
+                    <div className="mt-1 flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => applyPreset(preset)}
+                        className="rounded border border-surface-border px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-surface-overlay transition-colors"
+                      >
+                        Apply
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updatePreset(preset.id)}
+                        className="rounded border border-surface-border px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-surface-overlay transition-colors"
+                      >
+                        Update
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void deletePreset(preset.id)
+                        }}
+                        className="rounded border border-red-500/30 px-1.5 py-0.5 text-[10px] text-red-300 hover:bg-red-500/10 transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>,
         document.body
       )}
+      {dialogNode}
     </div>
   )
 }

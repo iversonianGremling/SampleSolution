@@ -20,6 +20,7 @@ interface VideoGroup {
 
 interface SourcesYouTubeGroupedGridProps {
   samples: SliceWithTrackExtended[]
+  selectedYouTubeTrackId?: number | null
   selectedId: number | null
   selectedIds?: Set<number>
   onSelect: (id: number) => void
@@ -85,6 +86,7 @@ function FadeInOnMount({ children }: { children: ReactNode }) {
 
 export function SourcesYouTubeGroupedGrid({
   samples,
+  selectedYouTubeTrackId = null,
   selectedId,
   selectedIds = new Set(),
   onSelect,
@@ -248,11 +250,21 @@ export function SourcesYouTubeGroupedGrid({
     }
   }, [samples, expandedVideos])
 
+  const scopedSamples =
+    selectedYouTubeTrackId === null
+      ? samples
+      : samples.filter((sample) => sample.trackId === selectedYouTubeTrackId)
+
   // Group samples by video - use sourceTree if available to show all videos
   const videoGroups: VideoGroup[] = (() => {
     if (sourceTree?.youtube) {
+      const scopedVideos =
+        selectedYouTubeTrackId === null
+          ? sourceTree.youtube
+          : sourceTree.youtube.filter((video) => video.id === selectedYouTubeTrackId)
+
       // Create groups from source tree to include videos with 0 samples
-      const samplesByTrack = samples.reduce((acc, sample) => {
+      const samplesByTrack = scopedSamples.reduce((acc, sample) => {
         if (!acc[sample.trackId]) {
           acc[sample.trackId] = []
         }
@@ -260,7 +272,7 @@ export function SourcesYouTubeGroupedGrid({
         return acc
       }, {} as Record<number, SliceWithTrackExtended[]>)
 
-      return sourceTree.youtube.map(video => {
+      return scopedVideos.map(video => {
         const videoSamples = samplesByTrack[video.id] || []
         // Try to get track info from first sample if available
         const firstSample = videoSamples[0]
@@ -277,7 +289,7 @@ export function SourcesYouTubeGroupedGrid({
 
     // Fallback to old behavior if sourceTree is not available
     return Object.values(
-      samples.reduce((acc, sample) => {
+      scopedSamples.reduce((acc, sample) => {
         const trackId = sample.trackId
         if (!acc[trackId]) {
           acc[trackId] = {
@@ -339,13 +351,13 @@ export function SourcesYouTubeGroupedGrid({
     }
 
     if (!gridNode || viewportHeight <= 0 || rowHeight <= 0) {
-      const fallbackEndIndex = Math.min(itemCount, safeColumnCount * MAX_RENDERED_ROWS)
-      const fallbackRenderedRows = Math.ceil(fallbackEndIndex / safeColumnCount)
+      // If we cannot place the virtual window yet, render all items to avoid blank
+      // regions caused by stale/unknown container measurements.
       return {
         startIndex: 0,
-        endIndex: fallbackEndIndex,
+        endIndex: itemCount,
         topSpacer: 0,
-        bottomSpacer: rowHeight > 0 ? Math.max(0, totalRows - fallbackRenderedRows) * rowHeight : 0,
+        bottomSpacer: 0,
       }
     }
 

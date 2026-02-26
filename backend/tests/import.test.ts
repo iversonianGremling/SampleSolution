@@ -29,6 +29,13 @@ describe('Import API', () => {
     app = createApp({ dataDir: TEST_DATA_DIR })
   })
 
+  it('returns method guidance for GET /api/import/files', async () => {
+    const res = await request(app).get('/api/import/files?importType=sample&allowAiTagging=true')
+
+    expect(res.status).toBe(405)
+    expect(res.body.error).toBe('Method not allowed. Use POST /api/import/files with multipart/form-data.')
+  })
+
   it('creates a folder inside an imported source root and exposes it in sources tree', async () => {
     const importedRoot = path.join(TEST_DATA_DIR, 'import-root')
     const existingFolder = path.join(importedRoot, 'existing')

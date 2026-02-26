@@ -88,11 +88,12 @@ const FOLDER_COLORS = [
 
 const FACET_LABELS: Record<string, string> = {
   // Tag categories
-  general: 'General Tags',
-  type: 'Type Tags',
-  instrument: 'Instrument Tags',
-  energy: 'Energy Tags',
-  filename: 'Filename Tags',
+  general: 'General Instruments',
+  type: 'Type Instruments',
+  instrument: 'Instruments',
+  character: 'Character Instruments',
+  energy: 'Energy Instruments',
+  filename: 'Filename Instruments',
   // Metadata fields
   instrumentType: 'Instrument Type',
   genrePrimary: 'Genre',

@@ -32,6 +32,14 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
   const FRONTEND_URL = options.frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'
   const SESSION_SECRET = options.sessionSecret || process.env.SESSION_SECRET || 'dev-secret-change-me'
   const SPOTIFY_IMPORT_ENABLED = parseBooleanEnv(process.env.ENABLE_SPOTIFY_IMPORT, true)
+  const CORS_ALLOW_NULL_ORIGIN = parseBooleanEnv(process.env.CORS_ALLOW_NULL_ORIGIN, false)
+  const CORS_ALLOW_NO_ORIGIN = parseBooleanEnv(process.env.CORS_ALLOW_NO_ORIGIN, false)
+  const CORS_ALLOW_ALL_ORIGINS = parseBooleanEnv(process.env.CORS_ALLOW_ALL_ORIGINS, false)
+  const CORS_EXTRA_ORIGINS = (process.env.CORS_EXTRA_ORIGINS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+  const allowedOrigins = new Set([FRONTEND_URL, ...CORS_EXTRA_ORIGINS])
 
   // Ensure data directories exist
   const dirs = ['audio', 'slices', 'peaks', 'uploads']
@@ -44,7 +52,21 @@ export function createApp(options: { dataDir?: string; frontendUrl?: string; ses
 
   // Middleware
   app.use(cors({
-    origin: FRONTEND_URL,
+    origin: (origin, callback) => {
+      if (CORS_ALLOW_ALL_ORIGINS) {
+        callback(null, true)
+        return
+      }
+      if (!origin) {
+        callback(null, CORS_ALLOW_NO_ORIGIN)
+        return
+      }
+      if (origin === 'null') {
+        callback(null, CORS_ALLOW_NULL_ORIGIN)
+        return
+      }
+      callback(null, allowedOrigins.has(origin))
+    },
     credentials: true,
   }))
   app.use(session({

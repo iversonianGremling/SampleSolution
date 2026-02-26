@@ -2,9 +2,90 @@ import { createContext, useContext, useState, useCallback, useRef, useEffect } f
 import type { Slice } from '../types'
 import { getSliceDownloadUrl } from '../api/client'
 import { getGlobalAudioVolume, setGlobalAudioVolume } from '../services/globalAudioVolume'
-import { LabAudioEngine, type LabSettings } from '../services/LabAudioEngine'
+import { DEFAULT_LAB_SETTINGS, type LabSettings } from '../services/LabAudioEngine'
 
 const PAD_COUNT = 16
+
+const cloneDefaultLabSettings = (): LabSettings => ({
+  ...DEFAULT_LAB_SETTINGS,
+  fxOrder: [...DEFAULT_LAB_SETTINGS.fxOrder],
+})
+
+const clamp = (value: number, min: number, max: number) => {
+  if (!Number.isFinite(value)) return min
+  return Math.max(min, Math.min(max, value))
+}
+
+const createDistortionCurve = (amount: number, samples: number = 32768) => {
+  const curve = new Float32Array(samples)
+  const k = clamp(amount, 0, 1) * 180
+  const deg = Math.PI / 180
+
+  for (let i = 0; i < samples; i++) {
+    const x = (i * 2) / samples - 1
+    curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x))
+  }
+
+  return curve
+}
+
+const createLinearDistortionCurve = (samples: number = 1024) => {
+  const curve = new Float32Array(samples)
+  for (let i = 0; i < samples; i++) {
+    curve[i] = (i / (samples - 1)) * 2 - 1
+  }
+  return curve
+}
+
+const LINEAR_DISTORTION_CURVE = createLinearDistortionCurve()
+
+const createImpulseResponse = (
+  context: BaseAudioContext,
+  durationSeconds: number,
+  decay: number,
+  dampingHz: number
+) => {
+  const seconds = clamp(durationSeconds, 0.1, 12)
+  const decayAmount = clamp(decay, 0.5, 8)
+  const length = Math.max(1, Math.floor(context.sampleRate * seconds))
+  const impulse = context.createBuffer(2, length, context.sampleRate)
+  const damping = clamp(dampingHz, 600, 20000)
+  const nyquist = context.sampleRate * 0.5
+  const dampingFactor = clamp(damping / Math.max(1, nyquist), 0.02, 1)
+
+  for (let channel = 0; channel < impulse.numberOfChannels; channel++) {
+    const data = impulse.getChannelData(channel)
+    for (let i = 0; i < length; i++) {
+      const position = i / length
+      const envelope = Math.pow(1 - position, decayAmount)
+      const dampingEnvelope = Math.pow(1 - position, 1 - dampingFactor)
+      data[i] = (Math.random() * 2 - 1) * envelope
+      data[i] *= dampingEnvelope
+    }
+  }
+
+  return impulse
+}
+
+interface GlobalFxChain {
+  inputNode: GainNode
+  highpass: BiquadFilterNode
+  peaking: BiquadFilterNode
+  lowpass: BiquadFilterNode
+  distortion: WaveShaperNode
+  compressor: DynamicsCompressorNode
+  delayDry: GainNode
+  delay: DelayNode
+  delayTone: BiquadFilterNode
+  delayFeedback: GainNode
+  delayWet: GainNode
+  reverbDry: GainNode
+  reverbConvolver: ConvolverNode
+  reverbDamping: BiquadFilterNode
+  reverbWet: GainNode
+  outputGain: GainNode
+  reverbSignature: string
+}
 
 export interface PadState {
   slice: Slice | null
@@ -30,6 +111,9 @@ interface DrumRackContextValue {
   padFxSettings: Map<number, LabSettings>
   setPadFxSettings: (padIndex: number, settings: LabSettings) => void
   clearPadFx: (padIndex: number) => void
+  globalFxSettings: LabSettings
+  setGlobalFxSettings: (settings: LabSettings) => void
+  clearGlobalFx: () => void
 }
 
 const DrumRackContext = createContext<DrumRackContextValue | null>(null)
@@ -48,12 +132,180 @@ export function DrumRackProvider({ children }: { children: React.ReactNode }) {
 
   const [previewingSliceId, setPreviewingSliceId] = useState<number | null>(null)
   const [padFxSettings, setPadFxSettingsState] = useState<Map<number, LabSettings>>(() => new Map())
-  const padLabEnginesRef = useRef<Map<number, LabAudioEngine>>(new Map())
+  const [globalFxSettings, setGlobalFxSettingsState] = useState<LabSettings>(() => cloneDefaultLabSettings())
   const audioContextRef = useRef<AudioContext | null>(null)
   const audioBuffersRef = useRef<Map<number, AudioBuffer>>(new Map())
   const masterGainRef = useRef<GainNode | null>(null)
   const padGainNodesRef = useRef<GainNode[]>([])
+  const globalFxChainRef = useRef<GlobalFxChain | null>(null)
+  const globalFxSettingsRef = useRef<LabSettings>(cloneDefaultLabSettings())
   const previewSourceRef = useRef<{ source: AudioBufferSourceNode; gain: GainNode } | null>(null)
+
+  const makeReverbSignature = useCallback((settings: LabSettings) => {
+    return [
+      clamp(settings.reverbSeconds, 0.1, 12).toFixed(3),
+      clamp(settings.reverbDecay, 0.5, 8).toFixed(3),
+      clamp(settings.reverbDamping, 600, 18000).toFixed(1),
+    ].join('|')
+  }, [])
+
+  const createGlobalFxChain = useCallback((ctx: AudioContext) => {
+    const inputNode = ctx.createGain()
+
+    const highpass = ctx.createBiquadFilter()
+    const peaking = ctx.createBiquadFilter()
+    peaking.type = 'peaking'
+    const lowpass = ctx.createBiquadFilter()
+    const distortion = ctx.createWaveShaper()
+    const compressor = ctx.createDynamicsCompressor()
+
+    const delaySplit = ctx.createGain()
+    const delayDry = ctx.createGain()
+    const delay = ctx.createDelay(3)
+    const delayTone = ctx.createBiquadFilter()
+    delayTone.type = 'lowpass'
+    delayTone.Q.value = 0.0001
+    const delayFeedback = ctx.createGain()
+    const delayWet = ctx.createGain()
+    const delayMerge = ctx.createGain()
+
+    const reverbSplit = ctx.createGain()
+    const reverbDry = ctx.createGain()
+    const reverbConvolver = ctx.createConvolver()
+    const reverbDamping = ctx.createBiquadFilter()
+    reverbDamping.type = 'lowpass'
+    reverbDamping.Q.value = 0.0001
+    const reverbWet = ctx.createGain()
+    const reverbMerge = ctx.createGain()
+
+    const outputGain = ctx.createGain()
+
+    inputNode.connect(highpass)
+    highpass.connect(peaking)
+    peaking.connect(lowpass)
+    lowpass.connect(distortion)
+    distortion.connect(compressor)
+    compressor.connect(delaySplit)
+
+    delaySplit.connect(delayDry)
+    delayDry.connect(delayMerge)
+    delaySplit.connect(delay)
+    delay.connect(delayTone)
+    delayTone.connect(delayFeedback)
+    delayFeedback.connect(delay)
+    delayTone.connect(delayWet)
+    delayWet.connect(delayMerge)
+
+    delayMerge.connect(reverbSplit)
+
+    reverbSplit.connect(reverbDry)
+    reverbDry.connect(reverbMerge)
+    reverbSplit.connect(reverbConvolver)
+    reverbConvolver.connect(reverbDamping)
+    reverbDamping.connect(reverbWet)
+    reverbWet.connect(reverbMerge)
+
+    reverbMerge.connect(outputGain)
+
+    const chain: GlobalFxChain = {
+      inputNode,
+      highpass,
+      peaking,
+      lowpass,
+      distortion,
+      compressor,
+      delayDry,
+      delay,
+      delayTone,
+      delayFeedback,
+      delayWet,
+      reverbDry,
+      reverbConvolver,
+      reverbDamping,
+      reverbWet,
+      outputGain,
+      reverbSignature: '',
+    }
+
+    return chain
+  }, [])
+
+  const applyGlobalFxSettings = useCallback((ctx: AudioContext, chain: GlobalFxChain, settings: LabSettings) => {
+    const now = ctx.currentTime
+
+    chain.outputGain.gain.setTargetAtTime(clamp(settings.outputGain, 0, 2), now, 0.015)
+
+    chain.highpass.type = settings.highpassEnabled ? 'highpass' : 'allpass'
+    chain.highpass.frequency.setTargetAtTime(clamp(settings.highpassFrequency, 20, 18000), now, 0.02)
+    chain.highpass.Q.setTargetAtTime(clamp(settings.highpassQ, 0.1, 24), now, 0.02)
+
+    if (settings.peakingEnabled) {
+      chain.peaking.type = 'peaking'
+      chain.peaking.frequency.setTargetAtTime(clamp(settings.peakingFrequency, 20, 20000), now, 0.02)
+      chain.peaking.gain.setTargetAtTime(clamp(settings.peakingGain, -12, 12), now, 0.02)
+      chain.peaking.Q.setTargetAtTime(clamp(settings.peakingQ, 0.1, 24), now, 0.02)
+    } else {
+      chain.peaking.type = 'allpass'
+    }
+
+    chain.lowpass.type = settings.lowpassEnabled ? 'lowpass' : 'allpass'
+    chain.lowpass.frequency.setTargetAtTime(clamp(settings.lowpassFrequency, 20, 20000), now, 0.02)
+    chain.lowpass.Q.setTargetAtTime(clamp(settings.lowpassQ, 0.1, 24), now, 0.02)
+
+    if (settings.distortionEnabled) {
+      chain.distortion.curve = createDistortionCurve(clamp(settings.distortionAmount, 0, 1))
+      chain.distortion.oversample = '2x'
+    } else {
+      chain.distortion.curve = LINEAR_DISTORTION_CURVE
+      chain.distortion.oversample = 'none'
+    }
+
+    if (settings.compressorEnabled) {
+      chain.compressor.threshold.setTargetAtTime(clamp(settings.compressorThreshold, -100, 0), now, 0.02)
+      chain.compressor.knee.setTargetAtTime(30, now, 0.02)
+      chain.compressor.ratio.setTargetAtTime(clamp(settings.compressorRatio, 1, 20), now, 0.02)
+      chain.compressor.attack.setTargetAtTime(clamp(settings.compressorAttack, 0, 1), now, 0.02)
+      chain.compressor.release.setTargetAtTime(clamp(settings.compressorRelease, 0, 1), now, 0.02)
+    } else {
+      chain.compressor.threshold.setTargetAtTime(0, now, 0.02)
+      chain.compressor.knee.setTargetAtTime(0, now, 0.02)
+      chain.compressor.ratio.setTargetAtTime(1, now, 0.02)
+      chain.compressor.attack.setTargetAtTime(0, now, 0.02)
+      chain.compressor.release.setTargetAtTime(0.01, now, 0.02)
+    }
+
+    chain.delayDry.gain.setTargetAtTime(1, now, 0.02)
+    chain.delay.delayTime.setTargetAtTime(clamp(settings.delayTime, 0, 2), now, 0.02)
+    chain.delayTone.frequency.setTargetAtTime(clamp(settings.delayTone, 600, 18000), now, 0.02)
+    chain.delayFeedback.gain.setTargetAtTime(
+      settings.delayEnabled ? clamp(settings.delayFeedback, 0, 0.95) : 0,
+      now,
+      0.02
+    )
+    chain.delayWet.gain.setTargetAtTime(
+      settings.delayEnabled ? clamp(settings.delayMix, 0, 1) : 0,
+      now,
+      0.02
+    )
+
+    chain.reverbDry.gain.setTargetAtTime(1, now, 0.02)
+    chain.reverbDamping.frequency.setTargetAtTime(clamp(settings.reverbDamping, 600, 18000), now, 0.02)
+    const reverbSignature = makeReverbSignature(settings)
+    if (settings.reverbEnabled) {
+      if (chain.reverbSignature !== reverbSignature) {
+        chain.reverbConvolver.buffer = createImpulseResponse(
+          ctx,
+          settings.reverbSeconds,
+          settings.reverbDecay,
+          settings.reverbDamping
+        )
+        chain.reverbSignature = reverbSignature
+      }
+      chain.reverbWet.gain.setTargetAtTime(clamp(settings.reverbMix, 0, 1), now, 0.02)
+    } else {
+      chain.reverbWet.gain.setTargetAtTime(0, now, 0.02)
+    }
+  }, [makeReverbSignature])
 
   const ensureAudioRouting = useCallback((ctx: AudioContext) => {
     if (!masterGainRef.current) {
@@ -63,16 +315,26 @@ export function DrumRackProvider({ children }: { children: React.ReactNode }) {
       masterGainRef.current = masterGain
     }
 
+    if (!globalFxChainRef.current) {
+      const chain = createGlobalFxChain(ctx)
+      chain.outputGain.connect(masterGainRef.current!)
+      globalFxChainRef.current = chain
+    }
+
+    if (globalFxChainRef.current) {
+      applyGlobalFxSettings(ctx, globalFxChainRef.current, globalFxSettingsRef.current)
+    }
+
     if (padGainNodesRef.current.length !== PAD_COUNT) {
       padGainNodesRef.current = Array.from({ length: PAD_COUNT }, (_, index) => {
         const padGain = ctx.createGain()
         const padState = pads[index]
         padGain.gain.value = padState && !padState.muted ? padState.volume : 0
-        padGain.connect(masterGainRef.current!)
+        padGain.connect(globalFxChainRef.current ? globalFxChainRef.current.inputNode : masterGainRef.current!)
         return padGain
       })
     }
-  }, [pads])
+  }, [applyGlobalFxSettings, createGlobalFxChain, pads])
 
   const getAudioContext = useCallback(() => {
     if (!audioContextRef.current) {
@@ -87,7 +349,7 @@ export function DrumRackProvider({ children }: { children: React.ReactNode }) {
 
   const getMasterInputNode = useCallback((): AudioNode => {
     const ctx = getAudioContext()
-    return masterGainRef.current || ctx.destination
+    return globalFxChainRef.current?.inputNode || masterGainRef.current || ctx.destination
   }, [getAudioContext])
 
   const getPadInputNode = useCallback((padIndex: number): AudioNode => {
@@ -244,20 +506,30 @@ export function DrumRackProvider({ children }: { children: React.ReactNode }) {
       next.delete(padIndex)
       return next
     })
-    const engine = padLabEnginesRef.current.get(padIndex)
-    if (engine) {
-      void engine.dispose()
-      padLabEnginesRef.current.delete(padIndex)
-    }
   }, [])
+
+  const setGlobalFxSettings = useCallback((settings: LabSettings) => {
+    const next = {
+      ...settings,
+      fxOrder: Array.isArray(settings.fxOrder) ? [...settings.fxOrder] : [...DEFAULT_LAB_SETTINGS.fxOrder],
+    }
+    globalFxSettingsRef.current = next
+    setGlobalFxSettingsState(next)
+
+    const ctx = audioContextRef.current
+    const chain = globalFxChainRef.current
+    if (!ctx || !chain) return
+
+    applyGlobalFxSettings(ctx, chain, next)
+  }, [applyGlobalFxSettings])
+
+  const clearGlobalFx = useCallback(() => {
+    setGlobalFxSettings(cloneDefaultLabSettings())
+  }, [setGlobalFxSettings])
 
   useEffect(() => {
     return () => {
       audioContextRef.current?.close()
-      for (const engine of padLabEnginesRef.current.values()) {
-        void engine.dispose()
-      }
-      padLabEnginesRef.current.clear()
     }
   }, [])
 
@@ -280,6 +552,9 @@ export function DrumRackProvider({ children }: { children: React.ReactNode }) {
       padFxSettings,
       setPadFxSettings,
       clearPadFx,
+      globalFxSettings,
+      setGlobalFxSettings,
+      clearGlobalFx,
     }}>
       {children}
     </DrumRackContext.Provider>

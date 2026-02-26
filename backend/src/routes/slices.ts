@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { eq, inArray, and, isNull, isNotNull, like, or, sql } from 'drizzle-orm'
+import { eq, inArray, and, isNull, isNotNull, like, sql } from 'drizzle-orm'
 import fs from 'fs/promises'
 import path from 'path'
 import archiver from 'archiver'
@@ -11,15 +11,33 @@ import {
   extractSlice,
   getAudioFileMetadata,
   type AudioConversionFormat,
+  type AudioConversionBitDepth,
 } from '../services/ffmpeg.js'
 import {
   analyzeAudioFeatures,
   AUDIO_ANALYSIS_CANCELLED_ERROR,
+  buildSamplePathHint,
+  deriveInstrumentType,
   featuresToTags,
   getTagMetadata,
+  parseFilenameTags,
   storeAudioFeatures,
   parseFilenameTagsSmart,
+  postAnalyzeSampleTags,
+  type ParsedFilenameTag,
+  type ReviewedTagResult,
 } from '../services/audioAnalysis.js'
+import {
+  AI_MANAGED_INSTRUMENT_TAG_NAMES,
+  findCongruentTagsInText,
+  resolveTag,
+} from '../constants/tagRegistry.js'
+import {
+  auditSampleTagsWithOllama,
+  reviewSampleTagBatchWithOllama,
+  reviewSampleTagsWithOllamaTarget,
+  type TagAuditSampleInput,
+} from '../services/ollama.js'
 
 const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
@@ -47,10 +65,213 @@ const renderUpload = multer({
 })
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
-const AUTO_REANALYSIS_TAG_CATEGORIES = ['type', 'energy', 'instrument', 'general'] as const
+const ENVELOPE_TYPE_VALUES = ['percussive', 'plucked', 'pad', 'sustained', 'hybrid'] as const
+const AI_MANAGED_INSTRUMENT_TAG_NAME_SET = new Set(AI_MANAGED_INSTRUMENT_TAG_NAMES)
 const BATCH_REANALYZE_CANCELLED_ERROR = 'Batch re-analysis canceled'
 const BATCH_CONVERSION_FORMATS: AudioConversionFormat[] = ['mp3', 'wav', 'flac', 'aiff', 'ogg', 'm4a']
 const BATCH_CONVERSION_FORMAT_SET = new Set<AudioConversionFormat>(BATCH_CONVERSION_FORMATS)
+const BATCH_CONVERSION_BIT_DEPTHS: AudioConversionBitDepth[] = [16, 24, 32]
+const BATCH_CONVERSION_BIT_DEPTH_SET = new Set<AudioConversionBitDepth>(BATCH_CONVERSION_BIT_DEPTHS)
+const BATCH_CONVERSION_BIT_DEPTH_FORMATS = new Set<AudioConversionFormat>(['wav', 'flac', 'aiff'])
+const BATCH_CONVERSION_MIN_SAMPLE_RATE = 8000
+const BATCH_CONVERSION_MAX_SAMPLE_RATE = 384000
+const MAX_BATCH_REANALYZE_CONCURRENCY = parsePositiveInteger(
+  process.env.BATCH_REANALYZE_MAX_CONCURRENCY,
+  10
+)
+const DEFAULT_BATCH_REANALYZE_CONCURRENCY = Math.min(
+  MAX_BATCH_REANALYZE_CONCURRENCY,
+  parsePositiveInteger(process.env.BATCH_REANALYZE_DEFAULT_CONCURRENCY, 2)
+)
+const BATCH_REANALYZE_REVIEW_BATCH_SIZE = Math.max(
+  1,
+  Math.min(20, parsePositiveInteger(process.env.BATCH_REANALYZE_REVIEW_BATCH_SIZE, 5))
+)
+const BATCH_REANALYZE_AUDIT_ENABLED = process.env.BATCH_REANALYZE_AUDIT !== '0'
+const BATCH_REANALYZE_AUDIT_BATCH_SIZE = Math.max(
+  1,
+  Math.min(100, parsePositiveInteger(process.env.BATCH_REANALYZE_AUDIT_BATCH_SIZE, 30))
+)
+const BATCH_REANALYZE_REFEED_TIMEOUT_MS = Math.max(
+  1000,
+  parsePositiveInteger(process.env.BATCH_REANALYZE_REFEED_TIMEOUT_MS, 90000)
+)
+const BATCH_REANALYZE_AUDIT_MAX_REPORT_ISSUES = Math.max(
+  1,
+  Math.min(1000, parsePositiveInteger(process.env.BATCH_REANALYZE_AUDIT_MAX_REPORT_ISSUES, 200))
+)
+const LOW_CONFIDENCE_FILENAME_TAG_THRESHOLD = 0.72
+const LOW_CONFIDENCE_MODEL_TAG_THRESHOLD = 0.6
+const GENERIC_SLICE_NAME_PATTERN = /^slice\s*\d+$/i
+const GENERIC_SLICE_AMBIENCE_FALLBACK_CONFIDENCE = 0.65
+type BatchReanalyzeStage = 'analysis' | 'audit'
+type BatchReanalyzeJobStatus =
+  | 'idle'
+  | 'running'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+type BatchReanalyzeRequestBody = {
+  sliceIds?: number[]
+  concurrency?: number
+  includeFilenameTags?: boolean
+  allowAiTagging?: boolean
+}
+type BatchReanalyzeResultItem = {
+  sliceId: number
+  success: boolean
+  error?: string
+  hadPotentialCustomState?: boolean
+  warningMessage?: string
+  removedTags?: string[]
+  addedTags?: string[]
+  auditFlagged?: boolean
+  auditApplied?: boolean
+  auditReason?: string
+  auditSuspiciousTags?: string[]
+  auditSuggestedTags?: string[]
+  auditError?: string
+}
+type BatchReanalyzeWarningSummary = {
+  totalWithWarnings: number
+  sliceIds: number[]
+  messages: string[]
+}
+type BatchReanalyzeResponsePayload = {
+  total: number
+  analyzed: number
+  failed: number
+  warnings: BatchReanalyzeWarningSummary
+  audit: BatchReanalyzeAuditSummary
+  results: BatchReanalyzeResultItem[]
+}
+type BatchReanalyzeProgressSnapshot = {
+  total: number
+  analyzed: number
+  failed: number
+  processed: number
+  stage: BatchReanalyzeStage
+  warningSliceIds: number[]
+  warningMessages: string[]
+}
+type BatchReanalyzeRunOptions = {
+  sliceIds?: number[]
+  concurrency?: number
+  includeFilenameTags?: boolean
+  allowAiTagging?: boolean
+  signal?: AbortSignal
+  onProgress?: (snapshot: BatchReanalyzeProgressSnapshot) => void
+}
+type BatchReanalyzeResultSummary = {
+  total: number
+  analyzed: number
+  failed: number
+  warnings: BatchReanalyzeWarningSummary
+  audit: BatchReanalyzeAuditSummary
+}
+type BatchReanalyzeAuditIssue = {
+  sliceId: number
+  sampleName: string
+  reason: string | null
+  suspiciousTags: string[]
+  previousTags: string[]
+  suggestedTags: string[]
+  applied: boolean
+  error?: string
+}
+type BatchReanalyzeAuditSummary = {
+  enabled: boolean
+  reviewedSamples: number
+  weirdSamples: number
+  fixedSamples: number
+  failedFixes: number
+  messages: string[]
+  issues: BatchReanalyzeAuditIssue[]
+}
+type BatchReanalyzeJobState = {
+  jobId: string | null
+  status: BatchReanalyzeJobStatus
+  stage: BatchReanalyzeStage
+  startedAt: string | null
+  updatedAt: string | null
+  finishedAt: string | null
+  total: number
+  analyzed: number
+  failed: number
+  processed: number
+  concurrency: number | null
+  includeFilenameTags: boolean
+  allowAiTagging: boolean
+  error: string | null
+  warnings: BatchReanalyzeWarningSummary
+  audit: BatchReanalyzeAuditSummary
+  resultSummary: BatchReanalyzeResultSummary | null
+}
+type BatchReanalyzeStatusResponse = {
+  jobId: string | null
+  status: BatchReanalyzeJobStatus
+  stage: BatchReanalyzeStage
+  isActive: boolean
+  isStopping: boolean
+  startedAt: string | null
+  updatedAt: string | null
+  finishedAt: string | null
+  total: number
+  analyzed: number
+  failed: number
+  processed: number
+  progressPercent: number
+  concurrency: number | null
+  includeFilenameTags: boolean
+  allowAiTagging: boolean
+  statusNote: string | null
+  error: string | null
+  warnings: BatchReanalyzeWarningSummary
+  audit: BatchReanalyzeAuditSummary
+  resultSummary: BatchReanalyzeResultSummary | null
+}
+
+function createEmptyBatchReanalyzeWarnings(): BatchReanalyzeWarningSummary {
+  return {
+    totalWithWarnings: 0,
+    sliceIds: [],
+    messages: [],
+  }
+}
+
+function createEmptyBatchReanalyzeAuditSummary(enabled = BATCH_REANALYZE_AUDIT_ENABLED): BatchReanalyzeAuditSummary {
+  return {
+    enabled,
+    reviewedSamples: 0,
+    weirdSamples: 0,
+    fixedSamples: 0,
+    failedFixes: 0,
+    messages: [],
+    issues: [],
+  }
+}
+
+let batchReanalyzeAbortController: AbortController | null = null
+let batchReanalyzeJobState: BatchReanalyzeJobState = {
+  jobId: null,
+  status: 'idle',
+  stage: 'analysis',
+  startedAt: null,
+  updatedAt: null,
+  finishedAt: null,
+  total: 0,
+  analyzed: 0,
+  failed: 0,
+  processed: 0,
+  concurrency: null,
+  includeFilenameTags: false,
+  allowAiTagging: true,
+  error: null,
+  warnings: createEmptyBatchReanalyzeWarnings(),
+  audit: createEmptyBatchReanalyzeAuditSummary(),
+  resultSummary: null,
+}
 type Range = { min: number | null; max: number | null }
 type DimensionKey =
   | 'brightness'
@@ -60,12 +281,107 @@ type DimensionKey =
   | 'dynamics'
   | 'saturation'
   | 'surface'
+  | 'rhythmic'
   | 'density'
   | 'ambience'
   | 'stereoWidth'
   | 'depth'
 type DimensionRanges = Record<DimensionKey, Range>
 type DimensionFilterRange = Record<DimensionKey, Range>
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) return fallback
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return parsed
+}
+
+function resolveBatchReanalyzeConcurrency(rawConcurrency: number | undefined): number {
+  const requestedConcurrency = typeof rawConcurrency === 'number' && Number.isFinite(rawConcurrency)
+    ? Math.round(rawConcurrency)
+    : DEFAULT_BATCH_REANALYZE_CONCURRENCY
+  const resolvedConcurrency = Math.max(
+    1,
+    Math.min(MAX_BATCH_REANALYZE_CONCURRENCY, requestedConcurrency)
+  )
+  if (resolvedConcurrency !== requestedConcurrency) {
+    console.warn(
+      `[reanalyze] Requested concurrency ${requestedConcurrency} was clamped to ${resolvedConcurrency} ` +
+        `(max ${MAX_BATCH_REANALYZE_CONCURRENCY}).`
+    )
+  }
+  return resolvedConcurrency
+}
+
+function isBatchReanalyzeCancellationError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message === AUDIO_ANALYSIS_CANCELLED_ERROR || error.message === BATCH_REANALYZE_CANCELLED_ERROR)
+  )
+}
+
+function getBatchReanalyzeStatusNote(state: BatchReanalyzeJobState): string | null {
+  switch (state.status) {
+    case 'running':
+      if (state.stage === 'audit') {
+        return 'Running final AI tag audit and correction pass.'
+      }
+      return state.allowAiTagging
+        ? 'Running advanced feature extraction with AI-assisted tag review.'
+        : 'Running advanced feature extraction with fallback tag review.'
+    case 'cancelling':
+      return 'Stopping analysis and terminating active workers...'
+    case 'completed':
+      if (!state.audit.enabled) {
+        return `Complete: ${state.analyzed} analyzed, ${state.failed} failed (of ${state.total}). Final AI tag audit disabled.`
+      }
+      return (
+        `Complete: ${state.analyzed} analyzed, ${state.failed} failed (of ${state.total}). ` +
+        `Audit fixed ${state.audit.fixedSamples}/${state.audit.weirdSamples} weird-tag samples.`
+      )
+    case 'canceled':
+      return 'Re-analysis stopped by user.'
+    case 'failed':
+      return state.error ? `Re-analysis failed: ${state.error}` : 'Re-analysis failed.'
+    case 'idle':
+    default:
+      return null
+  }
+}
+
+function getBatchReanalyzeStatusResponse(): BatchReanalyzeStatusResponse {
+  const progressPercent = batchReanalyzeJobState.total > 0
+    ? Math.min(
+        100,
+        Math.max(0, Math.round((batchReanalyzeJobState.processed / batchReanalyzeJobState.total) * 100))
+      )
+    : 0
+
+  return {
+    jobId: batchReanalyzeJobState.jobId,
+    status: batchReanalyzeJobState.status,
+    stage: batchReanalyzeJobState.stage,
+    isActive:
+      batchReanalyzeJobState.status === 'running' || batchReanalyzeJobState.status === 'cancelling',
+    isStopping: batchReanalyzeJobState.status === 'cancelling',
+    startedAt: batchReanalyzeJobState.startedAt,
+    updatedAt: batchReanalyzeJobState.updatedAt,
+    finishedAt: batchReanalyzeJobState.finishedAt,
+    total: batchReanalyzeJobState.total,
+    analyzed: batchReanalyzeJobState.analyzed,
+    failed: batchReanalyzeJobState.failed,
+    processed: batchReanalyzeJobState.processed,
+    progressPercent,
+    concurrency: batchReanalyzeJobState.concurrency,
+    includeFilenameTags: batchReanalyzeJobState.includeFilenameTags,
+    allowAiTagging: batchReanalyzeJobState.allowAiTagging,
+    statusNote: getBatchReanalyzeStatusNote(batchReanalyzeJobState),
+    error: batchReanalyzeJobState.error,
+    warnings: batchReanalyzeJobState.warnings,
+    audit: batchReanalyzeJobState.audit,
+    resultSummary: batchReanalyzeJobState.resultSummary,
+  }
+}
 
 /** Convert a frequency in Hz to the nearest note name (e.g., 440 -> "A"). */
 function freqToNoteName(hz: number): string | null {
@@ -90,6 +406,152 @@ function parseScaleFromKeyEstimate(keyEstimate: string | null): string | null {
   const parts = keyEstimate.trim().split(/\s+/)
   if (parts.length < 2) return null
   return parts.slice(1).join(' ').toLowerCase()
+}
+
+type SampleTypeValue = 'oneshot' | 'loop'
+type EnvelopeTypeValue = (typeof ENVELOPE_TYPE_VALUES)[number]
+
+function normalizeSampleTypeValue(value: string | null | undefined): SampleTypeValue | null {
+  const normalized = (value ?? '').trim().toLowerCase()
+  if (!normalized) return null
+  if (normalized === 'oneshot' || normalized === 'one-shot' || normalized === 'one shot') {
+    return 'oneshot'
+  }
+  if (normalized === 'loop' || normalized === 'loops') {
+    return 'loop'
+  }
+  return null
+}
+
+function normalizeEnvelopeTypeValue(value: string | null | undefined): EnvelopeTypeValue | null {
+  const normalized = (value ?? '').trim().toLowerCase()
+  if (!normalized) return null
+  return ENVELOPE_TYPE_VALUES.includes(normalized as EnvelopeTypeValue)
+    ? (normalized as EnvelopeTypeValue)
+    : null
+}
+
+function normalizeNoteSemitone(value: string): number | null {
+  switch (value) {
+    case 'C':
+    case 'B#':
+      return 0
+    case 'C#':
+    case 'DB':
+      return 1
+    case 'D':
+      return 2
+    case 'D#':
+    case 'EB':
+      return 3
+    case 'E':
+    case 'FB':
+      return 4
+    case 'F':
+    case 'E#':
+      return 5
+    case 'F#':
+    case 'GB':
+      return 6
+    case 'G':
+      return 7
+    case 'G#':
+    case 'AB':
+      return 8
+    case 'A':
+      return 9
+    case 'A#':
+    case 'BB':
+      return 10
+    case 'B':
+    case 'CB':
+      return 11
+    default:
+      return null
+  }
+}
+
+function getFrequencyOctave(hz: number): number {
+  if (!Number.isFinite(hz) || hz <= 0) return 4
+  const midi = Math.round(12 * Math.log2(hz / 440) + 69)
+  const octave = Math.floor(midi / 12) - 1
+  return Number.isFinite(octave) ? octave : 4
+}
+
+function noteToFrequency(note: string, fallbackOctave: number): number | null {
+  const normalized = note.trim().replace(/♯/g, '#').replace(/♭/g, 'b')
+  const match = normalized.match(/^([A-Ga-g])([#b]?)(-?\d+)?$/)
+  if (!match) return null
+
+  const noteToken = `${match[1].toUpperCase()}${(match[2] || '').toUpperCase()}`
+  const semitone = normalizeNoteSemitone(noteToken)
+  if (semitone === null) return null
+
+  const octave = match[3] !== undefined ? Number.parseInt(match[3], 10) : fallbackOctave
+  if (!Number.isInteger(octave) || octave < -1 || octave > 9) return null
+
+  const midi = (octave + 1) * 12 + semitone
+  if (!Number.isFinite(midi)) return null
+
+  const frequency = 440 * Math.pow(2, (midi - 69) / 12)
+  return Number.isFinite(frequency) && frequency > 0 ? frequency : null
+}
+
+function isSampleTypeTagCategory(category: string | null | undefined): boolean {
+  const normalized = (category ?? '').trim().toLowerCase()
+  return (
+    normalized === 'sample-type' ||
+    normalized === 'sample type' ||
+    normalized === 'sample_type' ||
+    normalized === 'type'
+  )
+}
+
+function isSampleTypeTagRecord(tag: Pick<typeof schema.tags.$inferSelect, 'name' | 'category'>): boolean {
+  return isSampleTypeTagCategory(tag.category) || normalizeSampleTypeValue(tag.name) !== null
+}
+
+function isInstrumentTagRecord(tag: Pick<typeof schema.tags.$inferSelect, 'name' | 'category'>): boolean {
+  const normalizedCategory = (tag.category ?? '').trim().toLowerCase()
+  if (normalizedCategory === 'instrument') return true
+
+  const resolved = resolveTag(tag.name)
+  return resolved.isKnown
+}
+
+function isAiManagedInstrumentTagRecord(tag: Pick<typeof schema.tags.$inferSelect, 'name' | 'category'>): boolean {
+  const normalizedCategory = (tag.category ?? '').trim().toLowerCase()
+  if (normalizedCategory !== 'instrument') return false
+  return AI_MANAGED_INSTRUMENT_TAG_NAME_SET.has(tag.name.trim().toLowerCase())
+}
+
+function sanitizeSliceTagsAndSampleType(
+  rawTags: ReadonlyArray<typeof schema.tags.$inferSelect>,
+  sampleType: string | null | undefined
+): {
+  sampleType: SampleTypeValue | null
+  tags: typeof schema.tags.$inferSelect[]
+} {
+  let fallbackSampleType: SampleTypeValue | null = null
+  const filteredTags: typeof schema.tags.$inferSelect[] = []
+
+  for (const tag of rawTags) {
+    if (isSampleTypeTagRecord(tag)) {
+      if (fallbackSampleType === null) {
+        fallbackSampleType = normalizeSampleTypeValue(tag.name)
+      }
+      continue
+    }
+    if (!isInstrumentTagRecord(tag)) {
+      continue
+    }
+    filteredTags.push(tag)
+  }
+
+  return {
+    sampleType: normalizeSampleTypeValue(sampleType) ?? fallbackSampleType,
+    tags: filteredTags,
+  }
 }
 
 function parseDateFilterValue(raw: string | undefined, mode: 'start' | 'end'): number | null {
@@ -249,6 +711,35 @@ function normalizeConversionFormat(raw: unknown): AudioConversionFormat | null {
   return canonical as AudioConversionFormat
 }
 
+function isEmptyOptionalBatchConversionValue(raw: unknown): boolean {
+  return raw === undefined || raw === null || (typeof raw === 'string' && raw.trim().length === 0)
+}
+
+function normalizeConversionSampleRate(raw: unknown): number | null {
+  if (isEmptyOptionalBatchConversionValue(raw)) return null
+
+  const parsed = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    return null
+  }
+
+  if (parsed < BATCH_CONVERSION_MIN_SAMPLE_RATE || parsed > BATCH_CONVERSION_MAX_SAMPLE_RATE) {
+    return null
+  }
+
+  return parsed
+}
+
+function normalizeConversionBitDepth(raw: unknown): AudioConversionBitDepth | null {
+  if (isEmptyOptionalBatchConversionValue(raw)) return null
+
+  const parsed = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isInteger(parsed)) return null
+  if (!BATCH_CONVERSION_BIT_DEPTH_SET.has(parsed as AudioConversionBitDepth)) return null
+
+  return parsed as AudioConversionBitDepth
+}
+
 function inferFormatFromFilePath(filePath: string | null | undefined): AudioConversionFormat | null {
   if (!filePath) return null
   const extension = path.extname(filePath)
@@ -263,6 +754,713 @@ async function getSliceTagNames(sliceId: number): Promise<string[]> {
     .where(eq(schema.sliceTags.sliceId, sliceId))
 
   return rows.map((row) => row.name)
+}
+
+async function getSliceAiManagedTagNames(
+  sliceId: number,
+  aiManagedTagIds?: ReadonlyArray<number>
+): Promise<string[]> {
+  const tagIds = aiManagedTagIds
+    ? [...aiManagedTagIds]
+    : (await getAiManagedInstrumentTagIds())
+
+  if (tagIds.length === 0) return []
+
+  const rows = await db
+    .select({
+      name: schema.tags.name,
+      category: schema.tags.category,
+    })
+    .from(schema.sliceTags)
+    .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
+    .where(
+      and(
+        eq(schema.sliceTags.sliceId, sliceId),
+        inArray(schema.sliceTags.tagId, tagIds),
+      )
+    )
+
+  return rows
+    .filter((row) => isAiManagedInstrumentTagRecord(row))
+    .map((row) => row.name.toLowerCase())
+}
+
+async function getAiManagedInstrumentTagIds(): Promise<number[]> {
+  const rows = await db
+    .select({ id: schema.tags.id })
+    .from(schema.tags)
+    .where(
+      and(
+        eq(schema.tags.category, 'instrument'),
+        inArray(schema.tags.name, [...AI_MANAGED_INSTRUMENT_TAG_NAMES]),
+      )
+    )
+  return rows.map((row) => row.id)
+}
+
+function normalizeAuditTagName(raw: string): string | null {
+  const normalized = raw
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, ' ')
+
+  if (normalized.length < 2 || normalized.length >= 30) return null
+  return normalized
+}
+
+function isGenericSliceNameContext(sampleName: string | null | undefined, folderPath: string | null | undefined): boolean {
+  const normalizedSampleName = (sampleName ?? '').trim().toLowerCase()
+  if (!GENERIC_SLICE_NAME_PATTERN.test(normalizedSampleName)) return false
+
+  const normalizedFolderPath = (folderPath ?? '').trim().toLowerCase()
+  if (!normalizedFolderPath) return true
+
+  return (
+    normalizedFolderPath === normalizedSampleName ||
+    GENERIC_SLICE_NAME_PATTERN.test(normalizedFolderPath)
+  )
+}
+
+function normalizeAuditTagNameToCanonical(raw: string): string | null {
+  const normalized = normalizeAuditTagName(raw)
+  if (!normalized) return null
+
+  const resolved = resolveTag(normalized)
+  if (resolved.isKnown) return resolved.canonical
+  return normalized
+}
+
+function normalizeReviewedInstrumentTagName(raw: string): string | null {
+  const canonical = normalizeAuditTagNameToCanonical(raw)
+  if (!canonical) return null
+
+  const resolved = resolveTag(canonical)
+  if (!resolved.isKnown) return null
+  return resolved.canonical
+}
+
+function getCongruentTagNamesForSampleText(sampleName: string, folderPath: string | null | undefined): string[] {
+  const text = `${sampleName} ${folderPath ?? ''}`.trim()
+  if (!text) return []
+
+  const names: string[] = []
+  const seen = new Set<string>()
+  for (const match of findCongruentTagsInText(text)) {
+    const canonical = normalizeAuditTagNameToCanonical(match.canonical)
+    if (!canonical || seen.has(canonical)) continue
+    seen.add(canonical)
+    names.push(canonical)
+  }
+
+  return names
+}
+
+function normalizeReviewedCategory(_raw: string | null | undefined): ReviewedTagResult['category'] {
+  return 'instrument'
+}
+
+export function normalizeReviewedTagsForWrite(
+  tags: ReadonlyArray<{ name: string; category?: string | null }>,
+  options: { maxTags?: number; isOneShot?: boolean; isLoop?: boolean } = {}
+): ReviewedTagResult[] {
+  const maxTags = Math.min(Math.max(options.maxTags ?? 10, 1), 20)
+  const deduped: ReviewedTagResult[] = []
+  const seen = new Set<string>()
+
+  for (const tag of tags) {
+    const normalizedName = normalizeReviewedInstrumentTagName(tag.name)
+    if (!normalizedName || seen.has(normalizedName)) continue
+    seen.add(normalizedName)
+    deduped.push({
+      name: normalizedName,
+      category: normalizeReviewedCategory(tag.category),
+    })
+  }
+
+  const firstInstrument = deduped.find((tag) => tag.category === 'instrument')?.name ?? null
+  const singleInstrument = firstInstrument
+    ? deduped.filter((tag) => tag.category !== 'instrument' || tag.name === firstInstrument)
+    : deduped
+
+  return singleInstrument.slice(0, maxTags)
+}
+
+function normalizeTagNameList(tags: ReadonlyArray<string>): string[] {
+  const normalized: string[] = []
+  const seen = new Set<string>()
+  for (const tag of tags) {
+    const candidate = normalizeAuditTagName(tag)
+    if (!candidate || seen.has(candidate)) continue
+    seen.add(candidate)
+    normalized.push(candidate)
+  }
+  return normalized
+}
+
+function inferReviewedCategoryFromTag(_tagName: string): ReviewedTagResult['category'] {
+  return 'instrument'
+}
+
+function buildFallbackReviewedTags(input: {
+  sampleName?: string | null
+  folderPath?: string | null
+  modelTags: string[]
+  modelConfidence?: number | null
+  filenameTags: ParsedFilenameTag[]
+  previousAutoTags: string[]
+  isOneShot: boolean
+  isLoop: boolean
+  maxTags?: number
+}): ReviewedTagResult[] {
+  const maxTags = Math.min(Math.max(input.maxTags ?? 10, 1), 20)
+  const normalizedSampleName = (input.sampleName ?? '').trim().toLowerCase()
+  const normalizedFolderPath = (input.folderPath ?? '').trim().toLowerCase()
+  const isGenericSliceName = GENERIC_SLICE_NAME_PATTERN.test(normalizedSampleName)
+  const hasInformativePath =
+    normalizedFolderPath.length > 0 &&
+    normalizedFolderPath !== normalizedSampleName &&
+    !GENERIC_SLICE_NAME_PATTERN.test(normalizedFolderPath)
+  const congruentNameTags = new Set(
+    findCongruentTagsInText(
+      `${input.sampleName ?? ''} ${input.folderPath ?? ''}`.trim()
+    ).map((match) => match.canonical)
+  )
+  const normalizedPreviousAutoTags = input.previousAutoTags
+    .map((tag) => normalizeAuditTagNameToCanonical(tag))
+    .filter((tag): tag is string => Boolean(tag))
+  const congruentPreviousAutoTags = normalizedPreviousAutoTags
+    .filter((tag) => congruentNameTags.has(tag))
+  const normalizedFilenameTags = input.filenameTags
+    .filter((entry) => {
+      if (typeof entry.confidence !== 'number') return true
+      if (entry.confidence >= LOW_CONFIDENCE_FILENAME_TAG_THRESHOLD) return true
+      const normalizedName = normalizeReviewedInstrumentTagName(entry.tag)
+      return Boolean(normalizedName && congruentNameTags.has(normalizedName))
+    })
+    .map((entry) => ({
+      name: normalizeReviewedInstrumentTagName(entry.tag),
+      category: normalizeReviewedCategory(entry.category),
+    }))
+    .filter(
+      (entry): entry is { name: string; category: ReviewedTagResult['category'] } =>
+        Boolean(entry.name)
+    )
+
+  const filenameCategoryByTag = new Map<string, ReviewedTagResult['category']>()
+  for (const entry of normalizedFilenameTags) {
+    filenameCategoryByTag.set(entry.name, entry.category)
+  }
+
+  const hasFilenameEvidence = normalizedFilenameTags.length > 0
+  const modelConfidence =
+    typeof input.modelConfidence === 'number' && Number.isFinite(input.modelConfidence)
+      ? input.modelConfidence
+      : null
+  if (
+    isGenericSliceName &&
+    !hasInformativePath &&
+    !hasFilenameEvidence &&
+    (modelConfidence === null || modelConfidence <= GENERIC_SLICE_AMBIENCE_FALLBACK_CONFIDENCE)
+  ) {
+    return normalizeReviewedTagsForWrite(
+      [{ name: 'ambience', category: 'instrument' }],
+      {
+        maxTags,
+        isOneShot: input.isOneShot,
+        isLoop: input.isLoop,
+      }
+    )
+  }
+
+  const preferFilenameEvidence =
+    typeof input.modelConfidence === 'number' &&
+    Number.isFinite(input.modelConfidence) &&
+    input.modelConfidence < LOW_CONFIDENCE_MODEL_TAG_THRESHOLD
+  const candidateOrder = preferFilenameEvidence
+    ? [
+        ...congruentPreviousAutoTags,
+        ...normalizedFilenameTags.map((entry) => entry.name),
+        ...input.modelTags,
+        ...normalizedPreviousAutoTags,
+      ]
+    : [
+        ...congruentPreviousAutoTags,
+        ...input.modelTags,
+        ...normalizedFilenameTags.map((entry) => entry.name),
+        ...normalizedPreviousAutoTags,
+      ]
+
+  const fallbackCandidates = candidateOrder.map((name) => {
+    const normalizedName = normalizeReviewedInstrumentTagName(name)
+    if (!normalizedName) return null
+    return {
+      name: normalizedName,
+      category: filenameCategoryByTag.get(normalizedName) ?? inferReviewedCategoryFromTag(normalizedName),
+    }
+  })
+
+  if (fallbackCandidates.filter(Boolean).length === 0 && congruentNameTags.size > 0) {
+    for (const name of congruentNameTags) {
+      fallbackCandidates.push({
+        name,
+        category: inferReviewedCategoryFromTag(name),
+      })
+    }
+  }
+
+  return normalizeReviewedTagsForWrite(
+    fallbackCandidates.filter(
+      (entry): entry is { name: string; category: ReviewedTagResult['category'] } => Boolean(entry)
+    ),
+    {
+      maxTags,
+      isOneShot: input.isOneShot,
+      isLoop: input.isLoop,
+    }
+  )
+}
+
+function areTagNameSetsEqual(a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean {
+  if (a.length !== b.length) return false
+  const setA = new Set(a)
+  if (setA.size !== b.length) return false
+  for (const entry of b) {
+    if (!setA.has(entry)) return false
+  }
+  return true
+}
+
+function chunkBySize<T>(items: ReadonlyArray<T>, chunkSize: number): T[][] {
+  if (items.length === 0) return []
+  const chunks: T[][] = []
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize))
+  }
+  return chunks
+}
+
+function deriveInstrumentHintForAudit(
+  predictions: Array<{ name: string; confidence: number }> | undefined
+): string | null {
+  if (!predictions || predictions.length === 0) return null
+  const best = predictions.reduce<{ name: string; confidence: number } | null>((bestMatch, candidate) => {
+    if (!candidate || typeof candidate.name !== 'string' || typeof candidate.confidence !== 'number') {
+      return bestMatch
+    }
+    if (!bestMatch || candidate.confidence > bestMatch.confidence) return candidate
+    return bestMatch
+  }, null)
+  if (!best) return null
+  return normalizeAuditTagName(best.name)
+}
+
+async function replaceAutoReanalysisTagsForSlice(
+  sliceId: number,
+  reviewedTags: ReadonlyArray<ReviewedTagResult>,
+  aiManagedTagIds?: ReadonlyArray<number>
+): Promise<void> {
+  const tagIds = aiManagedTagIds
+    ? [...aiManagedTagIds]
+    : (await getAiManagedInstrumentTagIds())
+  if (tagIds.length > 0) {
+    await db
+      .delete(schema.sliceTags)
+      .where(
+        and(
+          eq(schema.sliceTags.sliceId, sliceId),
+          inArray(schema.sliceTags.tagId, tagIds),
+        )
+      )
+  }
+
+  const sanitizedReviewedTags = normalizeReviewedTagsForWrite(reviewedTags, { maxTags: 20 })
+  if (sanitizedReviewedTags.length === 0) return
+
+  const tags = await Promise.all(sanitizedReviewedTags.map(async ({ name: tagName, category: tagCategory }) => {
+    const metadata = getTagMetadata(tagName, tagCategory)
+    const existingTag = await db
+      .select()
+      .from(schema.tags)
+      .where(eq(schema.tags.name, tagName))
+      .get()
+
+    if (existingTag) {
+      if (existingTag.category === 'filename' && metadata.category !== 'filename') {
+        await db
+          .update(schema.tags)
+          .set({
+            color: metadata.color,
+            category: metadata.category,
+          })
+          .where(eq(schema.tags.id, existingTag.id))
+      }
+      return existingTag
+    }
+
+    const created = await db
+      .insert(schema.tags)
+      .values({
+        name: tagName,
+        color: metadata.color,
+        category: metadata.category,
+      })
+      .returning()
+
+    return created[0]
+  }))
+
+  for (const tag of tags) {
+    await db
+      .insert(schema.sliceTags)
+      .values({
+        sliceId,
+        tagId: tag.id,
+      })
+      .onConflictDoNothing()
+  }
+}
+
+type BatchAuditSampleContext = TagAuditSampleInput & {
+  previousAutoTags: string[]
+  filenameTags: Array<{ tag: string; category?: string; confidence?: number }>
+  instrumentType?: string | null
+}
+
+function toReviewInputFromAuditSample(sample: BatchAuditSampleContext) {
+  return {
+    sampleName: sample.sampleName,
+    folderPath: sample.folderPath ?? null,
+    modelTags: sample.modelTags ?? [],
+    previousAutoTags: sample.currentTags
+      .map((entry) => normalizeAuditTagNameToCanonical(entry.tag))
+      .filter((entry): entry is string => Boolean(entry)),
+    filenameTags: sample.filenameTags,
+    instrumentType: sample.instrumentType ?? sample.instrumentHint ?? null,
+    genrePrimary: sample.genrePrimary ?? null,
+    maxTags: 10,
+  }
+}
+
+async function runDualModelRefeedForSample(
+  sample: BatchAuditSampleContext,
+  auditObservation: string | null
+): Promise<ReviewedTagResult[]> {
+  const additionalInstructions = auditObservation?.trim() || undefined
+  const reviewInput = toReviewInputFromAuditSample(sample)
+  const analyzerReview = await reviewSampleTagsWithOllamaTarget(reviewInput, 'analyzer', {
+    additionalInstructions,
+    contextSuffix: 'bulk-reaudit-analyzer',
+    timeoutMs: BATCH_REANALYZE_REFEED_TIMEOUT_MS,
+  })
+  const primaryReview = await reviewSampleTagsWithOllamaTarget(reviewInput, 'primary', {
+    additionalInstructions,
+    contextSuffix: 'bulk-reaudit-primary',
+    timeoutMs: BATCH_REANALYZE_REFEED_TIMEOUT_MS,
+  })
+
+  const normalizeFromCategorized = (
+    tags: Array<{ tag: string; category?: string | null }>
+  ): ReviewedTagResult[] => {
+    if (tags.length === 0) return []
+    return normalizeReviewedTagsForWrite(
+      tags.map((entry) => ({ name: entry.tag, category: entry.category })),
+      {
+        maxTags: 10,
+        isOneShot: sample.isOneShot,
+        isLoop: sample.isLoop,
+      }
+    )
+  }
+
+  const primaryTags = normalizeFromCategorized(primaryReview)
+  const analyzerTags = normalizeFromCategorized(analyzerReview)
+
+  if (analyzerTags.length > 0 && primaryTags.length > 0) {
+    const primarySet = new Set(primaryTags.map((entry) => entry.name))
+    const overlap = analyzerTags.filter((entry) => primarySet.has(entry.name))
+    if (overlap.length > 0) return overlap
+    return analyzerTags
+  }
+  if (analyzerTags.length > 0) return analyzerTags
+  if (primaryTags.length > 0) return primaryTags
+  return []
+}
+
+type TextFirstAuditDecision =
+  | { status: 'coherent' }
+  | { status: 'suggested'; reason: string; suggestedTags: ReviewedTagResult[] }
+  | { status: 'unresolved' }
+
+function evaluateSampleTagsTextFirst(sample: BatchAuditSampleContext): TextFirstAuditDecision {
+  const congruentTagNames = getCongruentTagNamesForSampleText(sample.sampleName, sample.folderPath)
+  if (congruentTagNames.length === 0) {
+    return { status: 'unresolved' }
+  }
+
+  const congruentSet = new Set(congruentTagNames)
+  const currentTagNames = sample.currentTags
+    .map((entry) => normalizeAuditTagNameToCanonical(entry.tag))
+    .filter((entry): entry is string => Boolean(entry))
+  const hasCurrentCongruentTag = currentTagNames.some((tag) => congruentSet.has(tag))
+  if (hasCurrentCongruentTag) {
+    return { status: 'coherent' }
+  }
+
+  const suggestedTags = normalizeReviewedTagsForWrite(
+    congruentTagNames.map((name) => ({
+      name,
+      category: 'instrument',
+    })),
+    {
+      maxTags: 10,
+      isOneShot: sample.isOneShot,
+      isLoop: sample.isLoop,
+    }
+  )
+
+  if (suggestedTags.length === 0) {
+    return { status: 'unresolved' }
+  }
+
+  return {
+    status: 'suggested',
+    reason: 'Current tags are not congruent with sample-name text cues.',
+    suggestedTags,
+  }
+}
+
+async function runBatchReanalyzeAudit(input: {
+  samples: BatchAuditSampleContext[]
+  resultBySliceId: Map<number, BatchReanalyzeResultItem>
+  ensureNotCanceled: () => void
+}): Promise<BatchReanalyzeAuditSummary> {
+  if (!BATCH_REANALYZE_AUDIT_ENABLED) {
+    const disabled = createEmptyBatchReanalyzeAuditSummary(false)
+    disabled.messages.push('Final AI tag audit is disabled (BATCH_REANALYZE_AUDIT=0).')
+    return disabled
+  }
+
+  const summary = createEmptyBatchReanalyzeAuditSummary(true)
+  summary.reviewedSamples = input.samples.length
+
+  if (input.samples.length === 0) {
+    summary.messages.push('No analyzed samples were available for the final AI tag audit.')
+    return summary
+  }
+
+  const chunkSize = BATCH_REANALYZE_AUDIT_BATCH_SIZE
+  const chunks = chunkBySize(input.samples, chunkSize)
+  const sampleBySliceId = new Map<number, BatchAuditSampleContext>()
+  for (const sample of input.samples) {
+    sampleBySliceId.set(sample.sliceId, sample)
+  }
+
+  const flaggedSliceIds = new Set<number>()
+  let refeedAttempts = 0
+  let refeedSuccesses = 0
+
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+    input.ensureNotCanceled()
+    const chunk = chunks[chunkIndex]
+    const issues: Awaited<ReturnType<typeof auditSampleTagsWithOllama>> = []
+    const unresolvedForAi: BatchAuditSampleContext[] = []
+    const textFirstIssueSliceIds = new Set<number>()
+
+    for (const sample of chunk) {
+      if (isGenericSliceNameContext(sample.sampleName, sample.folderPath)) {
+        continue
+      }
+
+      const decision = evaluateSampleTagsTextFirst(sample)
+      if (decision.status === 'coherent') continue
+      if (decision.status === 'unresolved') {
+        unresolvedForAi.push(sample)
+        continue
+      }
+
+      textFirstIssueSliceIds.add(sample.sliceId)
+      issues.push({
+        sliceId: sample.sliceId,
+        reason: decision.reason,
+        suspiciousTags: sample.currentTags
+          .map((entry) => normalizeAuditTagNameToCanonical(entry.tag))
+          .filter((entry): entry is string => Boolean(entry)),
+        suggestedTags: decision.suggestedTags.map((tag) => ({
+          tag: tag.name,
+          category: tag.category,
+          confidence: 0.92,
+        })),
+      })
+    }
+
+    if (unresolvedForAi.length > 0) {
+      try {
+        const aiIssues = await auditSampleTagsWithOllama({
+          samples: unresolvedForAi.map((sample) => ({
+            sliceId: sample.sliceId,
+            sampleName: sample.sampleName,
+            folderPath: sample.folderPath ?? null,
+            currentTags: sample.currentTags,
+            modelTags: sample.modelTags,
+            isOneShot: sample.isOneShot,
+            isLoop: sample.isLoop,
+            instrumentHint: sample.instrumentHint ?? null,
+            genrePrimary: sample.genrePrimary ?? null,
+          })),
+          maxTags: 10,
+        })
+        issues.push(...aiIssues)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        summary.messages.push(
+          `Audit chunk ${chunkIndex + 1}/${chunks.length} AI fallback failed: ${message}.`
+        )
+      }
+    }
+
+    for (const issue of issues) {
+      const sample = sampleBySliceId.get(issue.sliceId)
+      if (!sample) continue
+
+      const previousTagNames = normalizeTagNameList(sample.currentTags.map((tag) => tag.tag))
+      const suggestedReviewedTags = normalizeReviewedTagsForWrite(
+        issue.suggestedTags.map((tag) => ({
+          name: tag.tag,
+          category: tag.category,
+        })),
+        {
+          maxTags: 10,
+          isOneShot: sample.isOneShot,
+          isLoop: sample.isLoop,
+        }
+      )
+      const suggestedTagNames = suggestedReviewedTags.map((tag) => tag.name)
+
+      const observationText = [
+        issue.reason ? `Bulk audit finding: ${issue.reason}` : '',
+        issue.suspiciousTags.length > 0
+          ? `Bulk audit suspicious tags: ${issue.suspiciousTags.join(', ')}`
+          : '',
+        suggestedTagNames.length > 0
+          ? `Bulk audit baseline suggestions: ${suggestedTagNames.join(', ')}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      if (!flaggedSliceIds.has(issue.sliceId)) {
+        flaggedSliceIds.add(issue.sliceId)
+        summary.weirdSamples += 1
+      }
+
+      const reportIssue: BatchReanalyzeAuditIssue = {
+        sliceId: issue.sliceId,
+        sampleName: sample.sampleName,
+        reason: issue.reason,
+        suspiciousTags: [...issue.suspiciousTags],
+        previousTags: [...previousTagNames],
+        suggestedTags: [...suggestedTagNames],
+        applied: false,
+      }
+
+      let finalReviewedTags = suggestedReviewedTags
+      if (observationText && !textFirstIssueSliceIds.has(issue.sliceId)) {
+        try {
+          refeedAttempts += 1
+          const refeedTags = await runDualModelRefeedForSample(sample, observationText)
+          if (refeedTags.length > 0) {
+            finalReviewedTags = refeedTags
+            refeedSuccesses += 1
+          }
+        } catch (error) {
+          reportIssue.error = `Dual-model refeed failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        }
+      }
+      const sanitizedFinalReviewedTags = normalizeReviewedTagsForWrite(finalReviewedTags, {
+        maxTags: 10,
+        isOneShot: sample.isOneShot,
+        isLoop: sample.isLoop,
+      })
+      const finalTagNames = sanitizedFinalReviewedTags.map((tag) => tag.name)
+      reportIssue.suggestedTags = [...finalTagNames]
+
+      const resultItem = input.resultBySliceId.get(issue.sliceId)
+      if (resultItem && resultItem.success) {
+        resultItem.auditFlagged = true
+        resultItem.auditReason = issue.reason ?? undefined
+        resultItem.auditSuspiciousTags = [...issue.suspiciousTags]
+        resultItem.auditSuggestedTags = [...finalTagNames]
+      }
+
+      if (sanitizedFinalReviewedTags.length === 0) {
+        if (!reportIssue.error) {
+          reportIssue.error = 'Audit response did not include usable suggested tags.'
+        }
+        summary.failedFixes += 1
+        if (resultItem && resultItem.success) {
+          resultItem.auditApplied = false
+          resultItem.auditError = reportIssue.error
+        }
+      } else if (areTagNameSetsEqual(previousTagNames, finalTagNames)) {
+        if (resultItem && resultItem.success) {
+          resultItem.auditApplied = false
+        }
+      } else {
+        try {
+          await replaceAutoReanalysisTagsForSlice(issue.sliceId, sanitizedFinalReviewedTags)
+          sample.currentTags = sanitizedFinalReviewedTags.map((tag) => ({
+            tag: tag.name,
+            category: tag.category,
+            confidence: 0.9,
+          }))
+          reportIssue.applied = true
+          summary.fixedSamples += 1
+          if (resultItem && resultItem.success) {
+            resultItem.auditApplied = true
+            resultItem.auditError = undefined
+          }
+        } catch (error) {
+          reportIssue.error = error instanceof Error ? error.message : 'Failed to apply audit suggestions'
+          summary.failedFixes += 1
+          if (resultItem && resultItem.success) {
+            resultItem.auditApplied = false
+            resultItem.auditError = reportIssue.error
+          }
+        }
+      }
+
+      if (summary.issues.length < BATCH_REANALYZE_AUDIT_MAX_REPORT_ISSUES) {
+        summary.issues.push(reportIssue)
+      }
+    }
+  }
+
+  summary.messages.unshift(
+    `Final tag audit (text-first, AI fallback) reviewed ${summary.reviewedSamples} sample(s) in ${chunks.length} batch(es).`
+  )
+  if (summary.weirdSamples === 0) {
+    summary.messages.push('No weird tags were flagged by the final text/AI audit.')
+  } else {
+    summary.messages.push(
+      `Audit flagged ${summary.weirdSamples} sample(s) and applied ${summary.fixedSamples} correction(s).`
+    )
+  }
+  if (refeedAttempts > 0) {
+    summary.messages.push(
+      `Dual-model refeed attempted for ${refeedAttempts} flagged sample(s); ${refeedSuccesses} returned usable tags.`
+    )
+  }
+  if (summary.failedFixes > 0) {
+    summary.messages.push(`Audit failed to apply ${summary.failedFixes} correction(s).`)
+  }
+  if (summary.weirdSamples > summary.issues.length) {
+    summary.messages.push(
+      `Audit issue list truncated to ${summary.issues.length} entries (limit ${BATCH_REANALYZE_AUDIT_MAX_REPORT_ISSUES}).`
+    )
+  }
+
+  return summary
 }
 
 async function ensureCoreDataDirs() {
@@ -461,7 +1659,7 @@ router.post('/slices/:id/render', renderUpload.single('audio'), async (req, res)
 
 // GET /api/sources/samples - Returns samples filtered by scope
 // Query params:
-//   scope: 'youtube' | 'youtube:{trackId}' | 'local' | 'folder:{path}' | 'my-folder:{id}' | 'folder:{id}' | 'all'
+//   scope: 'youtube' | 'youtube:{trackId}' | 'local' | 'soundcloud' | 'soundcloud:{trackId}' | 'spotify' | 'spotify:{trackId}' | 'bandcamp' | 'bandcamp:{trackId}' | 'folder:{path}' | 'my-folder:{id}' | 'folder:{id}' | 'all'
 //   search: search term (optional)
 //   favorites: 'true' to show only favorites (optional)
 //   tags: comma-separated tag IDs (optional, AND semantics)
@@ -477,7 +1675,7 @@ router.post('/slices/:id/render', renderUpload.single('audio'), async (req, res)
 //   similarTo: slice ID to find similar samples (optional)
 //   minSimilarity: minimum similarity threshold 0-1 (optional, default: 0.5)
 //   <dimension>Min/<dimension>Max: normalized dimension ranges, each 0-1
-//   dimensions: brightness, harmonicity, noisiness, attack, dynamics, saturation, surface, density, ambience, stereoWidth, depth
+//   dimensions: brightness, harmonicity, noisiness, attack, dynamics, saturation, surface, rhythmic, density, ambience, stereoWidth, depth
 router.get('/sources/samples', async (req, res) => {
   try {
     const {
@@ -513,6 +1711,8 @@ router.get('/sources/samples', async (req, res) => {
       saturationMax,
       surfaceMin,
       surfaceMax,
+      rhythmicMin,
+      rhythmicMax,
       densityMin,
       densityMax,
       ambienceMin,
@@ -554,6 +1754,8 @@ router.get('/sources/samples', async (req, res) => {
       saturationMax?: string
       surfaceMin?: string
       surfaceMax?: string
+      rhythmicMin?: string
+      rhythmicMax?: string
       densityMin?: string
       densityMax?: string
       ambienceMin?: string
@@ -572,6 +1774,7 @@ router.get('/sources/samples', async (req, res) => {
       dynamics: { min: parseNormalizedBound(dynamicsMin), max: parseNormalizedBound(dynamicsMax) },
       saturation: { min: parseNormalizedBound(saturationMin), max: parseNormalizedBound(saturationMax) },
       surface: { min: parseNormalizedBound(surfaceMin), max: parseNormalizedBound(surfaceMax) },
+      rhythmic: { min: parseNormalizedBound(rhythmicMin), max: parseNormalizedBound(rhythmicMax) },
       density: { min: parseNormalizedBound(densityMin), max: parseNormalizedBound(densityMax) },
       ambience: { min: parseNormalizedBound(ambienceMin), max: parseNormalizedBound(ambienceMax) },
       stereoWidth: { min: parseNormalizedBound(stereoWidthMin), max: parseNormalizedBound(stereoWidthMax) },
@@ -729,6 +1932,66 @@ router.get('/sources/samples', async (req, res) => {
           isNull(schema.tracks.folderPath)
         )
       )
+    } else if (scope.startsWith('soundcloud:')) {
+      const scopedTrackId = scope.slice('soundcloud:'.length).trim()
+      const trackId = Number.parseInt(scopedTrackId, 10)
+      if (!Number.isInteger(trackId) || String(trackId) !== scopedTrackId) {
+        return res.status(400).json({ error: 'Invalid soundcloud scope' })
+      }
+      conditions.push(
+        and(
+          eq(schema.slices.trackId, trackId),
+          sql`${schema.tracks.youtubeId} GLOB 'sc_*'`
+        )
+      )
+    } else if (scope === 'soundcloud') {
+      conditions.push(
+        and(
+          eq(schema.tracks.source, 'local'),
+          isNull(schema.tracks.folderPath),
+          sql`${schema.tracks.youtubeId} GLOB 'sc_*'`
+        )
+      )
+    } else if (scope.startsWith('spotify:')) {
+      const scopedTrackId = scope.slice('spotify:'.length).trim()
+      const trackId = Number.parseInt(scopedTrackId, 10)
+      if (!Number.isInteger(trackId) || String(trackId) !== scopedTrackId) {
+        return res.status(400).json({ error: 'Invalid spotify scope' })
+      }
+      conditions.push(
+        and(
+          eq(schema.slices.trackId, trackId),
+          sql`${schema.tracks.youtubeId} GLOB 'spotify_*'`
+        )
+      )
+    } else if (scope === 'spotify') {
+      conditions.push(
+        and(
+          eq(schema.tracks.source, 'local'),
+          isNull(schema.tracks.folderPath),
+          sql`${schema.tracks.youtubeId} GLOB 'spotify_*'`
+        )
+      )
+    } else if (scope.startsWith('bandcamp:')) {
+      const scopedTrackId = scope.slice('bandcamp:'.length).trim()
+      const trackId = Number.parseInt(scopedTrackId, 10)
+      if (!Number.isInteger(trackId) || String(trackId) !== scopedTrackId) {
+        return res.status(400).json({ error: 'Invalid bandcamp scope' })
+      }
+      conditions.push(
+        and(
+          eq(schema.slices.trackId, trackId),
+          sql`(${schema.tracks.youtubeId} GLOB 'bandcamp_*' OR ${schema.tracks.youtubeId} GLOB 'bc_*')`
+        )
+      )
+    } else if (scope === 'bandcamp') {
+      conditions.push(
+        and(
+          eq(schema.tracks.source, 'local'),
+          isNull(schema.tracks.folderPath),
+          sql`(${schema.tracks.youtubeId} GLOB 'bandcamp_*' OR ${schema.tracks.youtubeId} GLOB 'bc_*')`
+        )
+      )
     } else if (scope.startsWith('folder:') || scope.startsWith('my-folder:')) {
       // Two folder scope variants share the same prefix:
       // - folder:{path}  => imported local folder path (string)
@@ -777,6 +2040,7 @@ router.get('/sources/samples', async (req, res) => {
         endTime: schema.slices.endTime,
         filePath: schema.slices.filePath,
         favorite: schema.slices.favorite,
+        sampleType: schema.slices.sampleType,
         sampleModified: schema.slices.sampleModified,
         sampleModifiedAt: schema.slices.sampleModifiedAt,
         createdAt: schema.slices.createdAt,
@@ -822,8 +2086,11 @@ router.get('/sources/samples', async (req, res) => {
         roughness: schema.audioFeatures.roughness,
         dynamicRange: schema.audioFeatures.dynamicRange,
         attackTime: schema.audioFeatures.attackTime,
+        onsetRate: schema.audioFeatures.onsetRate,
         harmonicPercussiveRatio: schema.audioFeatures.harmonicPercussiveRatio,
+        rhythmicRegularity: schema.audioFeatures.rhythmicRegularity,
         stereoWidth: schema.audioFeatures.stereoWidth,
+        eventCount: schema.audioFeatures.eventCount,
         eventDensity: schema.audioFeatures.eventDensity,
         releaseTime: schema.audioFeatures.releaseTime,
       })
@@ -1264,64 +2531,94 @@ router.get('/sources/samples', async (req, res) => {
         .where(eq(schema.audioFeatures.sliceId, update.sliceId))
     }
 
-    const normalizedStatsRaw = sqlite.prepare(`
-      SELECT
-        MIN(brightness) AS brightnessMin,
-        MAX(brightness) AS brightnessMax,
-        MIN(harmonic_percussive_ratio) AS harmonicityMin,
-        MAX(harmonic_percussive_ratio) AS harmonicityMax,
-        MIN(COALESCE(noisiness, roughness)) AS noisinessMin,
-        MAX(COALESCE(noisiness, roughness)) AS noisinessMax,
-        MIN(hardness) AS attackMin,
-        MAX(hardness) AS attackMax,
-        MIN(dynamic_range) AS dynamicsMin,
-        MAX(dynamic_range) AS dynamicsMax,
-        MIN(roughness) AS saturationMin,
-        MAX(roughness) AS saturationMax,
-        MIN(roughness) AS surfaceMin,
-        MAX(roughness) AS surfaceMax,
-        MIN(event_density) AS densityMin,
-        MAX(event_density) AS densityMax,
-        MIN(release_time) AS ambienceMin,
-        MAX(release_time) AS ambienceMax,
-        MIN(stereo_width) AS stereoWidthMin,
-        MAX(stereo_width) AS stereoWidthMax,
-        MIN(-loudness) AS depthMin,
-        MAX(-loudness) AS depthMax,
-        MIN(warmth) AS warmthMin,
-        MAX(warmth) AS warmthMax,
-        MIN(hardness) AS hardnessMin,
-        MAX(hardness) AS hardnessMax,
-        MIN(sharpness) AS sharpnessMin,
-        MAX(sharpness) AS sharpnessMax
-      FROM audio_features
-    `).get() as Record<string, number | null>
+    // Normalize dimensions against the current candidate slice set so sliders
+    // respond to the active scope instead of unrelated global outliers.
+    const getRangeFromSlices = (
+      selector: (slice: typeof filteredSlices[number]) => number | null | undefined
+    ): Range => {
+      let min = Number.POSITIVE_INFINITY
+      let max = Number.NEGATIVE_INFINITY
+      let hasValue = false
+
+      for (const slice of filteredSlices) {
+        const value = selector(slice)
+        if (typeof value !== 'number' || !Number.isFinite(value)) continue
+        if (value < min) min = value
+        if (value > max) max = value
+        hasValue = true
+      }
+
+      return hasValue ? { min, max } : { min: null, max: null }
+    }
+
+    const toFiniteNumber = (value: unknown): number | null => {
+      if (typeof value === 'number' && Number.isFinite(value)) return value
+      if (typeof value === 'bigint') {
+        const converted = Number(value)
+        return Number.isFinite(converted) ? converted : null
+      }
+      if (typeof value === 'string' && value.trim().length > 0) {
+        const converted = Number.parseFloat(value)
+        return Number.isFinite(converted) ? converted : null
+      }
+      return null
+    }
+
+    const getDensityMetric = (slice: typeof filteredSlices[number]): number | null => {
+      const eventDensity = toFiniteNumber(slice.eventDensity)
+      if (eventDensity !== null) {
+        return eventDensity
+      }
+
+      const eventCount = toFiniteNumber(slice.eventCount)
+      if (eventCount !== null) {
+        const startTime = toFiniteNumber(slice.startTime)
+        const endTime = toFiniteNumber(slice.endTime)
+        if (startTime !== null && endTime !== null) {
+          const duration = endTime - startTime
+          if (duration > 0) {
+            return eventCount / duration
+          }
+        }
+      }
+
+      const onsetRate = toFiniteNumber(slice.onsetRate)
+      if (onsetRate !== null) {
+        return onsetRate
+      }
+
+      return null
+    }
 
     const dimensionRanges: DimensionRanges = {
-      brightness: { min: normalizedStatsRaw.brightnessMin, max: normalizedStatsRaw.brightnessMax },
-      harmonicity: { min: normalizedStatsRaw.harmonicityMin, max: normalizedStatsRaw.harmonicityMax },
-      noisiness: { min: normalizedStatsRaw.noisinessMin, max: normalizedStatsRaw.noisinessMax },
-      attack: { min: normalizedStatsRaw.attackMin, max: normalizedStatsRaw.attackMax },
-      dynamics: { min: normalizedStatsRaw.dynamicsMin, max: normalizedStatsRaw.dynamicsMax },
-      saturation: { min: normalizedStatsRaw.saturationMin, max: normalizedStatsRaw.saturationMax },
-      surface: { min: normalizedStatsRaw.surfaceMin, max: normalizedStatsRaw.surfaceMax },
-      density: { min: normalizedStatsRaw.densityMin, max: normalizedStatsRaw.densityMax },
-      ambience: { min: normalizedStatsRaw.ambienceMin, max: normalizedStatsRaw.ambienceMax },
-      stereoWidth: { min: normalizedStatsRaw.stereoWidthMin, max: normalizedStatsRaw.stereoWidthMax },
-      depth: { min: normalizedStatsRaw.depthMin, max: normalizedStatsRaw.depthMax },
+      brightness: getRangeFromSlices((slice) => slice.brightness),
+      harmonicity: getRangeFromSlices((slice) => slice.harmonicPercussiveRatio),
+      noisiness: getRangeFromSlices((slice) => slice.noisiness ?? slice.roughness),
+      attack: getRangeFromSlices((slice) => slice.hardness),
+      dynamics: getRangeFromSlices((slice) => slice.dynamicRange),
+      saturation: getRangeFromSlices((slice) => slice.roughness),
+      surface: getRangeFromSlices((slice) => slice.roughness),
+      rhythmic: getRangeFromSlices((slice) => slice.rhythmicRegularity),
+      density: getRangeFromSlices((slice) => getDensityMetric(slice)),
+      ambience: getRangeFromSlices((slice) => slice.releaseTime),
+      stereoWidth: getRangeFromSlices((slice) => slice.stereoWidth),
+      depth: getRangeFromSlices((slice) =>
+        typeof slice.loudness === 'number' ? -slice.loudness : null
+      ),
     }
 
     const perceptualRanges: Record<'brightness' | 'noisiness' | 'warmth' | 'hardness' | 'sharpness', Range> = {
       brightness: dimensionRanges.brightness,
       noisiness: dimensionRanges.noisiness,
-      warmth: { min: normalizedStatsRaw.warmthMin, max: normalizedStatsRaw.warmthMax },
-      hardness: { min: normalizedStatsRaw.hardnessMin, max: normalizedStatsRaw.hardnessMax },
-      sharpness: { min: normalizedStatsRaw.sharpnessMin, max: normalizedStatsRaw.sharpnessMax },
+      warmth: getRangeFromSlices((slice) => slice.warmth),
+      hardness: getRangeFromSlices((slice) => slice.hardness),
+      sharpness: getRangeFromSlices((slice) => slice.sharpness),
     }
 
     const getNormalizedDimensions = (slice: typeof filteredSlices[number]) => {
       const noisiness = slice.noisiness ?? slice.roughness ?? null
       const depthRaw = typeof slice.loudness === 'number' ? -slice.loudness : null
+      const densityRaw = getDensityMetric(slice)
       return {
         brightness: normalizeValue(slice.brightness, dimensionRanges.brightness),
         harmonicity: normalizeValue(slice.harmonicPercussiveRatio, dimensionRanges.harmonicity),
@@ -1330,7 +2627,8 @@ router.get('/sources/samples', async (req, res) => {
         dynamics: normalizeValue(slice.dynamicRange, dimensionRanges.dynamics),
         saturation: normalizeValue(slice.roughness, dimensionRanges.saturation),
         surface: normalizeValue(slice.roughness, dimensionRanges.surface),
-        density: normalizeValue(slice.eventDensity, dimensionRanges.density),
+        rhythmic: normalizeValue(slice.rhythmicRegularity, dimensionRanges.rhythmic),
+        density: normalizeValue(densityRaw, dimensionRanges.density),
         ambience: normalizeValue(slice.releaseTime, dimensionRanges.ambience),
         stereoWidth: normalizeValue(slice.stereoWidth, dimensionRanges.stereoWidth),
         depth: normalizeValue(depthRaw, dimensionRanges.depth),
@@ -1355,7 +2653,13 @@ router.get('/sources/samples', async (req, res) => {
       })
     }
 
-    const result = filteredSlices.map(slice => ({
+    const result = filteredSlices.map((slice) => {
+      const normalizedTags = sanitizeSliceTagsAndSampleType(
+        tagsBySlice.get(slice.id) || [],
+        slice.sampleType
+      )
+
+      return {
       ...(function () {
         const derivedScale = slice.scale ?? parseScaleFromKeyEstimate(slice.keyEstimate)
         const noisiness = slice.noisiness ?? slice.roughness ?? null
@@ -1400,11 +2704,12 @@ router.get('/sources/samples', async (req, res) => {
       endTime: slice.endTime,
       filePath: slice.filePath,
       favorite: slice.favorite === 1,
+      sampleType: normalizedTags.sampleType,
       sampleModified: slice.sampleModified === 1,
       sampleModifiedAt: slice.sampleModifiedAt,
       dateAdded: slice.createdAt,
       createdAt: slice.createdAt,
-      tags: tagsBySlice.get(slice.id) || [],
+      tags: normalizedTags.tags,
       folderIds: Array.from(foldersBySlice.get(slice.id) || []),
       bpm: slice.bpm,
       keyEstimate: slice.keyEstimate,
@@ -1415,6 +2720,8 @@ router.get('/sources/samples', async (req, res) => {
       brightness: slice.brightness,
       loudness: slice.loudness,
       roughness: slice.roughness,
+      stereoWidth: slice.stereoWidth,
+      rhythmicRegularity: slice.rhythmicRegularity,
       similarity: similarityScores.get(slice.id),
       track: {
         title: slice.trackTitle,
@@ -1437,7 +2744,8 @@ router.get('/sources/samples', async (req, res) => {
         tagBpm: slice.trackTagBpm,
         isrc: slice.trackIsrc,
       },
-    }))
+      }
+    })
 
     res.json({
       samples: result,
@@ -1454,6 +2762,24 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
   try {
     const level: 'advanced' = 'advanced'
     console.log(`Running audio analysis on slice ${sliceId} (level: ${level})...`)
+
+    const sliceContext = await db
+      .select({
+        name: schema.slices.name,
+        source: schema.tracks.source,
+        folderPath: schema.tracks.folderPath,
+        relativePath: schema.tracks.relativePath,
+      })
+      .from(schema.slices)
+      .leftJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+      .where(eq(schema.slices.id, sliceId))
+      .limit(1)
+
+    const pathHint = buildSamplePathHint({
+      folderPath: sliceContext[0]?.folderPath ?? null,
+      relativePath: sliceContext[0]?.relativePath ?? null,
+      filename: sliceContext[0]?.name ?? null,
+    })
 
     // Analyze audio with Python (Essentia + Librosa)
     const features = await analyzeAudioFeatures(audioPath, level)
@@ -1476,10 +2802,19 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
     })
 
     // Store raw features in database
-    await storeAudioFeatures(sliceId, enrichedFeatures)
+    await storeAudioFeatures(sliceId, enrichedFeatures, {
+      sampleName: sliceContext[0]?.name ?? null,
+      pathHint,
+      preferPathHint: true,
+    })
 
-    // Convert features to tags
-    const tagNames = featuresToTags(features)
+    // Build post-analysis tag plan (Ollama sanity stage).
+    const reviewedTags = await postAnalyzeSampleTags({
+      features,
+      sampleName: sliceContext[0]?.name ?? null,
+      folderPath: pathHint,
+      modelTags: featuresToTags(features),
+    })
 
     // Get existing tags for this slice to avoid duplicating filename-derived tags
     const existingSliceTags = await db
@@ -1489,18 +2824,21 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
       .where(eq(schema.sliceTags.sliceId, sliceId))
     const existingTagNames = new Set(existingSliceTags.map(t => t.name.toLowerCase()))
 
-    if (tagNames.length === 0) {
+    if (reviewedTags.length === 0) {
       console.log(`No tags generated for slice ${sliceId}`)
       return
     }
 
-    console.log(`Applying ${tagNames.length} tags to slice ${sliceId}:`, tagNames.join(', '))
+    console.log(
+      `Applying ${reviewedTags.length} reviewed tags to slice ${sliceId}:`,
+      reviewedTags.map((tag) => tag.name).join(', ')
+    )
 
     // Create tags and link them to the slice
-    for (const tagName of tagNames) {
-      const lowerTag = tagName.toLowerCase()
+    for (const reviewedTag of reviewedTags) {
+      const lowerTag = reviewedTag.name.toLowerCase()
       if (existingTagNames.has(lowerTag)) continue // Skip already-applied tags
-      const { color, category } = getTagMetadata(lowerTag)
+      const { color, category } = getTagMetadata(lowerTag, reviewedTag.category)
 
       try {
         // Check if tag exists
@@ -1521,6 +2859,14 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
             })
             .returning()
           tag = [newTag]
+        } else if (tag[0].category === 'filename' && category !== 'filename') {
+          await db
+            .update(schema.tags)
+            .set({
+              color,
+              category,
+            })
+            .where(eq(schema.tags.id, tag[0].id))
         }
 
         // Link tag to slice
@@ -1570,6 +2916,7 @@ router.get('/slices', async (_req, res) => {
         endTime: schema.slices.endTime,
         filePath: schema.slices.filePath,
         favorite: schema.slices.favorite,
+        sampleType: schema.slices.sampleType,
         sampleModified: schema.slices.sampleModified,
         sampleModifiedAt: schema.slices.sampleModifiedAt,
         createdAt: schema.slices.createdAt,
@@ -1617,7 +2964,13 @@ router.get('/slices', async (_req, res) => {
       foldersBySlice.get(row.sliceId)!.push(row.folderId)
     }
 
-    const result = slices.map((slice) => ({
+    const result = slices.map((slice) => {
+      const normalizedTags = sanitizeSliceTagsAndSampleType(
+        tagsBySlice.get(slice.id) || [],
+        slice.sampleType
+      )
+
+      return {
       id: slice.id,
       trackId: slice.trackId,
       name: slice.name,
@@ -1625,16 +2978,18 @@ router.get('/slices', async (_req, res) => {
       endTime: slice.endTime,
       filePath: slice.filePath,
       favorite: slice.favorite === 1,
+      sampleType: normalizedTags.sampleType,
       sampleModified: slice.sampleModified === 1,
       sampleModifiedAt: slice.sampleModifiedAt,
       createdAt: slice.createdAt,
-      tags: tagsBySlice.get(slice.id) || [],
+      tags: normalizedTags.tags,
       folderIds: foldersBySlice.get(slice.id) || [],
       track: {
         title: slice.trackTitle,
         youtubeId: slice.trackYoutubeId,
       },
-    }))
+      }
+    })
 
     res.json(result)
   } catch (error) {
@@ -1674,10 +3029,18 @@ router.get('/tracks/:trackId/slices', async (req, res) => {
       tagsBySlice.get(sliceId)!.push(row.tags)
     }
 
-    const result = slices.map((slice) => ({
-      ...slice,
-      tags: tagsBySlice.get(slice.id) || [],
-    }))
+    const result = slices.map((slice) => {
+      const normalizedTags = sanitizeSliceTagsAndSampleType(
+        tagsBySlice.get(slice.id) || [],
+        slice.sampleType
+      )
+
+      return {
+        ...slice,
+        sampleType: normalizedTags.sampleType,
+        tags: normalizedTags.tags,
+      }
+    })
 
     res.json(result)
   } catch (error) {
@@ -1769,10 +3132,13 @@ router.post('/tracks/:trackId/slices', async (req, res) => {
 // Update slice
 router.put('/slices/:id', async (req, res) => {
   const id = parseInt(req.params.id)
-  const { name, startTime, endTime } = req.body as {
+  const { name, startTime, endTime, sampleType, envelopeType, note } = req.body as {
     name?: string
     startTime?: number
     endTime?: number
+    sampleType?: string | null
+    envelopeType?: string | null
+    note?: string | null
   }
 
   try {
@@ -1786,12 +3152,78 @@ router.put('/slices/:id', async (req, res) => {
       return res.status(404).json({ error: 'Slice not found' })
     }
 
+    const hasSlicePayload = (
+      name !== undefined
+      || startTime !== undefined
+      || endTime !== undefined
+      || sampleType !== undefined
+    )
+    const hasAudioFeaturePayload = envelopeType !== undefined || note !== undefined
+
+    if (!hasSlicePayload && !hasAudioFeaturePayload) {
+      return res.status(400).json({ error: 'No valid fields to update' })
+    }
+
     const updates: Partial<typeof schema.slices.$inferSelect> = {}
+    const audioFeatureUpdates: Partial<typeof schema.audioFeatures.$inferSelect> = {}
     if (name !== undefined) updates.name = name
     if (startTime !== undefined) updates.startTime = startTime
     if (endTime !== undefined) updates.endTime = endTime
+    if (sampleType !== undefined) {
+      if (sampleType === null || (typeof sampleType === 'string' && sampleType.trim() === '')) {
+        updates.sampleType = null
+      } else if (typeof sampleType === 'string') {
+        const normalizedSampleType = normalizeSampleTypeValue(sampleType)
+        if (!normalizedSampleType) {
+          return res.status(400).json({ error: 'Invalid sampleType. Expected oneshot or loop.' })
+        }
+        updates.sampleType = normalizedSampleType
+      } else {
+        return res.status(400).json({ error: 'Invalid sampleType. Expected oneshot or loop.' })
+      }
+    }
 
-    if (name !== undefined || startTime !== undefined || endTime !== undefined) {
+    if (envelopeType !== undefined) {
+      if (envelopeType === null || (typeof envelopeType === 'string' && envelopeType.trim() === '')) {
+        audioFeatureUpdates.envelopeType = null
+      } else if (typeof envelopeType === 'string') {
+        const normalizedEnvelopeType = normalizeEnvelopeTypeValue(envelopeType)
+        if (!normalizedEnvelopeType) {
+          return res.status(400).json({
+            error: `Invalid envelopeType. Expected one of: ${ENVELOPE_TYPE_VALUES.join(', ')}`,
+          })
+        }
+        audioFeatureUpdates.envelopeType = normalizedEnvelopeType
+      } else {
+        return res.status(400).json({
+          error: `Invalid envelopeType. Expected one of: ${ENVELOPE_TYPE_VALUES.join(', ')}`,
+        })
+      }
+    }
+
+    if (note !== undefined) {
+      if (note === null || (typeof note === 'string' && note.trim() === '')) {
+        audioFeatureUpdates.fundamentalFrequency = null
+      } else if (typeof note === 'string') {
+        const [existingFeature] = await db
+          .select({
+            fundamentalFrequency: schema.audioFeatures.fundamentalFrequency,
+          })
+          .from(schema.audioFeatures)
+          .where(eq(schema.audioFeatures.sliceId, id))
+          .limit(1)
+        const fallbackOctave = getFrequencyOctave(existingFeature?.fundamentalFrequency ?? 0)
+        const frequency = noteToFrequency(note, fallbackOctave)
+        if (frequency === null) {
+          return res.status(400).json({ error: 'Invalid note. Expected note name like C, F#, Bb, or C4.' })
+        }
+        audioFeatureUpdates.fundamentalFrequency = frequency
+      } else {
+        return res.status(400).json({ error: 'Invalid note. Expected note name like C, F#, Bb, or C4.' })
+      }
+    }
+
+    if (hasSlicePayload || hasAudioFeaturePayload) {
       updates.sampleModified = 1
       updates.sampleModifiedAt = new Date().toISOString()
     }
@@ -1821,6 +3253,24 @@ router.put('/slices/:id', async (req, res) => {
           }
         }
       }
+    }
+
+    if (Object.keys(audioFeatureUpdates).length > 0) {
+      const effectiveStartTime = startTime ?? slice[0].startTime
+      const effectiveEndTime = endTime ?? slice[0].endTime
+      const duration = Math.max(0, effectiveEndTime - effectiveStartTime)
+
+      await db
+        .insert(schema.audioFeatures)
+        .values({
+          sliceId: id,
+          duration,
+          ...audioFeatureUpdates,
+        })
+        .onConflictDoUpdate({
+          target: schema.audioFeatures.sliceId,
+          set: audioFeatureUpdates,
+        })
     }
 
     const [updated] = await db
@@ -1986,9 +3436,16 @@ router.post('/slices/batch-download', async (req, res) => {
 
 // Batch convert slices to a target audio format
 router.post('/slices/batch-convert', async (req, res) => {
-  const { sliceIds, targetFormat: rawTargetFormat } = req.body as {
+  const {
+    sliceIds,
+    targetFormat: rawTargetFormat,
+    sampleRate: rawSampleRate,
+    bitDepth: rawBitDepth,
+  } = req.body as {
     sliceIds?: number[]
     targetFormat?: unknown
+    sampleRate?: unknown
+    bitDepth?: unknown
   }
 
   if (!Array.isArray(sliceIds) || sliceIds.length === 0) {
@@ -1999,6 +3456,26 @@ router.post('/slices/batch-convert', async (req, res) => {
   if (!targetFormat) {
     return res.status(400).json({
       error: `targetFormat must be one of: ${BATCH_CONVERSION_FORMATS.join(', ')}`,
+    })
+  }
+
+  const sampleRate = normalizeConversionSampleRate(rawSampleRate)
+  if (!isEmptyOptionalBatchConversionValue(rawSampleRate) && sampleRate === null) {
+    return res.status(400).json({
+      error: `sampleRate must be an integer between ${BATCH_CONVERSION_MIN_SAMPLE_RATE} and ${BATCH_CONVERSION_MAX_SAMPLE_RATE}`,
+    })
+  }
+
+  const bitDepth = normalizeConversionBitDepth(rawBitDepth)
+  if (!isEmptyOptionalBatchConversionValue(rawBitDepth) && bitDepth === null) {
+    return res.status(400).json({
+      error: `bitDepth must be one of: ${BATCH_CONVERSION_BIT_DEPTHS.join(', ')}`,
+    })
+  }
+
+  if (bitDepth !== null && !BATCH_CONVERSION_BIT_DEPTH_FORMATS.has(targetFormat)) {
+    return res.status(400).json({
+      error: `bitDepth is only supported for: ${Array.from(BATCH_CONVERSION_BIT_DEPTH_FORMATS).join(', ')}`,
     })
   }
 
@@ -2046,6 +3523,7 @@ router.post('/slices/batch-convert', async (req, res) => {
     let converted = 0
     let skipped = 0
     let failed = 0
+    const hasRequestedQualityChange = sampleRate !== null || bitDepth !== null
 
     for (const slice of orderedSlices) {
       const sourcePath = slice.filePath
@@ -2075,7 +3553,21 @@ router.post('/slices/batch-convert', async (req, res) => {
         continue
       }
 
-      if (inferFormatFromFilePath(sourcePath) === targetFormat) {
+      const sourceFormat = inferFormatFromFilePath(sourcePath)
+      let shouldSkip = sourceFormat === targetFormat && !hasRequestedQualityChange
+
+      if (sourceFormat === targetFormat && hasRequestedQualityChange) {
+        const sourceMetadata = await getAudioFileMetadata(absoluteSourcePath).catch(() => null)
+        const sampleRateMatches = sampleRate === null
+          ? true
+          : sourceMetadata?.sampleRate === sampleRate
+        const bitDepthMatches = bitDepth === null
+          ? true
+          : sourceMetadata?.bitDepth === bitDepth
+        shouldSkip = sampleRateMatches && bitDepthMatches
+      }
+
+      if (shouldSkip) {
         skipped += 1
         results.push({
           sliceId: slice.id,
@@ -2090,7 +3582,10 @@ router.post('/slices/batch-convert', async (req, res) => {
       const outputPath = path.join(SLICES_DIR, `${outputBase}.${targetFormat}`)
 
       try {
-        await convertAudioFile(absoluteSourcePath, outputPath, targetFormat)
+        await convertAudioFile(absoluteSourcePath, outputPath, targetFormat, {
+          sampleRate: sampleRate ?? undefined,
+          bitDepth: bitDepth ?? undefined,
+        })
 
         const fileMetadata = await getAudioFileMetadata(outputPath).catch(() => null)
         const modifiedAt = new Date().toISOString()
@@ -2139,6 +3634,8 @@ router.post('/slices/batch-convert', async (req, res) => {
 
     res.json({
       targetFormat,
+      sampleRate,
+      bitDepth,
       total: orderedSlices.length,
       converted,
       skipped,
@@ -2189,6 +3686,7 @@ router.post('/slices/batch-ai-tags', async (req, res) => {
       .select()
       .from(schema.slices)
       .where(inArray(schema.slices.id, sliceIds))
+    const aiManagedTagIds = await getAiManagedInstrumentTagIds()
 
     const results: {
       sliceId: number
@@ -2213,33 +3711,13 @@ router.post('/slices/batch-ai-tags', async (req, res) => {
           }
           try {
             const beforeTags = await getSliceTagNames(slice.id)
-            const beforeAutoTagRows = await db
-              .select({ name: schema.tags.name })
-              .from(schema.sliceTags)
-              .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
-              .where(
-                and(
-                  eq(schema.sliceTags.sliceId, slice.id),
-                  inArray(schema.tags.category, [...AUTO_REANALYSIS_TAG_CATEGORIES])
-                )
-              )
-            const beforeAutoTags = beforeAutoTagRows.map((row) => row.name.toLowerCase())
+            const beforeAutoTags = await getSliceAiManagedTagNames(slice.id, aiManagedTagIds)
 
             await autoTagSlice(slice.id, slice.filePath)
 
             const afterTags = await getSliceTagNames(slice.id)
             const { removedTags, addedTags } = computeTagDiff(beforeTags, afterTags)
-            const afterAutoTagRows = await db
-              .select({ name: schema.tags.name })
-              .from(schema.sliceTags)
-              .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
-              .where(
-                and(
-                  eq(schema.sliceTags.sliceId, slice.id),
-                  inArray(schema.tags.category, [...AUTO_REANALYSIS_TAG_CATEGORIES])
-                )
-              )
-            const afterAutoTags = afterAutoTagRows.map((row) => row.name.toLowerCase())
+            const afterAutoTags = await getSliceAiManagedTagNames(slice.id, aiManagedTagIds)
 
             const autoTagChanged =
               beforeAutoTags.length > 0 &&
@@ -2336,6 +3814,34 @@ router.get('/slices/features', async (_req, res) => {
         spectralFlux: schema.audioFeatures.spectralFlux,
         spectralFlatness: schema.audioFeatures.spectralFlatness,
         kurtosis: schema.audioFeatures.kurtosis,
+        dissonance: schema.audioFeatures.dissonance,
+        inharmonicity: schema.audioFeatures.inharmonicity,
+        spectralComplexity: schema.audioFeatures.spectralComplexity,
+        spectralCrest: schema.audioFeatures.spectralCrest,
+        noisiness: schema.audioFeatures.noisiness,
+        roughness: schema.audioFeatures.roughness,
+        sharpness: schema.audioFeatures.sharpness,
+        stereoWidth: schema.audioFeatures.stereoWidth,
+        panningCenter: schema.audioFeatures.panningCenter,
+        stereoImbalance: schema.audioFeatures.stereoImbalance,
+        harmonicPercussiveRatio: schema.audioFeatures.harmonicPercussiveRatio,
+        harmonicEnergy: schema.audioFeatures.harmonicEnergy,
+        percussiveEnergy: schema.audioFeatures.percussiveEnergy,
+        harmonicCentroid: schema.audioFeatures.harmonicCentroid,
+        percussiveCentroid: schema.audioFeatures.percussiveCentroid,
+        onsetRate: schema.audioFeatures.onsetRate,
+        beatStrength: schema.audioFeatures.beatStrength,
+        rhythmicRegularity: schema.audioFeatures.rhythmicRegularity,
+        danceability: schema.audioFeatures.danceability,
+        decayTime: schema.audioFeatures.decayTime,
+        sustainLevel: schema.audioFeatures.sustainLevel,
+        releaseTime: schema.audioFeatures.releaseTime,
+        loudnessIntegrated: schema.audioFeatures.loudnessIntegrated,
+        loudnessRange: schema.audioFeatures.loudnessRange,
+        loudnessMomentaryMax: schema.audioFeatures.loudnessMomentaryMax,
+        truePeak: schema.audioFeatures.truePeak,
+        eventCount: schema.audioFeatures.eventCount,
+        eventDensity: schema.audioFeatures.eventDensity,
         temporalCentroid: schema.audioFeatures.temporalCentroid,
         crestFactor: schema.audioFeatures.crestFactor,
         transientSpectralCentroid: schema.audioFeatures.transientSpectralCentroid,
@@ -2352,6 +3858,7 @@ router.get('/slices/features', async (_req, res) => {
         instrumentType: schema.audioFeatures.instrumentType,
         sliceCreatedAt: schema.slices.createdAt,
         sourceCtime: schema.audioFeatures.sourceCtime,
+        sourceMtime: schema.audioFeatures.sourceMtime,
       })
       .from(schema.slices)
       .innerJoin(schema.audioFeatures, eq(schema.slices.id, schema.audioFeatures.sliceId))
@@ -2575,6 +4082,606 @@ router.post('/slices/batch-delete', async (req, res) => {
   }
 })
 
+async function runBatchReanalyze(options: BatchReanalyzeRunOptions): Promise<BatchReanalyzeResponsePayload> {
+  const includeFilenameTags = options.includeFilenameTags === true
+  if (options.allowAiTagging === false) {
+    console.warn('[reanalyze] allowAiTagging=false requested, but AI tagging is forced on.')
+  }
+  const signal = options.signal
+  const concurrency = resolveBatchReanalyzeConcurrency(options.concurrency)
+  const results: BatchReanalyzeResultItem[] = []
+  const resultBySliceId = new Map<number, BatchReanalyzeResultItem>()
+  type PendingReviewSample = {
+    sliceId: number
+    sampleName: string
+    folderPath: string | null
+    relativePath: string | null
+    pathHint: string | null
+    beforeTags: string[]
+    beforeAutoTags: string[]
+    sampleModified: number
+    features: Awaited<ReturnType<typeof analyzeAudioFeatures>>
+    modelEvidenceTags: string[]
+    filenameEvidenceTags: ParsedFilenameTag[]
+  }
+  const pendingReviewQueue: PendingReviewSample[] = []
+  const auditSamples: BatchAuditSampleContext[] = []
+  let aiManagedTagIds: number[] = []
+  const warningMessages: string[] = []
+  const warningSliceIds = new Set<number>()
+  let stage: BatchReanalyzeStage = 'analysis'
+  let analyzed = 0
+  let failed = 0
+
+  const ensureNotCanceled = () => {
+    if (signal?.aborted) {
+      throw new Error(BATCH_REANALYZE_CANCELLED_ERROR)
+    }
+  }
+
+  const emitProgress = (total: number) => {
+    options.onProgress?.({
+      total,
+      analyzed,
+      failed,
+      processed: analyzed + failed,
+      stage,
+      warningSliceIds: Array.from(warningSliceIds),
+      warningMessages: [...warningMessages],
+    })
+  }
+
+  const recordFailure = (sliceId: number, error: string, total: number) => {
+    failed += 1
+    const failureResult: BatchReanalyzeResultItem = {
+      sliceId,
+      success: false,
+      error,
+    }
+    results.push(failureResult)
+    resultBySliceId.set(sliceId, failureResult)
+    emitProgress(total)
+  }
+
+  const applyReviewedTagsForSample = async (
+    sample: PendingReviewSample,
+    reviewedTags: ReviewedTagResult[]
+  ) => {
+    const sanitizedReviewedTags = normalizeReviewedTagsForWrite(reviewedTags, {
+      maxTags: 10,
+      isOneShot: sample.features.isOneShot,
+      isLoop: sample.features.isLoop,
+    })
+    const suggestedAutoTags = sanitizedReviewedTags.map((tag) => tag.name)
+    await replaceAutoReanalysisTagsForSlice(sample.sliceId, sanitizedReviewedTags, aiManagedTagIds)
+
+    const afterTags = await getSliceTagNames(sample.sliceId)
+    const { removedTags, addedTags } = computeTagDiff(sample.beforeTags, afterTags)
+
+    const beforeAutoSet = new Set(sample.beforeAutoTags)
+    const suggestedAutoSet = new Set(suggestedAutoTags)
+    const autoTagStateChanged =
+      sample.beforeAutoTags.some((tag) => !suggestedAutoSet.has(tag)) ||
+      suggestedAutoTags.some((tag) => !beforeAutoSet.has(tag))
+
+    let warningMessage: string | null = null
+    if (autoTagStateChanged || sample.sampleModified === 1) {
+      warningMessage = autoTagStateChanged
+        ? `Slice ${sample.sliceId} had custom/changed AI tag state before re-analysis. Changes detected: -${removedTags.length} +${addedTags.length}.`
+        : `Slice ${sample.sliceId} was manually modified before re-analysis.`
+    }
+
+    await db.insert(schema.reanalysisLogs).values({
+      sliceId: sample.sliceId,
+      beforeTags: JSON.stringify(sample.beforeTags),
+      afterTags: JSON.stringify(afterTags),
+      removedTags: JSON.stringify(removedTags),
+      addedTags: JSON.stringify(addedTags),
+      hadPotentialCustomState: warningMessage ? 1 : 0,
+      warningMessage,
+    })
+
+    if (warningMessage) {
+      warningMessages.push(warningMessage)
+      warningSliceIds.add(sample.sliceId)
+    }
+
+    await db
+      .update(schema.slices)
+      .set({
+        sampleModified: 0,
+        sampleModifiedAt: null,
+      })
+      .where(eq(schema.slices.id, sample.sliceId))
+
+    auditSamples.push({
+      sliceId: sample.sliceId,
+      sampleName: sample.sampleName,
+      folderPath: sample.pathHint ?? sample.folderPath,
+      currentTags: sanitizedReviewedTags.map((tag) => ({
+        tag: tag.name,
+        category: tag.category,
+        confidence: 0.9,
+      })),
+      modelTags: sample.modelEvidenceTags,
+      isOneShot: sample.features.isOneShot,
+      isLoop: sample.features.isLoop,
+      instrumentHint: deriveInstrumentHintForAudit(sample.features.instrumentPredictions),
+      genrePrimary: sample.features.genrePrimary ?? null,
+      previousAutoTags: sample.beforeAutoTags,
+      filenameTags: sample.filenameEvidenceTags.map((entry) => ({
+        tag: entry.tag,
+        category: entry.category,
+        confidence: entry.confidence,
+      })),
+      instrumentType: deriveInstrumentType(sample.features.instrumentClasses, sample.sampleName, {
+        pathHint: sample.pathHint,
+        preferPathHint: true,
+      }),
+    })
+
+    analyzed += 1
+    const successResult: BatchReanalyzeResultItem = {
+      sliceId: sample.sliceId,
+      success: true,
+      hadPotentialCustomState: Boolean(warningMessage),
+      warningMessage: warningMessage ?? undefined,
+      removedTags,
+      addedTags,
+    }
+    results.push(successResult)
+    resultBySliceId.set(sample.sliceId, successResult)
+    emitProgress(total)
+  }
+
+  const processQueuedReviewBatch = async (maxBatchSize: number) => {
+    const batchSize = Math.max(1, maxBatchSize)
+    const reviewBatch = pendingReviewQueue.splice(0, batchSize)
+    if (reviewBatch.length === 0) return
+
+    const reviewedBySliceId = new Map<number, ReviewedTagResult[]>()
+    const unresolvedForAi: typeof reviewBatch = []
+
+    for (const sample of reviewBatch) {
+      const deterministicTags = buildFallbackReviewedTags({
+        sampleName: sample.sampleName,
+        folderPath: sample.pathHint ?? sample.folderPath,
+        modelTags: sample.modelEvidenceTags,
+        modelConfidence: (sample.features.instrumentPredictions || [])
+          .reduce((best, pred) => {
+            if (!pred || typeof pred.confidence !== 'number' || !Number.isFinite(pred.confidence)) return best
+            return pred.confidence > best ? pred.confidence : best
+          }, 0),
+        filenameTags: sample.filenameEvidenceTags,
+        previousAutoTags: sample.beforeAutoTags,
+        isOneShot: sample.features.isOneShot,
+        isLoop: sample.features.isLoop,
+        maxTags: 10,
+      })
+
+      if (deterministicTags.length > 0) {
+        reviewedBySliceId.set(sample.sliceId, deterministicTags)
+        continue
+      }
+
+      unresolvedForAi.push(sample)
+    }
+
+    if (unresolvedForAi.length > 0) {
+      try {
+        const reviewedBatch = await reviewSampleTagBatchWithOllama({
+          samples: unresolvedForAi.map((sample) => ({
+            sliceId: sample.sliceId,
+            sampleName: sample.sampleName,
+            folderPath: sample.pathHint ?? sample.folderPath,
+            modelTags: sample.modelEvidenceTags,
+            previousAutoTags: sample.beforeAutoTags,
+            filenameTags: sample.filenameEvidenceTags.map((entry) => ({
+              tag: entry.tag,
+              category: entry.category,
+              confidence: entry.confidence,
+            })),
+            instrumentType: deriveInstrumentType(sample.features.instrumentClasses, sample.sampleName, {
+              pathHint: sample.pathHint,
+              preferPathHint: true,
+            }),
+            genrePrimary: sample.features.genrePrimary ?? null,
+            maxTags: 10,
+          })),
+          maxTags: 10,
+        })
+
+        for (const entry of reviewedBatch) {
+          const normalizedTags = normalizeReviewedTagsForWrite(
+            entry.tags.map((tag) => ({ name: tag.tag, category: tag.category })),
+            { maxTags: 10 }
+          )
+          if (normalizedTags.length > 0) {
+            reviewedBySliceId.set(entry.sliceId, normalizedTags)
+          }
+        }
+      } catch (error) {
+        console.error('[reanalyze] AI fallback batch review failed:', error)
+      }
+    }
+
+    for (const sample of reviewBatch) {
+      ensureNotCanceled()
+      let reviewedTags = reviewedBySliceId.get(sample.sliceId) ?? []
+
+      await applyReviewedTagsForSample(sample, reviewedTags)
+    }
+  }
+
+  const slicesToAnalyze = options.sliceIds && options.sliceIds.length > 0
+    ? await db
+        .select({
+          id: schema.slices.id,
+          name: schema.slices.name,
+          filePath: schema.slices.filePath,
+          trackId: schema.slices.trackId,
+          sampleModified: schema.slices.sampleModified,
+          folderPath: schema.tracks.folderPath,
+          relativePath: schema.tracks.relativePath,
+        })
+        .from(schema.slices)
+        .leftJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+        .where(inArray(schema.slices.id, options.sliceIds))
+    : await db
+        .select({
+          id: schema.slices.id,
+          name: schema.slices.name,
+          filePath: schema.slices.filePath,
+          trackId: schema.slices.trackId,
+          sampleModified: schema.slices.sampleModified,
+          folderPath: schema.tracks.folderPath,
+          relativePath: schema.tracks.relativePath,
+        })
+        .from(schema.slices)
+        .leftJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
+
+  ensureNotCanceled()
+
+  if (slicesToAnalyze.length === 0) {
+    emitProgress(0)
+    return {
+      total: 0,
+      analyzed: 0,
+      failed: 0,
+      warnings: createEmptyBatchReanalyzeWarnings(),
+      audit: createEmptyBatchReanalyzeAuditSummary(BATCH_REANALYZE_AUDIT_ENABLED),
+      results: [],
+    }
+  }
+
+  // Clean up bad tags (AudioSet ontology labels that leaked through)
+  const badTags = await db
+    .select({ id: schema.tags.id })
+    .from(schema.tags)
+    .where(like(schema.tags.name, '%/m/%'))
+  if (badTags.length > 0) {
+    const badTagIds = badTags.map((tag) => tag.id)
+    await db.delete(schema.sliceTags).where(inArray(schema.sliceTags.tagId, badTagIds))
+    await db.delete(schema.tags).where(inArray(schema.tags.id, badTagIds))
+    console.log(`Cleaned up ${badTags.length} bad AudioSet ontology tags`)
+  }
+
+  const total = slicesToAnalyze.length
+  aiManagedTagIds = await getAiManagedInstrumentTagIds()
+  emitProgress(total)
+  console.log(`[reanalyze] Processing ${total} slices with concurrency ${concurrency}.`)
+
+  for (let i = 0; i < total; i += concurrency) {
+    ensureNotCanceled()
+    const chunk = slicesToAnalyze.slice(i, i + concurrency)
+
+    const analyzedChunk = await Promise.all(
+      chunk.map(async (slice): Promise<{ kind: 'ready'; sample: PendingReviewSample } | { kind: 'failed'; sliceId: number; error: string }> => {
+        try {
+          ensureNotCanceled()
+          if (!slice.filePath) {
+            return { kind: 'failed', sliceId: slice.id, error: 'No file path' }
+          }
+
+          let filePath = slice.filePath
+          if (!path.isAbsolute(filePath)) {
+            if (filePath.startsWith('data/')) {
+              filePath = filePath.substring(5)
+            }
+            filePath = path.join(DATA_DIR, filePath)
+          }
+
+          try {
+            await fs.access(filePath)
+          } catch {
+            return { kind: 'failed', sliceId: slice.id, error: 'File not found' }
+          }
+
+          const beforeTags = await getSliceTagNames(slice.id)
+          const beforeAutoTags = await getSliceAiManagedTagNames(slice.id, aiManagedTagIds)
+          const pathHint = buildSamplePathHint({
+            folderPath: slice.folderPath ?? null,
+            relativePath: slice.relativePath ?? null,
+            filename: slice.name ?? null,
+          })
+
+          const features = await analyzeAudioFeatures(filePath, 'advanced', { signal })
+          const modelEvidenceTags = featuresToTags(features)
+          ensureNotCanceled()
+
+          const fileMetadata = await getAudioFileMetadata(filePath).catch(() => null)
+          const enrichedFeatures = {
+            ...features,
+            sampleRate: fileMetadata?.sampleRate ?? features.sampleRate,
+            channels: fileMetadata?.channels ?? undefined,
+            fileFormat: fileMetadata?.format ?? undefined,
+            sourceMtime: fileMetadata?.modifiedAt ?? undefined,
+            sourceCtime: fileMetadata?.createdAt ?? undefined,
+          }
+
+          await storeAudioFeatures(slice.id, enrichedFeatures, {
+            sampleName: slice.name ?? null,
+            pathHint,
+            preferPathHint: true,
+          })
+          ensureNotCanceled()
+
+          const filenameEvidenceTags =
+            includeFilenameTags && slice.name
+              ? parseFilenameTags(slice.name, pathHint)
+              : []
+
+          return {
+            kind: 'ready',
+            sample: {
+              sliceId: slice.id,
+              sampleName: slice.name,
+              folderPath: slice.folderPath ?? null,
+              relativePath: slice.relativePath ?? null,
+              pathHint,
+              beforeTags,
+              beforeAutoTags,
+              sampleModified: slice.sampleModified,
+              features,
+              modelEvidenceTags,
+              filenameEvidenceTags,
+            },
+          }
+        } catch (error) {
+          if (isBatchReanalyzeCancellationError(error)) {
+            throw error
+          }
+          return {
+            kind: 'failed',
+            sliceId: slice.id,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          }
+        }
+      })
+    )
+
+    for (const chunkResult of analyzedChunk) {
+      if (chunkResult.kind === 'failed') {
+        recordFailure(chunkResult.sliceId, chunkResult.error, total)
+        continue
+      }
+
+      pendingReviewQueue.push(chunkResult.sample)
+      while (pendingReviewQueue.length >= BATCH_REANALYZE_REVIEW_BATCH_SIZE) {
+        ensureNotCanceled()
+        await processQueuedReviewBatch(BATCH_REANALYZE_REVIEW_BATCH_SIZE)
+      }
+    }
+
+    ensureNotCanceled()
+    if (i + concurrency < total) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+
+  while (pendingReviewQueue.length > 0) {
+    ensureNotCanceled()
+    await processQueuedReviewBatch(pendingReviewQueue.length)
+  }
+
+  stage = 'audit'
+  emitProgress(total)
+  const audit = await runBatchReanalyzeAudit({
+    samples: auditSamples,
+    resultBySliceId,
+    ensureNotCanceled,
+  })
+
+  const warnings: BatchReanalyzeWarningSummary = {
+    totalWithWarnings: warningSliceIds.size,
+    sliceIds: Array.from(warningSliceIds),
+    messages: [...warningMessages],
+  }
+
+  return {
+    total,
+    analyzed,
+    failed,
+    warnings,
+    audit,
+    results,
+  }
+}
+
+router.get('/slices/batch-reanalyze/status', (_req, res) => {
+  res.set('Cache-Control', 'no-store')
+  res.json(getBatchReanalyzeStatusResponse())
+})
+
+router.post('/slices/batch-reanalyze/start', async (req, res) => {
+  res.set('Cache-Control', 'no-store')
+  if (batchReanalyzeJobState.status === 'running' || batchReanalyzeJobState.status === 'cancelling') {
+    return res.status(409).json({
+      error: 'Batch re-analysis already running',
+      status: getBatchReanalyzeStatusResponse(),
+    })
+  }
+
+  const { sliceIds, concurrency, includeFilenameTags, allowAiTagging } = req.body as BatchReanalyzeRequestBody
+  const resolvedConcurrency = resolveBatchReanalyzeConcurrency(concurrency)
+  const normalizedIncludeFilenameTags = includeFilenameTags === true
+  const normalizedAllowAiTagging = true
+  if (allowAiTagging === false) {
+    console.warn('[reanalyze] allowAiTagging=false requested at job start, but AI tagging is forced on.')
+  }
+  const startedAt = new Date().toISOString()
+  const jobId = randomUUID()
+  const abortController = new AbortController()
+  batchReanalyzeAbortController = abortController
+
+  batchReanalyzeJobState = {
+    jobId,
+    status: 'running',
+    stage: 'analysis',
+    startedAt,
+    updatedAt: startedAt,
+    finishedAt: null,
+    total: 0,
+    analyzed: 0,
+    failed: 0,
+    processed: 0,
+    concurrency: resolvedConcurrency,
+    includeFilenameTags: normalizedIncludeFilenameTags,
+    allowAiTagging: normalizedAllowAiTagging,
+    error: null,
+    warnings: createEmptyBatchReanalyzeWarnings(),
+    audit: createEmptyBatchReanalyzeAuditSummary(BATCH_REANALYZE_AUDIT_ENABLED),
+    resultSummary: null,
+  }
+
+  void (async () => {
+    try {
+      const result = await runBatchReanalyze({
+        sliceIds,
+        concurrency: resolvedConcurrency,
+        includeFilenameTags: normalizedIncludeFilenameTags,
+        allowAiTagging: normalizedAllowAiTagging,
+        signal: abortController.signal,
+        onProgress: (progress) => {
+          batchReanalyzeJobState = {
+            ...batchReanalyzeJobState,
+            total: progress.total,
+            analyzed: progress.analyzed,
+            failed: progress.failed,
+            processed: progress.processed,
+            stage: progress.stage,
+            warnings: {
+              totalWithWarnings: progress.warningSliceIds.length,
+              sliceIds: [...progress.warningSliceIds],
+              messages: [...progress.warningMessages],
+            },
+            updatedAt: new Date().toISOString(),
+          }
+        },
+      })
+      const finishedAt = new Date().toISOString()
+      batchReanalyzeJobState = {
+        ...batchReanalyzeJobState,
+        status: 'completed',
+        finishedAt,
+        updatedAt: finishedAt,
+        total: result.total,
+        analyzed: result.analyzed,
+        failed: result.failed,
+        processed: result.analyzed + result.failed,
+        stage: 'analysis',
+        error: null,
+        warnings: {
+          totalWithWarnings: result.warnings.totalWithWarnings,
+          sliceIds: [...result.warnings.sliceIds],
+          messages: [...result.warnings.messages],
+        },
+        audit: result.audit,
+        resultSummary: {
+          total: result.total,
+          analyzed: result.analyzed,
+          failed: result.failed,
+          warnings: {
+            totalWithWarnings: result.warnings.totalWithWarnings,
+            sliceIds: [...result.warnings.sliceIds],
+            messages: [...result.warnings.messages],
+          },
+          audit: result.audit,
+        },
+      }
+    } catch (error) {
+      const finishedAt = new Date().toISOString()
+      if (isBatchReanalyzeCancellationError(error)) {
+        batchReanalyzeJobState = {
+          ...batchReanalyzeJobState,
+          status: 'canceled',
+          stage: 'analysis',
+          finishedAt,
+          updatedAt: finishedAt,
+          error: null,
+          resultSummary: {
+            total: batchReanalyzeJobState.total,
+            analyzed: batchReanalyzeJobState.analyzed,
+            failed: batchReanalyzeJobState.failed,
+            warnings: {
+              totalWithWarnings: batchReanalyzeJobState.warnings.totalWithWarnings,
+              sliceIds: [...batchReanalyzeJobState.warnings.sliceIds],
+              messages: [...batchReanalyzeJobState.warnings.messages],
+            },
+            audit: batchReanalyzeJobState.audit,
+          },
+        }
+        return
+      }
+
+      console.error('Error batch re-analyzing slices:', error)
+      const message = error instanceof Error ? error.message : 'Failed to batch re-analyze slices'
+      batchReanalyzeJobState = {
+        ...batchReanalyzeJobState,
+        status: 'failed',
+        stage: 'analysis',
+        finishedAt,
+        updatedAt: finishedAt,
+        error: message,
+      }
+    } finally {
+      batchReanalyzeAbortController = null
+    }
+  })()
+
+  res.status(202).json({
+    started: true,
+    status: getBatchReanalyzeStatusResponse(),
+  })
+})
+
+router.post('/slices/batch-reanalyze/cancel', (_req, res) => {
+  res.set('Cache-Control', 'no-store')
+  if (
+    !batchReanalyzeAbortController ||
+    (batchReanalyzeJobState.status !== 'running' && batchReanalyzeJobState.status !== 'cancelling')
+  ) {
+    return res.json({
+      canceled: false,
+      status: getBatchReanalyzeStatusResponse(),
+    })
+  }
+
+  batchReanalyzeJobState = {
+    ...batchReanalyzeJobState,
+    status: 'cancelling',
+    updatedAt: new Date().toISOString(),
+  }
+
+  batchReanalyzeAbortController.abort()
+  console.log('[reanalyze] Cancellation requested by client')
+
+  res.json({
+    canceled: true,
+    status: getBatchReanalyzeStatusResponse(),
+  })
+})
+
 // POST /api/slices/batch-reanalyze - Re-analyze all or selected slices
 router.post('/slices/batch-reanalyze', async (req, res) => {
   const abortController = new AbortController()
@@ -2593,348 +4700,37 @@ router.post('/slices/batch-reanalyze', async (req, res) => {
     }
   }
 
-  const isCancellationError = (error: unknown): boolean => (
-    error instanceof Error &&
-    (error.message === AUDIO_ANALYSIS_CANCELLED_ERROR || error.message === BATCH_REANALYZE_CANCELLED_ERROR)
-  )
-
   req.on('aborted', requestCancellation)
   req.on('close', handleRequestClose)
 
   try {
-    const { sliceIds, concurrency, includeFilenameTags } = req.body as {
-      sliceIds?: number[]
-      concurrency?: number
-      includeFilenameTags?: boolean
+    const { sliceIds, concurrency, includeFilenameTags, allowAiTagging } = req.body as BatchReanalyzeRequestBody
+    if (allowAiTagging === false) {
+      console.warn('[reanalyze] allowAiTagging=false requested, but AI tagging is forced on.')
     }
 
-    // Get slices to re-analyze (join with tracks to get folderPath for filename tagging)
-    const slicesToAnalyze = sliceIds && sliceIds.length > 0
-      ? await db
-          .select({
-            id: schema.slices.id,
-            name: schema.slices.name,
-            filePath: schema.slices.filePath,
-            trackId: schema.slices.trackId,
-            sampleModified: schema.slices.sampleModified,
-            folderPath: schema.tracks.folderPath,
-          })
-          .from(schema.slices)
-          .leftJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
-          .where(inArray(schema.slices.id, sliceIds))
-      : await db
-          .select({
-            id: schema.slices.id,
-            name: schema.slices.name,
-            filePath: schema.slices.filePath,
-            trackId: schema.slices.trackId,
-            sampleModified: schema.slices.sampleModified,
-            folderPath: schema.tracks.folderPath,
-          })
-          .from(schema.slices)
-          .leftJoin(schema.tracks, eq(schema.slices.trackId, schema.tracks.id))
-
-    if (slicesToAnalyze.length === 0) {
-      return res.json({
-        total: 0,
-        analyzed: 0,
-        failed: 0,
-        results: [],
-      })
-    }
-
-    // Clean up bad tags (AudioSet ontology labels that leaked through)
-    const badTags = await db
-      .select({ id: schema.tags.id })
-      .from(schema.tags)
-      .where(like(schema.tags.name, '%/m/%'))
-    if (badTags.length > 0) {
-      const badTagIds = badTags.map(t => t.id)
-      await db.delete(schema.sliceTags).where(inArray(schema.sliceTags.tagId, badTagIds))
-      await db.delete(schema.tags).where(inArray(schema.tags.id, badTagIds))
-      console.log(`Cleaned up ${badTags.length} bad AudioSet ontology tags`)
-    }
-
-    // Configurable concurrency (1-10, default 2 to avoid OOM with heavy Python processes)
-    const CHUNK_SIZE = Math.max(1, Math.min(10, concurrency || 2))
-    const results: Array<{
-      sliceId: number
-      success: boolean
-      error?: string
-      hadPotentialCustomState?: boolean
-      warningMessage?: string
-      removedTags?: string[]
-      addedTags?: string[]
-    }> = []
-    const warningMessages: string[] = []
-    const warningSliceIds = new Set<number>()
-
-    // Process in chunks
-    for (let i = 0; i < slicesToAnalyze.length; i += CHUNK_SIZE) {
-      if (cancellationRequested) break
-      const chunk = slicesToAnalyze.slice(i, i + CHUNK_SIZE)
-
-      await Promise.all(
-        chunk.map(async (slice) => {
-          try {
-            if (cancellationRequested) return
-
-            if (!slice.filePath) {
-              results.push({
-                sliceId: slice.id,
-                success: false,
-                error: 'No file path',
-              })
-              return
-            }
-
-            // Check if file exists
-            // Handle both absolute paths and relative paths (strip leading 'data/' if present)
-            let filePath = slice.filePath
-            if (!path.isAbsolute(filePath)) {
-              // Remove 'data/' prefix if present to avoid duplication with DATA_DIR
-              if (filePath.startsWith('data/')) {
-                filePath = filePath.substring(5) // Remove 'data/'
-              }
-              filePath = path.join(DATA_DIR, filePath)
-            }
-
-            try {
-              await fs.access(filePath)
-            } catch {
-              results.push({
-                sliceId: slice.id,
-                success: false,
-                error: 'File not found',
-              })
-              return
-            }
-
-            const beforeTags = await getSliceTagNames(slice.id)
-            const beforeAutoTagRows = await db
-              .select({ name: schema.tags.name })
-              .from(schema.sliceTags)
-              .innerJoin(schema.tags, eq(schema.sliceTags.tagId, schema.tags.id))
-              .where(
-                and(
-                  eq(schema.sliceTags.sliceId, slice.id),
-                  inArray(schema.tags.category, [...AUTO_REANALYSIS_TAG_CATEGORIES])
-                )
-              )
-            const beforeAutoTags = beforeAutoTagRows.map((row) => row.name.toLowerCase())
-            if (cancellationRequested) {
-              throw new Error(BATCH_REANALYZE_CANCELLED_ERROR)
-            }
-
-            // Re-analyze the audio
-            const features = await analyzeAudioFeatures(filePath, 'advanced', {
-              signal: abortController.signal,
-            })
-            if (cancellationRequested) {
-              throw new Error(BATCH_REANALYZE_CANCELLED_ERROR)
-            }
-            const fileMetadata = await getAudioFileMetadata(filePath).catch(() => null)
-            const enrichedFeatures = {
-              ...features,
-              sampleRate: fileMetadata?.sampleRate ?? features.sampleRate,
-              channels: fileMetadata?.channels ?? undefined,
-              fileFormat: fileMetadata?.format ?? undefined,
-              sourceMtime: fileMetadata?.modifiedAt ?? undefined,
-              sourceCtime: fileMetadata?.createdAt ?? undefined,
-            }
-            const suggestedAutoTags = Array.from(
-              new Set(featuresToTags(features).map((tag: string) => tag.toLowerCase()))
-            )
-
-            // Store updated features
-            await storeAudioFeatures(slice.id, enrichedFeatures)
-            if (cancellationRequested) {
-              throw new Error(BATCH_REANALYZE_CANCELLED_ERROR)
-            }
-
-            // Clear existing auto-generated tags before adding new ones
-            // Keep only filename-category tags (user-created from filenames)
-            await db.run(sql`
-              DELETE FROM slice_tags WHERE slice_id = ${slice.id}
-              AND tag_id IN (
-                SELECT id FROM tags WHERE category IN (${AUTO_REANALYSIS_TAG_CATEGORIES[0]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[1]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[2]}, ${AUTO_REANALYSIS_TAG_CATEGORIES[3]})
-              )
-            `)
-
-            // Update tags if generated tags exist
-            if (suggestedAutoTags.length > 0) {
-              // Get or create tags
-              const tagPromises = suggestedAutoTags.map(async (tagName: string) => {
-                const existingTag = await db
-                  .select()
-                  .from(schema.tags)
-                  .where(eq(schema.tags.name, tagName))
-                  .get()
-
-                if (existingTag) {
-                  return existingTag
-                }
-
-                // Create new tag
-                const metadata = getTagMetadata(tagName)
-                const result = await db
-                  .insert(schema.tags)
-                  .values({
-                    name: tagName,
-                    color: metadata.color,
-                    category: metadata.category,
-                  })
-                  .returning()
-
-                return result[0]
-              })
-
-              const tags = await Promise.all(tagPromises)
-
-              // Link tags to slice
-              for (const tag of tags) {
-                await db
-                  .insert(schema.sliceTags)
-                  .values({
-                    sliceId: slice.id,
-                    tagId: tag.id,
-                  })
-                  .onConflictDoNothing()
-              }
-            }
-
-            // Apply filename-derived tags if enabled
-            if (includeFilenameTags && slice.name) {
-              const filenameTags = await parseFilenameTagsSmart(slice.name, slice.folderPath ?? null)
-              for (const ft of filenameTags) {
-                const lowerTag = ft.tag.toLowerCase()
-                const metadata = getTagMetadata(lowerTag, ft.category)
-                try {
-                  let tag = await db
-                    .select()
-                    .from(schema.tags)
-                    .where(eq(schema.tags.name, lowerTag))
-                    .limit(1)
-
-                  if (tag.length === 0) {
-                    const [newTag] = await db
-                      .insert(schema.tags)
-                      .values({
-                        name: lowerTag,
-                        color: metadata.color,
-                        category: metadata.category,
-                      })
-                      .returning()
-                    tag = [newTag]
-                  } else if (tag[0].category === 'filename' && metadata.category !== 'filename') {
-                    await db
-                      .update(schema.tags)
-                      .set({
-                        color: metadata.color,
-                        category: metadata.category,
-                      })
-                      .where(eq(schema.tags.id, tag[0].id))
-                  }
-
-                  await db
-                    .insert(schema.sliceTags)
-                    .values({ sliceId: slice.id, tagId: tag[0].id })
-                    .onConflictDoNothing()
-                } catch {
-                  // Ignore duplicate tag errors
-                }
-              }
-            }
-
-            const afterTags = await getSliceTagNames(slice.id)
-            const { removedTags, addedTags } = computeTagDiff(beforeTags, afterTags)
-
-            const beforeAutoSet = new Set(beforeAutoTags)
-            const suggestedAutoSet = new Set(suggestedAutoTags)
-            const autoTagStateChanged =
-              beforeAutoTags.some((tag) => !suggestedAutoSet.has(tag)) ||
-              suggestedAutoTags.some((tag) => !beforeAutoSet.has(tag))
-
-            let warningMessage: string | null = null
-            if (autoTagStateChanged || slice.sampleModified === 1) {
-              warningMessage = autoTagStateChanged
-                ? `Slice ${slice.id} had custom/changed AI tag state before re-analysis. Changes detected: -${removedTags.length} +${addedTags.length}.`
-                : `Slice ${slice.id} was manually modified before re-analysis.`
-            }
-
-            await db.insert(schema.reanalysisLogs).values({
-              sliceId: slice.id,
-              beforeTags: JSON.stringify(beforeTags),
-              afterTags: JSON.stringify(afterTags),
-              removedTags: JSON.stringify(removedTags),
-              addedTags: JSON.stringify(addedTags),
-              hadPotentialCustomState: warningMessage ? 1 : 0,
-              warningMessage,
-            })
-
-            if (warningMessage) {
-              warningMessages.push(warningMessage)
-              warningSliceIds.add(slice.id)
-            }
-
-            results.push({
-              sliceId: slice.id,
-              success: true,
-              hadPotentialCustomState: Boolean(warningMessage),
-              warningMessage: warningMessage ?? undefined,
-              removedTags,
-              addedTags,
-            })
-
-            await db
-              .update(schema.slices)
-              .set({
-                sampleModified: 0,
-                sampleModifiedAt: null,
-              })
-              .where(eq(schema.slices.id, slice.id))
-          } catch (error) {
-            if (cancellationRequested && isCancellationError(error)) {
-              return
-            }
-            console.error(`Error re-analyzing slice ${slice.id}:`, error)
-            results.push({
-              sliceId: slice.id,
-              success: false,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            })
-          }
-        })
-      )
-
-      // Small delay between chunks to avoid overwhelming the system
-      if (i + CHUNK_SIZE < slicesToAnalyze.length) {
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
-    }
+    const result = await runBatchReanalyze({
+      sliceIds,
+      concurrency,
+      includeFilenameTags,
+      allowAiTagging: true,
+      signal: abortController.signal,
+    })
 
     if (cancellationRequested || res.writableEnded) {
       return
     }
 
-    const analyzed = results.filter((r) => r.success).length
-    const failed = results.filter((r) => !r.success).length
-
-    res.json({
-      total: slicesToAnalyze.length,
-      analyzed,
-      failed,
-      warnings: {
-        totalWithWarnings: warningSliceIds.size,
-        sliceIds: Array.from(warningSliceIds),
-        messages: warningMessages,
-      },
-      results,
-    })
+    res.json(result)
   } catch (error) {
     if (cancellationRequested || res.writableEnded) {
       return
     }
+
+    if (isBatchReanalyzeCancellationError(error)) {
+      return res.status(499).json({ error: 'Batch re-analysis canceled' })
+    }
+
     console.error('Error batch re-analyzing slices:', error)
     res.status(500).json({ error: 'Failed to batch re-analyze slices' })
   } finally {
@@ -3009,7 +4805,7 @@ function buildScalarFeatureVector(f: Record<string, any>): number[] | null {
   return populated >= 3 ? vec : null
 }
 
-// GET /api/slices/:id/similar - Find similar samples based on YAMNet embeddings
+// GET /api/slices/:id/similar - Find similar samples based on ML embeddings (PANNs preferred, YAMNet fallback)
 router.get('/slices/:id/similar', async (req, res) => {
   const sliceId = Number.parseInt(req.params.id, 10)
   const limit = parseInt(req.query.limit as string) || 20
@@ -3025,7 +4821,7 @@ router.get('/slices/:id/similar', async (req, res) => {
       .from(schema.audioFeatures)
       .where(eq(schema.audioFeatures.sliceId, sliceId))
       .limit(1)
-      
+
 
     if (targetFeatures.length === 0) {
       return res.json([])
@@ -3034,9 +4830,37 @@ router.get('/slices/:id/similar', async (req, res) => {
     const target = targetFeatures[0]
     let similarities: { sliceId: number; similarity: number }[] = []
 
-    if (target.yamnetEmbeddings) {
-      // Best quality: use 1024-dim YAMNet embeddings
-      const targetEmbeddings = JSON.parse(target.yamnetEmbeddings) as number[]
+    // Prefer PANNs mlEmbeddings, then YAMNet, then scalar fallback
+    const targetMlModel = target.mlEmbeddingModel
+    const targetMlEmbeddings = target.mlEmbeddings
+    const targetYamnetEmbeddings = target.yamnetEmbeddings
+
+    if (targetMlEmbeddings && targetMlModel) {
+      // Best quality: use PANNs 2048-dim embeddings (only compare same model)
+      const targetEmbeddings = JSON.parse(targetMlEmbeddings) as number[]
+      const allFeatures = await db
+        .select({
+          sliceId: schema.audioFeatures.sliceId,
+          mlEmbeddings: schema.audioFeatures.mlEmbeddings,
+          mlEmbeddingModel: schema.audioFeatures.mlEmbeddingModel,
+        })
+        .from(schema.audioFeatures)
+        .where(sql`${schema.audioFeatures.sliceId} != ${sliceId} AND ${schema.audioFeatures.mlEmbeddings} IS NOT NULL AND ${schema.audioFeatures.mlEmbeddingModel} = ${targetMlModel}`)
+
+      similarities = allFeatures
+        .map(f => {
+          const candidateSliceId = Number(f.sliceId)
+          if (Number.isNaN(candidateSliceId)) return null
+          const embeddings = JSON.parse(f.mlEmbeddings!) as number[]
+          return { sliceId: candidateSliceId, similarity: cosineSimilarity(targetEmbeddings, embeddings) }
+        })
+        .filter((s): s is { sliceId: number; similarity: number } => Boolean(s))
+        .filter(s => s.sliceId !== sliceId && s.similarity > 0.5)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, limit)
+    } else if (targetYamnetEmbeddings) {
+      // Fallback: use 1024-dim YAMNet embeddings
+      const targetEmbeddings = JSON.parse(targetYamnetEmbeddings) as number[]
       const allFeatures = await db
         .select({
           sliceId: schema.audioFeatures.sliceId,
@@ -3057,7 +4881,7 @@ router.get('/slices/:id/similar', async (req, res) => {
         .sort((a, b) => b.similarity - a.similarity)
         .slice(0, limit)
     } else {
-      // Fallback: cosine similarity over normalised scalar audio features
+      // Last fallback: cosine similarity over normalised scalar audio features
       const targetVec = buildScalarFeatureVector(target)
       if (targetVec) {
         const allFeatures = await db
@@ -3123,8 +4947,60 @@ router.get('/slices/:id/similar', async (req, res) => {
   }
 })
 
+/**
+ * Compute fingerprint similarity between two chromaprint fingerprints using Hamming distance.
+ * Decodes base64 chromaprint strings to int32 arrays, XORs them, and counts differing bits.
+ * Returns a similarity score between 0.0 (completely different) and 1.0 (identical).
+ */
+function fingerprintSimilarity(fpA: string, fpB: string): number {
+  let bufA: Buffer
+  let bufB: Buffer
+  try {
+    bufA = Buffer.from(fpA, 'base64')
+    bufB = Buffer.from(fpB, 'base64')
+  } catch {
+    return 0
+  }
+
+  // Ensure both are multiple of 4 bytes (int32 arrays)
+  const lenA = Math.floor(bufA.length / 4)
+  const lenB = Math.floor(bufB.length / 4)
+  if (lenA === 0 || lenB === 0) return 0
+
+  // Compare overlapping portion
+  const compareLen = Math.min(lenA, lenB)
+  const maxLen = Math.max(lenA, lenB)
+
+  let totalBits = 0
+  let matchingBits = 0
+
+  for (let i = 0; i < compareLen; i++) {
+    const a = bufA.readInt32LE(i * 4)
+    const b = bufB.readInt32LE(i * 4)
+    const xor = a ^ b
+    // Count set bits (Hamming distance) using bit manipulation
+    let bits = xor
+    let setBits = 0
+    while (bits) {
+      setBits += 1
+      bits &= bits - 1 // Clear lowest set bit
+    }
+    totalBits += 32
+    matchingBits += 32 - setBits
+  }
+
+  // Penalize length difference: non-overlapping int32 blocks count as all-different
+  totalBits += (maxLen - compareLen) * 32
+
+  if (totalBits === 0) return 0
+  return matchingBits / totalBits
+}
+
 // GET /api/slices/duplicates - Find potential duplicate samples based on chromaprint fingerprint
-router.get('/slices/duplicates', async (_req, res) => {
+router.get('/slices/duplicates', async (_req: any, res) => {
+  const enableNearDuplicates = _req.query.nearDuplicates === 'true'
+  const NEAR_DUPLICATE_THRESHOLD = 0.85
+  const NEAR_DUPLICATE_DURATION_TOLERANCE = 0.20 // 20%
   try {
     // Collect fingerprint + path identity data so we can catch both true audio dupes
     // and obvious duplicated imports when fingerprint is missing.
@@ -3133,6 +5009,7 @@ router.get('/slices/duplicates', async (_req, res) => {
         sliceId: schema.slices.id,
         chromaprintFingerprint: schema.audioFeatures.chromaprintFingerprint,
         similarityHash: schema.audioFeatures.similarityHash,
+        duration: schema.audioFeatures.duration,
         filePath: schema.slices.filePath,
         startTime: schema.slices.startTime,
         endTime: schema.slices.endTime,
@@ -3219,26 +5096,67 @@ router.get('/slices/duplicates', async (_req, res) => {
         .where(eq(schema.audioFeatures.sliceId, sliceId))
     ))
 
+    // Near-duplicate detection via chromaprint Hamming distance (opt-in)
+    const nearDuplicateGroups = new Map<string, { sliceIds: Set<number>; similarity: number }>()
+
+    if (enableNearDuplicates) {
+      // Collect rows that have valid fingerprints for near-duplicate comparison
+      const fpRows: Array<{ sliceId: number; fp: string; duration: number }> = []
+      for (const row of allRows) {
+        const fp = row.chromaprintFingerprint
+        if (fp && fp !== DEGENERATE_FINGERPRINT && typeof row.duration === 'number' && row.duration > 0) {
+          fpRows.push({ sliceId: row.sliceId, fp, duration: row.duration })
+        }
+      }
+
+      // Pairwise comparison (only between similar-duration samples)
+      for (let i = 0; i < fpRows.length; i++) {
+        for (let j = i + 1; j < fpRows.length; j++) {
+          const a = fpRows[i]
+          const b = fpRows[j]
+
+          // Duration pre-filter: skip if durations differ by more than tolerance
+          const durationRatio = Math.min(a.duration, b.duration) / Math.max(a.duration, b.duration)
+          if (durationRatio < 1 - NEAR_DUPLICATE_DURATION_TOLERANCE) continue
+
+          // Skip if fingerprints are identical (already caught by exactGroups)
+          if (a.fp === b.fp) continue
+
+          const sim = fingerprintSimilarity(a.fp, b.fp)
+          if (sim >= NEAR_DUPLICATE_THRESHOLD) {
+            const key = [Math.min(a.sliceId, b.sliceId), Math.max(a.sliceId, b.sliceId)].join(',')
+            const existing = nearDuplicateGroups.get(key)
+            if (!existing || sim > existing.similarity) {
+              nearDuplicateGroups.set(key, {
+                sliceIds: new Set([a.sliceId, b.sliceId]),
+                similarity: sim,
+              })
+            }
+          }
+        }
+      }
+    }
+
     const dedupedGroups = new Map<string, {
       sliceIds: number[]
-      matchType: 'exact' | 'file' | 'content'
+      matchType: 'exact' | 'file' | 'content' | 'near-duplicate'
       hashSimilarity: number
     }>()
 
-    const addGroup = (sliceIdSet: Set<number>, matchType: 'exact' | 'file' | 'content') => {
+    const addGroup = (sliceIdSet: Set<number>, matchType: 'exact' | 'file' | 'content' | 'near-duplicate', similarity = 1.0) => {
       const sliceIds = Array.from(sliceIdSet).sort((a, b) => a - b)
       if (sliceIds.length <= 1) return
 
       const signature = sliceIds.join(',')
       const existing = dedupedGroups.get(signature)
 
-      // Priority: exact fingerprint > content hash > file path identity
-      const priority = { exact: 2, content: 1, file: 0 }
-      if (!existing || priority[matchType] > priority[existing.matchType]) {
+      // Priority: exact fingerprint > content hash > file path identity > near-duplicate
+      const priority: Record<string, number> = { exact: 3, content: 2, file: 1, 'near-duplicate': 0 }
+      if (!existing || (priority[matchType] ?? -1) > (priority[existing.matchType] ?? -1)) {
         dedupedGroups.set(signature, {
           sliceIds,
           matchType,
-          hashSimilarity: 1.0,
+          hashSimilarity: similarity,
         })
       }
     }
@@ -3246,6 +5164,7 @@ router.get('/slices/duplicates', async (_req, res) => {
     for (const set of exactGroups.values()) addGroup(set, 'exact')
     for (const set of contentHashGroups.values()) addGroup(set, 'content')
     for (const set of fileIdentityGroups.values()) addGroup(set, 'file')
+    for (const { sliceIds, similarity } of nearDuplicateGroups.values()) addGroup(sliceIds, 'near-duplicate', similarity)
 
     const duplicateGroups = Array.from(dedupedGroups.values())
 

@@ -43,8 +43,6 @@ export interface AudioFilterState {
   // Perceptual features (0-1 range)
   minBrightness: number
   maxBrightness: number
-  minHarmonicity?: number
-  maxHarmonicity?: number
   minNoisiness?: number
   maxNoisiness?: number
   minAttack?: number
@@ -55,12 +53,15 @@ export interface AudioFilterState {
   maxSaturation?: number
   minSurface?: number
   maxSurface?: number
+  minRhythmic?: number
+  maxRhythmic?: number
   minDensity?: number
   maxDensity?: number
   minAmbience?: number
   maxAmbience?: number
   minStereoWidth?: number
   maxStereoWidth?: number
+  stereoChannelMode?: 'all' | 'mono' | 'stereo'
   minDepth?: number
   maxDepth?: number
   minWarmth: number
@@ -966,10 +967,10 @@ export function SourcesAudioFilter({
             </div>
             )}
 
-            {/* Harmonicity */}
+            {/* Warmth */}
             {showWarmth && (
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs text-slate-400">Harmonicity:</span>
+              <span className="text-xs text-slate-400">Warmth:</span>
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-xs text-slate-500 w-8 text-right">{filterState.minWarmth.toFixed(2)}</span>
 
@@ -1023,10 +1024,10 @@ export function SourcesAudioFilter({
             </div>
             )}
 
-            {/* Noisiness */}
+            {/* Hardness */}
             {showHardness && (
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs text-slate-400">Noisiness:</span>
+              <span className="text-xs text-slate-400">Hardness:</span>
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-xs text-slate-500 w-8 text-right">{filterState.minHardness.toFixed(2)}</span>
 

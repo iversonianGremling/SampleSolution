@@ -54,7 +54,7 @@ export function CustomOrderConfirmDialog({
           You are about to apply {totalDestinations} destination change{totalDestinations === 1 ? '' : 's'}.
           {folderDestinations.length > 0 && ` ${folderDestinations.length} new folder${folderDestinations.length === 1 ? '' : 's'} in ${collectionName}.`}
           {existingFolderDestinations.length > 0 && ` ${existingFolderDestinations.length} existing folder${existingFolderDestinations.length === 1 ? '' : 's'} to update.`}
-          {tagDestinations.length > 0 && ` ${tagDestinations.length} tag${tagDestinations.length === 1 ? '' : 's'} to apply.`}
+          {tagDestinations.length > 0 && ` ${tagDestinations.length} instrument${tagDestinations.length === 1 ? '' : 's'} to apply.`}
         </p>
       </div>
 
@@ -89,7 +89,7 @@ export function CustomOrderConfirmDialog({
                 )}
                 <h4 className="text-sm font-semibold text-white">{folder.name || 'Untitled'}</h4>
                 {folder.destinationType === 'tag' && (
-                  <span className="text-[11px] text-slate-500">Tag</span>
+                  <span className="text-[11px] text-slate-500">Instrument</span>
                 )}
                 {folder.destinationType === 'existing-folder' && (
                   <span className="text-[11px] text-slate-500">Existing folder</span>
@@ -123,7 +123,7 @@ export function CustomOrderConfirmDialog({
                 <div>
                   <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
                     <TagIcon size={12} />
-                    Tags ({tagsList.length})
+                    Instruments ({tagsList.length})
                   </div>
                   {tagsList.length === 0 ? (
                     <p className="text-xs text-slate-500">None</p>

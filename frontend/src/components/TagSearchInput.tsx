@@ -31,7 +31,7 @@ export function TagSearchInput({
   onAddTag,
   onCreateTag,
   isCreatingTag = false,
-  placeholder = 'Add tag...',
+  placeholder = 'Add instrument...',
   className = '',
 }: TagSearchInputProps) {
   const [searchQuery, setSearchQuery] = useState('')
@@ -174,7 +174,7 @@ export function TagSearchInput({
           {/* Empty state */}
           {filteredTags.length === 0 && !canCreateNew && (
             <div className="px-3 py-2 text-sm text-gray-500">
-              No matching tags
+              No matching instruments
             </div>
           )}
         </div>

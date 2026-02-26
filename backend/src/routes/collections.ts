@@ -592,7 +592,7 @@ async function buildFacets(sliceIds: number[]) {
   return { tags, metadata }
 }
 
-type TagCategory = 'general' | 'type' | 'energy' | 'instrument' | 'filename'
+type TagCategory = 'instrument' | 'filename'
 
 async function groupSlicesByTagCategory(sliceIds: number[], category: TagCategory): Promise<Map<string, number[]>> {
   const groups = new Map<string, number[]>()

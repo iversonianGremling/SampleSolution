@@ -309,7 +309,7 @@ export function CustomSplitSourcePane({ state, dispatch, activeCategory, onOpenS
             type="text"
             value={state.sourceSearchQuery}
             onChange={(e) => dispatch({ type: 'SET_SOURCE_SEARCH', query: e.target.value })}
-            placeholder="Search folders or tags..."
+            placeholder="Search folders or instruments..."
             className="w-full pl-8 pr-3 py-1.5 text-sm bg-surface-base border border-surface-border rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-accent-primary"
           />
         </div>
@@ -380,13 +380,13 @@ export function CustomSplitSourcePane({ state, dispatch, activeCategory, onOpenS
               >
                 {tagsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 <TagIcon size={14} className="text-slate-400" />
-                Tags
+                Instruments
               </button>
               {tagsOpen && openTagCategories.size > 0 && (
                 <button
                   className="px-2 py-1 mr-2 text-slate-500 hover:text-slate-300 transition-colors"
                   onClick={() => setOpenTagCategories(new Set())}
-                  title="Collapse all tag categories"
+                  title="Collapse all instrument categories"
                 >
                   <ChevronUp size={12} />
                 </button>
@@ -439,7 +439,7 @@ export function CustomSplitSourcePane({ state, dispatch, activeCategory, onOpenS
                                     e.stopPropagation()
                                     onOpenSamples({ type: 'tag', id: tag.id, name: tag.name })
                                   }}
-                                  title="Browse samples for this tag"
+                                  title="Browse samples for this instrument"
                                 >
                                   <List size={12} />
                                 </button>

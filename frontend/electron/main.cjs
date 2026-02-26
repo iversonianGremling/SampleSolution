@@ -7,6 +7,39 @@ const http = require('http');
 let mainWindow;
 let backendProcess = null;
 
+function getRendererSettingsPath() {
+  return path.join(app.getPath('userData'), 'renderer-settings.json');
+}
+
+function readRendererSettings() {
+  const settingsPath = getRendererSettingsPath();
+  try {
+    if (!fs.existsSync(settingsPath)) return {};
+    const raw = fs.readFileSync(settingsPath, 'utf8');
+    if (!raw.trim()) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed;
+  } catch (error) {
+    console.warn('Failed to read renderer settings:', error);
+    return {};
+  }
+}
+
+function writeRendererSettings(settings) {
+  const settingsPath = getRendererSettingsPath();
+  try {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    return true;
+  } catch (error) {
+    console.warn('Failed to write renderer settings:', error);
+    return false;
+  }
+}
+
 // Enable GPU acceleration optimizations
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
@@ -85,21 +118,107 @@ function testBackendConnection(maxAttempts = 10, delayMs = 1000) {
   });
 }
 
-// Start embedded backend
+function attachBackendProcessHandlers(label = 'Backend') {
+  if (!backendProcess) return;
+
+  backendProcess.stdout.on('data', (data) => {
+    console.log(`[${label}] ${data.toString().trim()}`);
+  });
+
+  backendProcess.stderr.on('data', (data) => {
+    console.error(`[${label} Error] ${data.toString().trim()}`);
+  });
+
+  backendProcess.on('error', (err) => {
+    console.error(`❌ Failed to start ${label.toLowerCase()}:`, err);
+  });
+
+  backendProcess.on('exit', (code, signal) => {
+    console.log(`${label} exited with code ${code}, signal ${signal}`);
+    backendProcess = null;
+
+    // Show error dialog if backend crashes while app is running
+    if (mainWindow && !mainWindow.isDestroyed() && !app.isQuitting) {
+      dialog.showErrorBox(
+        'Backend Stopped',
+        'The backend server has stopped unexpectedly. Please restart the application.'
+      );
+      app.quit();
+    }
+  });
+}
+
+async function startWorkspaceBackendDev() {
+  const backendPath = path.join(__dirname, '..', '..', 'backend');
+  const backendPackageJson = path.join(backendPath, 'package.json');
+
+  if (!fs.existsSync(backendPackageJson)) {
+    return {
+      success: false,
+      mode: 'dev',
+      error: `Backend project not found.\n\nExpected: ${backendPackageJson}`
+    };
+  }
+
+  const userDataPath = app.getPath('userData');
+  const backendDataPath = path.join(userDataPath, 'backend-data-dev');
+  fs.mkdirSync(backendDataPath, { recursive: true });
+
+  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+  // In dev fallback mode, run backend from workspace and keep data in Electron userData.
+  const backendEnv = {
+    ...process.env,
+    PORT: '4000',
+    DATA_DIR: backendDataPath,
+    FRONTEND_URL: 'http://localhost:3000',
+    BACKEND_URL: 'http://localhost:4000',
+    LOCAL_IMPORT_MODE: 'reference',
+    CORS_EXTRA_ORIGINS: 'http://localhost:3000',
+    CORS_ALLOW_NO_ORIGIN: 'true',
+  };
+
+  console.log('Starting workspace backend process...');
+  backendProcess = spawn(npmCommand, ['run', 'dev'], {
+    cwd: backendPath,
+    env: backendEnv,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  attachBackendProcessHandlers('Backend Dev');
+
+  console.log('⏳ Waiting for workspace backend to start...');
+  const isReady = await testBackendConnection(30, 1000);
+
+  if (!isReady) {
+    return {
+      success: false,
+      mode: 'dev',
+      error: 'Could not start workspace backend in development mode.\n\nRun `cd backend && npm run dev` to inspect logs.'
+    };
+  }
+
+  return {
+    success: true,
+    mode: 'dev-embedded',
+    backendPath,
+    dataPath: backendDataPath
+  };
+}
+
+// Start backend (external in dev if available, embedded in production)
 async function startBackend() {
   const isDev = process.env.NODE_ENV !== 'production';
 
   if (isDev) {
-    console.log('🔧 Dev mode: Expecting backend at http://localhost:4000');
+    console.log('🔧 Dev mode: Checking backend at http://localhost:4000');
     const isRunning = await testBackendConnection(3, 1000);
 
-    if (!isRunning) {
-      console.warn('⚠️  Backend not detected. Please start it manually:');
-      console.warn('   cd backend && npm start');
-      return { success: false, mode: 'dev', error: 'Backend not running' };
+    if (isRunning) {
+      return { success: true, mode: 'dev-external' };
     }
 
-    return { success: true, mode: 'dev' };
+    console.warn('⚠️  Backend not detected on :4000. Starting workspace backend...');
+    return startWorkspaceBackendDev();
   }
 
   // Production mode - start embedded backend
@@ -128,10 +247,7 @@ async function startBackend() {
   // Set up backend data directories in user's data folder
   const userDataPath = app.getPath('userData');
   const backendDataPath = path.join(userDataPath, 'backend-data');
-  const uploadsPath = path.join(userDataPath, 'uploads');
-
   fs.mkdirSync(backendDataPath, { recursive: true });
-  fs.mkdirSync(uploadsPath, { recursive: true });
 
   console.log('Backend path:', backendPath);
   console.log('Data path:', backendDataPath);
@@ -142,11 +258,15 @@ async function startBackend() {
     ...process.env,
     PORT: '4000',
     NODE_ENV: 'production',
-    DATA_PATH: backendDataPath,
+    DATA_DIR: backendDataPath,
     LOCAL_IMPORT_MODE: 'reference',
-    UPLOAD_PATH: uploadsPath,
     PYTHON_PATH: pythonPath || 'python3',
     PYTHON_AVAILABLE: pythonPath ? 'true' : 'false',
+    FRONTEND_URL: 'http://localhost:3000',
+    BACKEND_URL: 'http://localhost:4000',
+    CORS_EXTRA_ORIGINS: 'http://localhost:3000',
+    CORS_ALLOW_NULL_ORIGIN: 'true',
+    CORS_ALLOW_NO_ORIGIN: 'true',
     // Disable GPU for TensorFlow (CPU only)
     CUDA_VISIBLE_DEVICES: '-1'
   };
@@ -159,32 +279,7 @@ async function startBackend() {
     env: backendEnv,
     stdio: ['ignore', 'pipe', 'pipe']
   });
-
-  backendProcess.stdout.on('data', (data) => {
-    console.log(`[Backend] ${data.toString().trim()}`);
-  });
-
-  backendProcess.stderr.on('data', (data) => {
-    console.error(`[Backend Error] ${data.toString().trim()}`);
-  });
-
-  backendProcess.on('error', (err) => {
-    console.error('❌ Failed to start backend:', err);
-  });
-
-  backendProcess.on('exit', (code, signal) => {
-    console.log(`Backend exited with code ${code}, signal ${signal}`);
-    backendProcess = null;
-
-    // Show error dialog if backend crashes while app is running
-    if (mainWindow && !mainWindow.isDestroyed() && !app.isQuitting) {
-      dialog.showErrorBox(
-        'Backend Stopped',
-        'The backend server has stopped unexpectedly. Please restart the application.'
-      );
-      app.quit();
-    }
-  });
+  attachBackendProcessHandlers('Backend');
 
   // Wait for backend to start and respond
   console.log('⏳ Waiting for backend to start...');
@@ -297,6 +392,36 @@ ipcMain.handle('select-import-path', async (_event, options = {}) => {
   return result.filePaths[0];
 });
 
+ipcMain.handle('renderer-settings-get', async (_event, key) => {
+  if (typeof key !== 'string' || !key.trim()) {
+    return null;
+  }
+  const settings = readRendererSettings();
+  const value = settings[key];
+  return typeof value === 'string' ? value : null;
+});
+
+ipcMain.handle('renderer-settings-set', async (_event, key, value) => {
+  if (typeof key !== 'string' || !key.trim() || typeof value !== 'string') {
+    return false;
+  }
+  const settings = readRendererSettings();
+  settings[key] = value;
+  return writeRendererSettings(settings);
+});
+
+ipcMain.handle('renderer-settings-remove', async (_event, key) => {
+  if (typeof key !== 'string' || !key.trim()) {
+    return false;
+  }
+  const settings = readRendererSettings();
+  if (Object.prototype.hasOwnProperty.call(settings, key)) {
+    delete settings[key];
+    return writeRendererSettings(settings);
+  }
+  return true;
+});
+
 // App lifecycle
 app.whenReady().then(async () => {
   console.log('=== Sample Extractor Starting ===');
@@ -305,14 +430,20 @@ app.whenReady().then(async () => {
   console.log('Electron:', process.versions.electron);
   console.log('');
 
-  // Set Content Security Policy to allow WebGL, fonts, images, and backend connections
+  // Set Content Security Policy to allow WebGL, fonts, images, and backend connections.
+  // In development, Vite injects an inline React preamble script that requires 'unsafe-inline'.
+  const isDevMode = process.env.NODE_ENV !== 'production';
+  const scriptSrc = isDevMode
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; "
+    : "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; ";
+
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           "default-src 'self'; " +
-          "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; " +
+          scriptSrc +
           "worker-src 'self' blob:; " +
           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
           "font-src 'self' data: https://fonts.gstatic.com; " +

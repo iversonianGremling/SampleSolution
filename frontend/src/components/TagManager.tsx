@@ -59,10 +59,10 @@ export function TagManager() {
       <div className="px-2 py-1 border-b border-gray-700 text-center">
         <h1 className='text-6xl'>Under construction</h1>
       </div>
-      {/* Create Tag Form */}
+      {/* Create Instrument Form */}
       <div className="bg-gray-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-700">
-          <h2 className="font-semibold text-white">Create Tag</h2>
+          <h2 className="font-semibold text-white">Create Instrument</h2>
         </div>
 
         <form onSubmit={handleCreateTag} className="p-4 space-y-4">
@@ -71,7 +71,7 @@ export function TagManager() {
             type="text"
             value={newTagName}
             onChange={(e) => setNewTagName(e.target.value)}
-            placeholder="Tag name..."
+            placeholder="Instrument name..."
             className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
           />
 
@@ -106,7 +106,7 @@ export function TagManager() {
                   color: selectedColor,
                 }}
               >
-                {newTagName || 'Tag name'}
+                {newTagName || 'Instrument name'}
               </span>
             </div>
             <button
@@ -125,11 +125,11 @@ export function TagManager() {
         </form>
       </div>
 
-      {/* Existing Tags */}
+      {/* Existing Instruments */}
       <div className="bg-gray-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-700">
           <h2 className="font-semibold text-white">
-            All Tags ({tags?.length || 0})
+            All Instruments ({tags?.length || 0})
           </h2>
         </div>
 
@@ -172,19 +172,19 @@ export function TagManager() {
           </div>
         ) : (
           <div className="p-8 text-center text-gray-500">
-            No tags yet. Create one above.
+            No instruments yet. Create one above.
           </div>
         )}
       </div>
 
       {/* Info */}
       <div className="bg-gray-800/50 rounded-lg p-4 text-sm text-gray-400">
-        <p className="font-medium text-gray-300 mb-2">About Tags</p>
+        <p className="font-medium text-gray-300 mb-2">About Instruments</p>
         <ul className="list-disc list-inside space-y-1">
-          <li>Tags can be added to tracks and individual slices</li>
-          <li>Use the sparkle icon on tracks to auto-generate tags with AI</li>
-          <li>AI analyzes video titles and descriptions to suggest relevant tags</li>
-          <li>Deleting a tag removes it from all tracks and slices</li>
+          <li>Instruments can be added to tracks and individual slices</li>
+          <li>Use the sparkle icon on tracks to auto-generate instruments with AI</li>
+          <li>AI analyzes video titles and descriptions to suggest relevant instruments</li>
+          <li>Deleting an instrument removes it from all tracks and slices</li>
         </ul>
       </div>
     </div>
