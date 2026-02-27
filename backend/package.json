@@ -13,7 +13,7 @@
     "@tensorflow/tfjs-node": "^4.11.0",
     "@types/archiver": "^7.0.0",
     "archiver": "^7.0.1",
-    "axios": "^1.6.5",
+    "axios": "^1.13.6",
     "better-sqlite3": "^9.3.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
