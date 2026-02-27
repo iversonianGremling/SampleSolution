@@ -1,0 +1,16 @@
+pkgbase = sample-solution-bin
+	pkgdesc = Sample Solution desktop app (prebuilt AppImage)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/iversonianGremling/SampleSolution
+	arch = x86_64
+	license = GPL3
+	depends = glibc
+	optdepends = fuse2: run AppImage without extraction mode
+	provides = sample-solution
+	conflicts = sample-solution
+	options = !strip
+	source = sample-solution-0.1.0.AppImage::https://github.com/iversonianGremling/SampleSolution/releases/download/v0.1.0/linux-Sample-Extractor-0.1.0.AppImage
+	sha256sums = SKIP
+
+pkgname = sample-solution-bin

@@ -300,6 +300,27 @@ nvm install 18
 nvm use 18
 ```
 
+## 📦 **AUR Packaging Automation**
+
+This repo now includes an AUR scaffold in `packaging/aur` for `sample-solution-bin`.
+
+```bash
+# 1) Update PKGBUILD + .SRCINFO from a GitHub release tag
+./packaging/aur/update-pkgbuild.sh --version 0.1.0
+
+# 2) Build/test locally
+cd packaging/aur
+makepkg -si
+```
+
+Useful helper:
+
+```bash
+./packaging/aur/calc-sha256.sh https://github.com/OWNER/REPO/releases/download/v0.1.0/linux-YourAsset.AppImage
+```
+
+Then copy `PKGBUILD` + `.SRCINFO` into your AUR git repo and push.
+
 ---
 
 ## ✨ **You're All Set!**

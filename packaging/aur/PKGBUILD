@@ -1,0 +1,40 @@
+pkgname=sample-solution-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Sample Solution desktop app (prebuilt AppImage)'
+arch=('x86_64')
+url='https://github.com/iversonianGremling/SampleSolution'
+license=('GPL3')
+depends=('glibc')
+optdepends=('fuse2: run AppImage without extraction mode')
+provides=('sample-solution')
+conflicts=('sample-solution')
+options=('!strip')
+
+_repo_owner='iversonianGremling'
+_repo_name='SampleSolution'
+_asset_name='linux-Sample-Extractor-0.1.0.AppImage'
+
+source=("sample-solution-${pkgver}.AppImage::https://github.com/${_repo_owner}/${_repo_name}/releases/download/v${pkgver}/${_asset_name}")
+sha256sums=('SKIP')
+
+package() {
+  install -Dm755 "sample-solution-${pkgver}.AppImage" "$pkgdir/opt/${pkgname}/sample-solution.AppImage"
+
+  install -Dm755 /dev/stdin "$pkgdir/usr/bin/sample-solution" <<'EOF'
+#!/bin/sh
+export APPIMAGE_EXTRACT_AND_RUN=1
+exec /opt/sample-solution-bin/sample-solution.AppImage "$@"
+EOF
+
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/sample-solution.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Sample Solution
+Comment=Audio sample management and analysis
+Exec=sample-solution
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupNotify=true
+EOF
+}

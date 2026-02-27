@@ -51,6 +51,50 @@ npx @electron/rebuild -f \
 
 echo ""
 echo "✅ Native modules rebuilt for Electron $ELECTRON_VERSION"
+
+OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "$OS_NAME" in
+  mingw*|msys*|cygwin*)
+    echo ""
+    echo "3. Normalizing TensorFlow DLL layout for Windows packaging..."
+    TFJS_DIR="$BUNDLE_DIR/node_modules/@tensorflow/tfjs-node"
+
+    if [ -d "$TFJS_DIR/lib" ]; then
+      # Some tfjs-node installs can leave a directory/symlink named tensorflow.dll,
+      # which causes 7zip/NSIS to fail with "The directory name is invalid".
+      find "$TFJS_DIR/lib" -type d -name "tensorflow.dll" -prune -exec rm -rf {} + || true
+
+      SOURCE_DLL=""
+      for candidate in \
+        "$TFJS_DIR/deps/lib/tensorflow.dll" \
+        "$TFJS_DIR/lib/tensorflow.dll"
+      do
+        if [ -f "$candidate" ]; then
+          SOURCE_DLL="$candidate"
+          break
+        fi
+      done
+
+      if [ -n "$SOURCE_DLL" ]; then
+        for napi_dir in "$TFJS_DIR"/lib/napi-v*; do
+          [ -d "$napi_dir" ] || continue
+          dll_path="$napi_dir/tensorflow.dll"
+
+          if [ -L "$dll_path" ] || [ -d "$dll_path" ]; then
+            rm -rf "$dll_path"
+          fi
+
+          if [ ! -f "$dll_path" ]; then
+            cp "$SOURCE_DLL" "$dll_path"
+          fi
+        done
+      else
+        echo "⚠️  tensorflow.dll source not found under tfjs-node; continuing"
+      fi
+    fi
+    ;;
+esac
+
 echo ""
 echo "Verifying .node files:"
 find "$BUNDLE_DIR/node_modules" -name "*.node" -type f | head -10
