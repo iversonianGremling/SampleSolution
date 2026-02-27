@@ -3,20 +3,6 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      bump:
-        description: Version bump type
-        required: true
-        default: patch
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-          - custom
-      custom_version:
-        description: Custom version (required when bump=custom)
-        required: false
-        type: string
       release_name:
         description: Optional custom release name
         required: false
@@ -81,48 +67,10 @@ jobs:
             echo "VERSION file ($current_version) does not match package versions ($backend_version)." >&2
             exit 1
           fi
-
-          bump_type="${{ github.event.inputs.bump }}"
-          custom_version="${{ github.event.inputs.custom_version }}"
-
-          if [[ "$bump_type" == "custom" ]]; then
-            if [[ -z "$custom_version" ]]; then
-              echo "custom_version is required when bump=custom" >&2
-              exit 1
-            fi
-            next_version="$custom_version"
-          else
-            IFS='.' read -r major minor patch <<<"$current_version"
-            case "$bump_type" in
-              patch)
-                patch=$((patch + 1))
-                ;;
-              minor)
-                minor=$((minor + 1))
-                patch=0
-                ;;
-              major)
-                major=$((major + 1))
-                minor=0
-                patch=0
-                ;;
-              *)
-                echo "Unsupported bump type: $bump_type" >&2
-                exit 1
-                ;;
-            esac
-            next_version="${major}.${minor}.${patch}"
-          fi
-
-          if ! [[ "$next_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid semver version: $next_version" >&2
-            exit 1
-          fi
-
-          tag_name="v${next_version}"
+          tag_name="v${current_version}"
 
           echo "current=${current_version}" >> "$GITHUB_OUTPUT"
-          echo "next=${next_version}" >> "$GITHUB_OUTPUT"
+          echo "next=${current_version}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag_name}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve release title
@@ -149,20 +97,10 @@ jobs:
 
           echo "name=$title" >> "$GITHUB_OUTPUT"
 
-      - name: Bump project versions
+      - name: Create and push release tag
         shell: bash
         run: |
           set -euo pipefail
-          version="${{ steps.version.outputs.next }}"
-          printf '%s\n' "$version" > VERSION
-          npm --prefix backend version "$version" --no-git-tag-version
-          npm --prefix frontend version "$version" --no-git-tag-version
-
-      - name: Commit, tag, and push
-        shell: bash
-        run: |
-          set -euo pipefail
-
           tag_name="${{ steps.version.outputs.tag }}"
 
           if git rev-parse "$tag_name" >/dev/null 2>&1; then
@@ -174,19 +112,7 @@ jobs:
             exit 1
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add VERSION backend/package.json backend/package-lock.json frontend/package.json frontend/package-lock.json
-
-          if git diff --cached --quiet; then
-            echo "No version changes detected; refusing to create empty release commit." >&2
-            exit 1
-          fi
-
-          git commit -m "chore(release): $tag_name"
           git tag -a "$tag_name" -m "Release $tag_name"
-          git push origin "${GITHUB_REF_NAME}"
           git push origin "$tag_name"
 
   build-desktop:

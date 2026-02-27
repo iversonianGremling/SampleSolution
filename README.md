@@ -58,23 +58,21 @@ This repository includes GitHub Actions workflows for update monitoring and rele
 - Workflow: `.github/workflows/release.yml`
 - Trigger: Manual (`workflow_dispatch`)
 - Inputs:
-  - `bump`: `patch | minor | major | custom`
-  - `custom_version`: required only when `bump=custom`
   - `release_name`: optional custom name shown in GitHub Releases
   - `draft` / `prerelease`
 - Default release naming:
   - Uses `Release vX.Y.Z - <CODENAME>` when a root `CODENAME` file is present
   - Falls back to `Release vX.Y.Z` if `CODENAME` is missing/empty
 - What it does automatically:
-  1. Resolves the next version
-  2. Updates `VERSION`, `backend/package*.json`, and `frontend/package*.json`
-  3. Commits version bump and creates tag `vX.Y.Z`
-  4. Pushes commit + tag
-  5. Builds desktop artifacts on GitHub Actions for:
+  1. Validates `VERSION`, `backend/package*.json`, and `frontend/package*.json` are aligned
+  2. Creates and pushes tag `vX.Y.Z` for the checked-in version
+  3. Builds desktop artifacts on GitHub Actions for:
      - Linux (`AppImage`, `.deb`)
      - Windows (`.exe` installer + portable)
      - macOS (`.dmg`, `.zip`) when runner/platform supports
-  6. Creates the GitHub Release with generated release notes and uploads binaries
+  4. Creates the GitHub Release with generated release notes and uploads binaries
+
+Version bumps should be committed via normal PR flow before running the release workflow.
 
 If branch protection blocks pushes from `github-actions[bot]`, allow workflow pushes or use a release branch flow.
 
