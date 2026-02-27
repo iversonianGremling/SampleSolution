@@ -169,10 +169,10 @@ fi
 
 echo ""
 echo "Testing Python imports..."
-"$PYTHON_BIN" -c "import numpy; print(f'✓ numpy {numpy.__version__}')"
-"$PYTHON_BIN" -c "import librosa; print(f'✓ librosa {librosa.__version__}')"
-"$PYTHON_BIN" -c "import scipy; print(f'✓ scipy {scipy.__version__}')"
-"$PYTHON_BIN" -c "import sklearn; print(f'✓ scikit-learn {sklearn.__version__}')"
+"$PYTHON_BIN" -c "import numpy; print(f'OK numpy {numpy.__version__}')"
+"$PYTHON_BIN" -c "import librosa; print(f'OK librosa {librosa.__version__}')"
+"$PYTHON_BIN" -c "import scipy; print(f'OK scipy {scipy.__version__}')"
+"$PYTHON_BIN" -c "import sklearn; print(f'OK scikit-learn {sklearn.__version__}')"
 
 echo ""
 echo "✅ Python setup complete!"
