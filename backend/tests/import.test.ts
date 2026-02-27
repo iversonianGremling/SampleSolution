@@ -36,6 +36,116 @@ describe('Import API', () => {
     expect(res.body.error).toBe('Method not allowed. Use POST /api/import/files with multipart/form-data.')
   })
 
+  it('imports a single local file by absolute path reference without creating a copy', async () => {
+    const sourcePath = path.join(TEST_DATA_DIR, 'electron-reference-single.wav')
+    fs.writeFileSync(sourcePath, 'not-real-audio')
+
+    const slicesDir = path.join(TEST_DATA_DIR, 'slices')
+    const uploadsDir = path.join(TEST_DATA_DIR, 'uploads')
+    const slicesBefore = fs.readdirSync(slicesDir)
+    const uploadsBefore = fs.existsSync(uploadsDir) ? fs.readdirSync(uploadsDir) : []
+
+    const res = await request(app)
+      .post('/api/import/file?importType=sample')
+      .send({ absolutePath: sourcePath })
+
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+    expect(res.body.track?.source).toBe('local')
+
+    const db = await getAppDb()
+    const trackRow = db.prepare(`
+      SELECT audio_path AS audioPath, original_path AS originalPath, full_path_hint AS fullPathHint
+      FROM tracks
+      ORDER BY id DESC
+      LIMIT 1
+    `).get() as { audioPath: string | null; originalPath: string | null; fullPathHint: string | null }
+
+    const sliceRow = db.prepare(`
+      SELECT file_path AS filePath
+      FROM slices
+      ORDER BY id DESC
+      LIMIT 1
+    `).get() as { filePath: string | null }
+
+    expect(trackRow.audioPath).toBe(sourcePath)
+    expect(trackRow.originalPath).toBe(sourcePath)
+    expect(trackRow.fullPathHint).toBe(sourcePath)
+    expect(sliceRow.filePath).toBe(sourcePath)
+
+    const slicesAfter = fs.readdirSync(slicesDir)
+    const uploadsAfter = fs.existsSync(uploadsDir) ? fs.readdirSync(uploadsDir) : []
+    expect(slicesAfter).toEqual(slicesBefore)
+    expect(uploadsAfter).toEqual(uploadsBefore)
+  })
+
+  it('imports multiple files by absolute path references without multipart uploads', async () => {
+    const referenceRoot = path.join(TEST_DATA_DIR, 'electron-reference-batch')
+    const nestedDir = path.join(referenceRoot, 'sub')
+    fs.mkdirSync(nestedDir, { recursive: true })
+
+    const firstPath = path.join(referenceRoot, 'kick.wav')
+    const secondPath = path.join(nestedDir, 'snare.wav')
+    fs.writeFileSync(firstPath, 'kick')
+    fs.writeFileSync(secondPath, 'snare')
+
+    const slicesDir = path.join(TEST_DATA_DIR, 'slices')
+    const uploadsDir = path.join(TEST_DATA_DIR, 'uploads')
+    const slicesBefore = fs.readdirSync(slicesDir)
+    const uploadsBefore = fs.existsSync(uploadsDir) ? fs.readdirSync(uploadsDir) : []
+
+    const res = await request(app)
+      .post('/api/import/files?importType=sample')
+      .send({
+        referencePaths: [firstPath, secondPath],
+        relativePaths: ['pack-root/kick.wav', 'pack-root/sub/snare.wav'],
+      })
+
+    expect(res.status).toBe(200)
+    expect(res.body.total).toBe(2)
+    expect(res.body.successful).toBe(2)
+    expect(res.body.failed).toBe(0)
+
+    const db = await getAppDb()
+    const tracks = db.prepare(`
+      SELECT audio_path AS audioPath, original_path AS originalPath, folder_path AS folderPath, relative_path AS relativePath
+      FROM tracks
+      ORDER BY id ASC
+    `).all() as Array<{ audioPath: string | null; originalPath: string | null; folderPath: string | null; relativePath: string | null }>
+
+    const importedTracks = tracks.filter((track) => track.audioPath === firstPath || track.audioPath === secondPath)
+    expect(importedTracks).toHaveLength(2)
+
+    const expectedFolderPath = referenceRoot.replace(/\\/g, '/')
+    expect(importedTracks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        audioPath: firstPath,
+        originalPath: firstPath,
+        folderPath: expectedFolderPath,
+        relativePath: 'kick.wav',
+      }),
+      expect.objectContaining({
+        audioPath: secondPath,
+        originalPath: secondPath,
+        folderPath: expectedFolderPath,
+        relativePath: 'sub/snare.wav',
+      }),
+    ]))
+
+    const slices = db.prepare(`
+      SELECT file_path AS filePath
+      FROM slices
+      ORDER BY id ASC
+    `).all() as Array<{ filePath: string | null }>
+    expect(slices.some((slice) => slice.filePath === firstPath)).toBe(true)
+    expect(slices.some((slice) => slice.filePath === secondPath)).toBe(true)
+
+    const slicesAfter = fs.readdirSync(slicesDir)
+    const uploadsAfter = fs.existsSync(uploadsDir) ? fs.readdirSync(uploadsDir) : []
+    expect(slicesAfter).toEqual(slicesBefore)
+    expect(uploadsAfter).toEqual(uploadsBefore)
+  })
+
   it('creates a folder inside an imported source root and exposes it in sources tree', async () => {
     const importedRoot = path.join(TEST_DATA_DIR, 'import-root')
     const existingFolder = path.join(importedRoot, 'existing')

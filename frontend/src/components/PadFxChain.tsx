@@ -63,7 +63,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
   const safeOffset = clamp(settings.offset, 0, maxOffset)
 
   return (
-    <div className="bg-[#0a0c10] border border-surface-border rounded-lg overflow-hidden">
+    <div className="bg-surface-raised border border-surface-border rounded-lg overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-surface-border/50">
         <div className="min-w-0">
@@ -79,13 +79,13 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
         <div className="flex items-center gap-2">
           <button
             onClick={() => clearPadFx(padIndex)}
-            className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors uppercase tracking-wider"
+            className="text-[10px] text-text-muted hover:text-text-secondary transition-colors uppercase tracking-wider"
           >
             Reset
           </button>
           <button
             onClick={onClose}
-            className="p-0.5 text-slate-500 hover:text-white transition-colors"
+            className="p-0.5 text-text-muted hover:text-text-primary transition-colors"
           >
             <X size={14} />
           </button>
@@ -98,13 +98,13 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
           className="grid gap-2"
           style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 170px), 1fr))' }}
         >
-          <div className="rounded-md border border-cyan-500/25 bg-cyan-500/5 p-2">
+          <div className="rounded-md border border-accent-secondary/35 bg-accent-secondary/10 p-2">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] text-cyan-300/80 uppercase tracking-wider">Core</span>
+              <span className="text-[10px] text-accent-secondary uppercase tracking-wider">Core</span>
               <select
                 value={settings.pitchMode}
                 onChange={(e) => update('pitchMode', e.target.value as LabPitchMode)}
-                className="bg-surface-base border border-surface-border rounded text-[9px] px-1 py-0.5 text-cyan-300 focus:outline-none focus:border-cyan-400 cursor-pointer"
+                className="bg-surface-base border border-surface-border rounded text-[9px] px-1 py-0.5 text-text-primary focus:outline-none focus:border-accent-secondary cursor-pointer"
                 title="Pitch mode"
               >
                 {PITCH_MODES.map((mode) => (
@@ -145,8 +145,8 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
               disabled={settings.pitchMode === 'tape'}
               className={`mt-1.5 w-full rounded border px-1.5 py-1 text-[9px] uppercase tracking-wider transition-colors ${
                 settings.preserveFormants
-                  ? 'border-emerald-400/70 bg-emerald-500/15 text-emerald-200'
-                  : 'border-surface-border bg-surface-base text-cyan-300/80'
+                  ? 'border-emerald-500/70 bg-emerald-500/18 text-emerald-100'
+                  : 'border-surface-border bg-surface-base text-text-primary'
               } disabled:opacity-50 disabled:cursor-not-allowed`}
               title="Preserve vocal formants when using Granular/HQ pitch modes"
             >
@@ -318,7 +318,7 @@ export function PadFxChain({ padIndex, onClose }: PadFxChainProps) {
       {/* Advanced FX - collapsed by default */}
       <button
         onClick={() => setShowAdvanced(prev => !prev)}
-        className="w-full flex items-center justify-between px-3 py-2 text-[11px] text-slate-400 hover:text-slate-200 transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
       >
         <span className="inline-flex items-center gap-1.5 uppercase tracking-wider">
           <SlidersHorizontal size={12} />

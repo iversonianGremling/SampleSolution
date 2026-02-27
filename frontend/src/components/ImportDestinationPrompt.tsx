@@ -3,9 +3,11 @@ import { FolderOpen, FolderPlus, Layers3, Loader2, Plus, Search, X } from 'lucid
 import { useCreateCollection, useCreateFolder } from '../hooks/useTracks'
 import type { Collection, Folder } from '../types'
 import type { ImportStructureMode } from '../utils/importStructure'
+import { getDefaultCollectionNameForFolderImport } from '../utils/importCollectionStrategy'
 
 type ImportSourceKind = 'files' | 'folder'
 type ImportType = 'sample' | 'track'
+export type ImportCollectionMode = 'existing' | 'new-collection' | 'split-by-folder'
 
 export interface ImportDestinationChoice {
   folderId: number | null
@@ -13,6 +15,8 @@ export interface ImportDestinationChoice {
   importType: ImportType
   structureMode: ImportStructureMode
   bypassParentFolder: boolean
+  collectionMode: ImportCollectionMode
+  newCollectionName: string | null
   destinationFolder: Pick<Folder, 'id' | 'name' | 'collectionId' | 'parentId'> | null
 }
 
@@ -64,6 +68,12 @@ interface PreservedStructurePreview {
   rootFileCount: number
 }
 
+interface AutoCollectionPreviewGroup {
+  collectionName: string
+  fileCount: number
+  preservePreview: PreservedStructurePreview
+}
+
 interface MutableStructurePreviewNode {
   name: string
   fileCount: number
@@ -75,6 +85,8 @@ interface MergedFolderTreeNode {
   existingNode: FolderTreeNode | null
   previewNode: StructurePreviewNode | null
 }
+
+const FALLBACK_IMPORT_COLLECTION_NAME = 'Imported Files'
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -257,15 +269,14 @@ function buildFolderSourceSnapshot(sourceFiles: File[]): FolderSourceSnapshot {
   }
 }
 
-function buildPreservedStructurePreview(sourceFiles: File[], bypassParentFolder: boolean): PreservedStructurePreview {
+function buildStructurePreviewFromDirectorySegments(
+  directorySegmentsList: string[][],
+): PreservedStructurePreview {
   const root = new Map<string, MutableStructurePreviewNode>()
   let folderCount = 0
   let rootFileCount = 0
 
-  for (const file of sourceFiles) {
-    const pathSegments = resolveFilePathSegments(file)
-    const directories = resolvePreservedDirectorySegments(pathSegments, bypassParentFolder)
-
+  for (const directories of directorySegmentsList) {
     if (directories.length === 0) {
       rootFileCount += 1
       continue
@@ -306,6 +317,51 @@ function buildPreservedStructurePreview(sourceFiles: File[], bypassParentFolder:
   }
 }
 
+function buildPreservedStructurePreview(sourceFiles: File[], bypassParentFolder: boolean): PreservedStructurePreview {
+  const directorySegmentsList = sourceFiles.map((file) => {
+    const pathSegments = resolveFilePathSegments(file)
+    return resolvePreservedDirectorySegments(pathSegments, bypassParentFolder)
+  })
+
+  return buildStructurePreviewFromDirectorySegments(directorySegmentsList)
+}
+
+function buildSplitCollectionPreviewGroups(sourceFiles: File[]): AutoCollectionPreviewGroup[] {
+  const groups = new Map<
+    string,
+    { collectionName: string; fileCount: number; preservedDirectories: string[][] }
+  >()
+
+  for (const file of sourceFiles) {
+    const segments = resolveFilePathSegments(file)
+    const rootName = segments.length >= 2 ? segments[0] : null
+    const firstSubfolderName = segments.length >= 3 ? segments[1] : null
+    const collectionName = (firstSubfolderName || rootName || FALLBACK_IMPORT_COLLECTION_NAME).trim() || FALLBACK_IMPORT_COLLECTION_NAME
+    const key = normalizeFolderName(collectionName) || normalizeFolderName(FALLBACK_IMPORT_COLLECTION_NAME)
+    const preservedDirectories = firstSubfolderName ? segments.slice(2, -1) : []
+    const existing = groups.get(key)
+    if (existing) {
+      existing.fileCount += 1
+      existing.preservedDirectories.push(preservedDirectories)
+      continue
+    }
+
+    groups.set(key, {
+      collectionName,
+      fileCount: 1,
+      preservedDirectories: [preservedDirectories],
+    })
+  }
+
+  return Array.from(groups.values())
+    .sort((a, b) => a.collectionName.localeCompare(b.collectionName))
+    .map((group) => ({
+      collectionName: group.collectionName,
+      fileCount: group.fileCount,
+      preservePreview: buildStructurePreviewFromDirectorySegments(group.preservedDirectories),
+    }))
+}
+
 export function ImportDestinationPrompt({
   isOpen,
   sourceKind,
@@ -326,6 +382,8 @@ export function ImportDestinationPrompt({
   const [selectedImportType, setSelectedImportType] = useState<ImportType>(initialImportType)
   const [structureMode, setStructureMode] = useState<ImportStructureMode>('flatten')
   const [bypassParentFolder, setBypassParentFolder] = useState(false)
+  const [collectionMode, setCollectionMode] = useState<ImportCollectionMode>('existing')
+  const [newImportCollectionName, setNewImportCollectionName] = useState('')
   const [createdCollections, setCreatedCollections] = useState<Collection[]>([])
   const [createdFolders, setCreatedFolders] = useState<Folder[]>([])
   const [showCreateCollection, setShowCreateCollection] = useState(false)
@@ -345,6 +403,8 @@ export function ImportDestinationPrompt({
     setSelectedImportType(initialImportType)
     setStructureMode(sourceKind === 'folder' ? 'preserve' : 'flatten')
     setBypassParentFolder(false)
+    setCollectionMode('existing')
+    setNewImportCollectionName(sourceKind === 'folder' ? getDefaultCollectionNameForFolderImport(sourceFiles) || '' : '')
     setCreatedCollections([])
     setCreatedFolders([])
     setShowCreateCollection(false)
@@ -352,7 +412,7 @@ export function ImportDestinationPrompt({
     setFolderCreationTarget(null)
     setNewFolderName('')
     setCreationError(null)
-  }, [initialImportType, isOpen, sourceKind])
+  }, [initialImportType, isOpen, sourceFiles, sourceKind])
 
   const mergedCollections = useMemo(
     () =>
@@ -411,28 +471,34 @@ export function ImportDestinationPrompt({
     () => buildPreservedStructurePreview(sourceFiles, bypassParentFolder),
     [sourceFiles, bypassParentFolder],
   )
-  const autoCreatedCollectionFolderName = useMemo(() => `Imported ${new Date().toISOString().slice(0, 10)}`, [])
+  const autoCollectionPreservedPreview = useMemo(
+    () => buildPreservedStructurePreview(sourceFiles, bypassParentFolder),
+    [sourceFiles, bypassParentFolder],
+  )
+  const splitCollectionPreviewGroups = useMemo(
+    () => buildSplitCollectionPreviewGroups(sourceFiles),
+    [sourceFiles],
+  )
+  const defaultCollectionNameFromSource = useMemo(
+    () => getDefaultCollectionNameForFolderImport(sourceFiles) || '',
+    [sourceFiles],
+  )
+  const autoCollectionNamePreview = (newImportCollectionName.trim() || defaultCollectionNameFromSource || FALLBACK_IMPORT_COLLECTION_NAME).trim()
+  const autoFlatDestinationFolderName = `Imported ${new Date().toISOString().slice(0, 10)}`
+  const hasAutoCollectionDestination = sourceKind === 'folder' && collectionMode !== 'existing'
+  const isBypassParentFolderDisabled = sourceKind === 'folder' && collectionMode === 'split-by-folder'
   const shouldAssignAtCollectionRoot =
     sourceKind === 'folder' && structureMode === 'preserve'
-  const hasDestinationSelection = selectedFolderId !== null || selectedCollectionId !== null
+  const hasDestinationSelection =
+    hasAutoCollectionDestination || selectedFolderId !== null || selectedCollectionId !== null
   const shouldRenderMergedTreePreview =
     sourceKind === 'folder' &&
     structureMode === 'preserve' &&
+    !hasAutoCollectionDestination &&
     hasDestinationSelection &&
     preservedStructurePreview.tree.length > 0
-  const destinationPreviewLabel = selectedFolder
-    ? buildFolderPath(selectedFolder, folderMap)
-    : selectedCollection
-      ? shouldAssignAtCollectionRoot
-        ? selectedCollection.name
-        : `${selectedCollection.name} / ${autoCreatedCollectionFolderName}`
-      : null
-  const previewFileCount = sourceFiles.length > 0 ? sourceFiles.length : importCount
   const visibleSourceSubfolders = sourceFolderSnapshot.firstSubfolders.slice(0, 8)
   const hiddenSourceSubfolderCount = sourceFolderSnapshot.firstSubfolders.length - visibleSourceSubfolders.length
-  const firstLevelPreviewFolders = preservedStructurePreview.tree.map((node) => node.name)
-  const visibleFirstLevelPreviewFolders = firstLevelPreviewFolders.slice(0, 8)
-  const hiddenFirstLevelPreviewFolderCount = firstLevelPreviewFolders.length - visibleFirstLevelPreviewFolders.length
 
   const isDestinationMutating = createCollection.isPending || createFolder.isPending
   const hasVisibleDestinations = visibleCollectionTrees.length > 0 || visibleUngroupedTree.length > 0
@@ -504,18 +570,39 @@ export function ImportDestinationPrompt({
 
     return {
       folderId,
-      collectionId: folderId === null ? selectedCollectionId : null,
+      collectionId:
+        collectionMode === 'existing' && folderId === null
+          ? selectedCollectionId
+          : null,
       importType: selectedImportType,
       structureMode: sourceKind === 'folder' ? structureMode : 'flatten',
       bypassParentFolder:
-        sourceKind === 'folder' && structureMode === 'preserve'
+        sourceKind === 'folder' && structureMode === 'preserve' && collectionMode !== 'split-by-folder'
           ? bypassParentFolder
           : false,
+      collectionMode: sourceKind === 'folder' ? collectionMode : 'existing',
+      newCollectionName:
+        sourceKind === 'folder' && collectionMode === 'new-collection'
+          ? newImportCollectionName.trim() || defaultCollectionNameFromSource || null
+          : null,
       destinationFolder,
     }
   }
 
   const handleConfirmAssign = async () => {
+    if (sourceKind === 'folder' && collectionMode !== 'existing') {
+      if (collectionMode === 'new-collection') {
+        const resolvedName = newImportCollectionName.trim() || defaultCollectionNameFromSource
+        if (!resolvedName) {
+          setCreationError('Collection name is required.')
+          return
+        }
+      }
+
+      onConfirm(resolveChoice(null))
+      return
+    }
+
     if (selectedFolderId !== null) {
       onConfirm(resolveChoice(selectedFolderId))
       return
@@ -643,7 +730,10 @@ export function ImportDestinationPrompt({
 
   return (
     <div className="fixed inset-0 z-[320] flex items-start justify-center overflow-y-auto bg-surface-base/75 p-3 sm:items-center sm:p-4">
-      <div className="my-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-surface-border bg-surface-raised shadow-2xl">
+      <div
+        className="my-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-surface-border bg-surface-raised shadow-2xl"
+        data-tour="import-destination-prompt"
+      >
         <div className="flex items-start justify-between gap-3 border-b border-surface-border px-4 py-3">
           <div>
             <h3 className="text-sm font-semibold text-white">Choose Where and How to Import</h3>
@@ -667,12 +757,13 @@ export function ImportDestinationPrompt({
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
           {showImportTypeSelector && (
-            <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3">
+            <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3" data-tour="import-method-section">
               <div className="text-xs font-semibold text-white">Import method</div>
               <div className="mt-2 space-y-1.5">
                 {(['sample', 'track'] as const).map((value) => (
                   <label
                     key={value}
+                    data-tour={value === 'sample' ? 'import-method-analysis' : undefined}
                     className="flex items-center gap-3 rounded-md border border-surface-border bg-surface-overlay/30 px-2.5 py-2 text-sm text-slate-200 transition-colors hover:bg-surface-overlay cursor-pointer"
                   >
                     <input
@@ -697,16 +788,134 @@ export function ImportDestinationPrompt({
             </div>
           )}
 
-          <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3">
+          {sourceKind === 'folder' && (
+            <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3" data-tour="import-collection-strategy">
+              <div className="text-xs font-semibold text-white">Collection strategy</div>
+              <div className="mt-2 space-y-1.5">
+                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-surface-border bg-surface-overlay/30 px-2 py-1.5 text-xs text-slate-200 transition-colors hover:bg-surface-overlay">
+                  <input
+                    type="radio"
+                    name="importDestinationCollectionMode"
+                    checked={collectionMode === 'existing'}
+                    onChange={() => {
+                      setCollectionMode('existing')
+                      setCreationError(null)
+                    }}
+                    className="mt-0.5 h-3.5 w-3.5"
+                  />
+                  <span>Assign into an existing collection or folder</span>
+                </label>
+                <label
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-surface-border bg-surface-overlay/30 px-2 py-1.5 text-xs text-slate-200 transition-colors hover:bg-surface-overlay"
+                  data-tour="import-collection-mode-new"
+                >
+                  <input
+                    type="radio"
+                    name="importDestinationCollectionMode"
+                    checked={collectionMode === 'new-collection'}
+                    onChange={() => {
+                      setCollectionMode('new-collection')
+                      setSelectedFolderId(null)
+                      setSelectedCollectionId(null)
+                      setCreationError(null)
+                      if (!newImportCollectionName.trim() && defaultCollectionNameFromSource) {
+                        setNewImportCollectionName(defaultCollectionNameFromSource)
+                      }
+                    }}
+                    className="mt-0.5 h-3.5 w-3.5"
+                  />
+                  <span>Create one new collection for this import</span>
+                </label>
+                <label
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-surface-border bg-surface-overlay/30 px-2 py-1.5 text-xs text-slate-200 transition-colors hover:bg-surface-overlay"
+                  data-tour="import-collection-mode-split"
+                >
+                  <input
+                    type="radio"
+                    name="importDestinationCollectionMode"
+                    checked={collectionMode === 'split-by-folder'}
+                    onChange={() => {
+                      setCollectionMode('split-by-folder')
+                      setSelectedFolderId(null)
+                      setSelectedCollectionId(null)
+                      setCreationError(null)
+                    }}
+                    className="mt-0.5 h-3.5 w-3.5"
+                  />
+                  <span>Create a collection for each first source subfolder</span>
+                </label>
+              </div>
+
+              {collectionMode === 'new-collection' && (
+                <div className="mt-2 rounded-md border border-surface-border bg-surface-base/50 p-2">
+                  <div className="mb-1 text-[11px] text-slate-400">New collection name</div>
+                  <input
+                    value={newImportCollectionName}
+                    onChange={(event) => setNewImportCollectionName(event.target.value)}
+                    placeholder={defaultCollectionNameFromSource || 'Collection name'}
+                    className="w-full rounded-md border border-surface-border bg-surface-base px-2 py-1 text-xs text-white placeholder-slate-500 focus:border-accent-primary/60 focus:outline-none"
+                  />
+                  {defaultCollectionNameFromSource && (
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      Default from imported folder: {defaultCollectionNameFromSource}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {collectionMode === 'split-by-folder' && (
+                <div className="mt-2 rounded-md border border-surface-border bg-surface-base/50 p-2">
+                  <div className="text-[11px] text-slate-400">
+                    {sourceFolderSnapshot.firstSubfolders.length > 0
+                      ? `Collections will be created for ${sourceFolderSnapshot.firstSubfolders.length} first-level subfolders.`
+                      : 'No first-level subfolders detected; root files will use the imported folder name.'}
+                  </div>
+                  {visibleSourceSubfolders.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {visibleSourceSubfolders.map((name) => (
+                        <span
+                          key={`collection-preview-${name}`}
+                          className="rounded border border-surface-border bg-surface-overlay/40 px-1.5 py-0.5 text-[11px] text-slate-200"
+                        >
+                          {name}
+                        </span>
+                      ))}
+                      {hiddenSourceSubfolderCount > 0 && (
+                        <span className="rounded border border-surface-border bg-surface-overlay/30 px-1.5 py-0.5 text-[11px] text-slate-500">
+                          +{hiddenSourceSubfolderCount} more
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {collectionMode !== 'existing' && creationError && (
+                <div className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-200">
+                  {creationError}
+                </div>
+              )}
+            </div>
+          )}
+
+          {sourceKind !== 'folder' || collectionMode === 'existing' ? (
+            <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3" data-tour="import-destination-tree">
             <div className="mb-2 flex items-center justify-between">
               <div className="text-xs font-semibold text-white">Destination tree</div>
               <button
                 type="button"
                 onClick={() => {
-                  setShowCreateCollection((open) => !open)
+                  setShowCreateCollection((open) => {
+                    const next = !open
+                    if (next) {
+                      setNewCollectionName((current) => current.trim() || defaultCollectionNameFromSource)
+                    }
+                    return next
+                  })
                   setCreationError(null)
                 }}
                 disabled={isSubmitting || isDestinationMutating}
+                data-tour="import-destination-new-collection"
                 className="inline-flex items-center gap-1 rounded-md border border-surface-border bg-surface-overlay px-2 py-1 text-[11px] text-slate-200 transition-colors hover:bg-surface-border disabled:opacity-50"
               >
                 <Plus size={12} />
@@ -812,10 +1021,27 @@ export function ImportDestinationPrompt({
               {isLoading ? (
                 <div className="px-2 py-4 text-center text-xs text-slate-400">Loading collections and folders...</div>
               ) : !hasVisibleDestinations ? (
-                <div className="px-2 py-4 text-center text-xs text-slate-400">
-                  {hasAnyFolders
-                    ? 'No collections or folders match your search.'
-                    : 'No folders available yet. Create a collection and folder to assign imports.'}
+                <div className="space-y-2 px-2 py-4 text-center text-xs text-slate-400">
+                  <div>
+                    {hasAnyFolders
+                      ? 'No collections or folders match your search.'
+                      : 'No folders available yet. Create a collection and folder to assign imports.'}
+                  </div>
+                  {!hasAnyFolders && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCreateCollection(true)
+                        setCreationError(null)
+                        setNewCollectionName((current) => current.trim() || defaultCollectionNameFromSource)
+                      }}
+                      disabled={isSubmitting || isDestinationMutating}
+                      className="inline-flex items-center gap-1 rounded-md border border-surface-border bg-surface-overlay px-2 py-1 text-[11px] text-slate-200 transition-colors hover:bg-surface-border disabled:opacity-50"
+                    >
+                      <Plus size={12} />
+                      Create collection
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -903,6 +1129,82 @@ export function ImportDestinationPrompt({
               )}
             </div>
           </div>
+          ) : (
+            <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3" data-tour="import-destination-tree">
+              <div className="mb-1 text-xs font-semibold text-white">Destination preview</div>
+              <div className="text-[11px] text-slate-400">
+                Existing collections are ignored for this import mode. Collections will be created automatically after import.
+              </div>
+
+              <div className="mt-2 max-h-52 space-y-2 overflow-y-auto rounded-lg border border-surface-border bg-surface-base/40 p-2 sm:max-h-64">
+                {collectionMode === 'new-collection' ? (
+                  <div className="rounded-md border border-surface-border/80 bg-surface-overlay/20 p-1.5">
+                    <div className="mb-1 flex items-center gap-2 rounded-md bg-surface-overlay/40 px-2 py-1">
+                      <Layers3 size={12} className="text-sky-300" />
+                      <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-100">{autoCollectionNamePreview}</span>
+                      <span className="text-[10px] text-slate-400">
+                        {importCount} {importCount === 1 ? 'file' : 'files'}
+                      </span>
+                      <span className="rounded border border-emerald-500/50 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-200">
+                        New
+                      </span>
+                    </div>
+                    <div className="space-y-1">
+                      {renderFolderNodes(
+                        [],
+                        1,
+                        structureMode === 'preserve'
+                          ? autoCollectionPreservedPreview.tree
+                          : [{ name: autoFlatDestinationFolderName, fileCount: importCount, children: [] }],
+                        'auto-new-collection',
+                      )}
+                    </div>
+                    {structureMode === 'preserve' && autoCollectionPreservedPreview.tree.length === 0 && (
+                      <div className="px-2 py-1 text-[11px] text-slate-500">
+                        {bypassParentFolder
+                          ? 'No nested subfolders detected after bypassing the first source folder level.'
+                          : 'No nested subfolders detected in selected source folders.'}
+                      </div>
+                    )}
+                  </div>
+                ) : splitCollectionPreviewGroups.length > 0 ? (
+                  splitCollectionPreviewGroups.map((group) => (
+                    <div key={`split-preview-${normalizeFolderName(group.collectionName)}`} className="rounded-md border border-surface-border/80 bg-surface-overlay/20 p-1.5">
+                      <div className="mb-1 flex items-center gap-2 rounded-md bg-surface-overlay/40 px-2 py-1">
+                        <Layers3 size={12} className="text-sky-300" />
+                        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-100">{group.collectionName}</span>
+                        <span className="text-[10px] text-slate-400">
+                          {group.fileCount} {group.fileCount === 1 ? 'file' : 'files'}
+                        </span>
+                        <span className="rounded border border-emerald-500/50 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-200">
+                          New
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        {renderFolderNodes(
+                          [],
+                          1,
+                          structureMode === 'preserve'
+                            ? group.preservePreview.tree
+                            : [{ name: autoFlatDestinationFolderName, fileCount: group.fileCount, children: [] }],
+                          `auto-split-collection-${normalizeFolderName(group.collectionName)}`,
+                        )}
+                      </div>
+                      {structureMode === 'preserve' && group.preservePreview.tree.length === 0 && (
+                        <div className="px-2 py-1 text-[11px] text-slate-500">
+                          No nested subfolders detected after split.
+                        </div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <div className="px-2 py-3 text-center text-xs text-slate-500">
+                    No source folders found to split into collections.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {selectedFolder && (
             <div className="rounded-md border border-accent-primary/30 bg-accent-primary/10 px-2.5 py-1.5 text-[11px] text-slate-200">
@@ -921,7 +1223,7 @@ export function ImportDestinationPrompt({
           )}
 
           {sourceKind === 'folder' && (
-            <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3">
+            <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3" data-tour="import-folder-structure-handling">
               <div className="text-xs font-semibold text-white">Folder structure handling</div>
               <div className="mt-2 space-y-1.5">
                 <label className="flex cursor-pointer items-center gap-2 rounded-md border border-surface-border bg-surface-overlay/30 px-2 py-1.5 text-xs text-slate-200 transition-colors hover:bg-surface-overlay">
@@ -942,7 +1244,11 @@ export function ImportDestinationPrompt({
                     onChange={() => setStructureMode('flatten')}
                     className="h-3.5 w-3.5"
                   />
-                  <span>Flatten everything into the selected destination folder</span>
+                  <span>
+                    {collectionMode === 'existing'
+                      ? 'Flatten everything into the selected destination folder'
+                      : 'Flatten everything inside each created collection'}
+                  </span>
                 </label>
               </div>
               {structureMode === 'preserve' && (
@@ -950,27 +1256,33 @@ export function ImportDestinationPrompt({
                   <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-200">
                     <input
                       type="checkbox"
-                      checked={bypassParentFolder}
+                      checked={isBypassParentFolderDisabled ? false : bypassParentFolder}
+                      disabled={isBypassParentFolderDisabled}
                       onChange={(event) => setBypassParentFolder(event.target.checked)}
                       className="h-3.5 w-3.5"
                     />
                     <span>Bypass first source folder level</span>
                   </label>
                   <div className="mt-1 text-[11px] text-slate-500">
-                    {bypassParentFolder
+                    {isBypassParentFolderDisabled
+                      ? 'Disabled for this mode because each first source subfolder already becomes its own collection.'
+                      : bypassParentFolder
                       ? 'Skip the selected parent folder and place its children directly under the destination.'
                       : 'Keep the full folder path, including the selected parent folder.'}
                   </div>
                 </div>
               )}
               <div className="mt-1 text-[11px] text-slate-500">
-                {selectedFolderId === null && selectedCollectionId === null
+                {hasAutoCollectionDestination
+                  ? 'This setting will be applied while creating collections during import.'
+                  : selectedFolderId === null && selectedCollectionId === null
                   ? 'Select a destination folder to apply this after import.'
                   : 'This setting only affects folder imports when assigning to a destination.'}
               </div>
             </div>
           )}
 
+          {/*
           {sourceKind === 'folder' && (
             <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3">
               <div className="text-xs font-semibold text-white">Import preview</div>
@@ -1056,6 +1368,7 @@ export function ImportDestinationPrompt({
               )}
             </div>
           )}
+          */}
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-surface-border px-4 py-3">
@@ -1075,6 +1388,8 @@ export function ImportDestinationPrompt({
               onConfirm({
                 ...resolveChoice(null),
                 collectionId: null,
+                collectionMode: 'existing',
+                newCollectionName: null,
               })
             }}
             disabled={isSubmitting || isDestinationMutating}
@@ -1084,12 +1399,13 @@ export function ImportDestinationPrompt({
           </button>
           <button
             type="button"
+            data-tour="import-assign-button"
             onClick={(event) => {
               event.preventDefault()
               event.stopPropagation()
               void handleConfirmAssign()
             }}
-            disabled={isSubmitting || isDestinationMutating || (selectedFolderId === null && selectedCollectionId === null)}
+            disabled={isSubmitting || isDestinationMutating || !hasDestinationSelection}
             className="rounded-lg bg-accent-primary px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:bg-surface-overlay disabled:text-slate-500"
           >
             Import + Assign

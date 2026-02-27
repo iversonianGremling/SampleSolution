@@ -17,6 +17,7 @@ import { getCollections, getFolders, getGoogleAuthUrl, getSpotifyAuthUrl } from 
 import {
   useAuthStatus,
   useBatchAddSlicesToFolder,
+  useCreateCollection,
   useCreateFolder,
   useImportLinks,
   useImportLocalFiles,
@@ -34,6 +35,10 @@ import {
   SPOTDL_INTEGRATION_STORAGE_KEY,
 } from '../utils/spotdlIntegration'
 import { assignImportsPreservingStructure, type ImportStructureMode } from '../utils/importStructure'
+import {
+  buildCollectionSubdivisionGroups,
+  getDefaultCollectionNameForFolderImport,
+} from '../utils/importCollectionStrategy'
 
 type ActiveModal = 'link' | 'playlist' | null
 type PlaylistTab = 'youtube' | 'spotify'
@@ -274,6 +279,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
 
   const importLocalFiles = useImportLocalFiles()
   const batchAddSlicesToFolder = useBatchAddSlicesToFolder()
+  const createCollection = useCreateCollection()
   const createFolder = useCreateFolder()
   const importLinks = useImportLinks()
   const importSpotify = useImportSpotify()
@@ -311,6 +317,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
   const isAnyImportPending =
     importLocalFiles.isPending ||
     batchAddSlicesToFolder.isPending ||
+    createCollection.isPending ||
     createFolder.isPending ||
     importLinks.isPending ||
     importSpotify.isPending ||
@@ -334,6 +341,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node
+      if (target instanceof Element && target.closest('.driver-popover')) return
       if (triggerRef.current?.contains(target)) return
       if (menuRef.current?.contains(target)) return
       setIsMenuOpen(false)
@@ -441,6 +449,8 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
     sourceKind,
     structureMode,
     bypassParentFolder,
+    collectionMode,
+    newCollectionName,
   }: {
     files: File[]
     destinationFolderId: number | null
@@ -450,10 +460,15 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
     sourceKind: ImportSourceKind
     structureMode: ImportStructureMode
     bypassParentFolder: boolean
+    collectionMode: ImportDestinationChoice['collectionMode']
+    newCollectionName: string | null
   }) => {
     let assignedCount = 0
     let createdSubfolderCount = 0
     let usedPreservedStructure = false
+    let createdCollectionCount = 0
+    let usedCollectionSubdivision = false
+    let assignmentCollectionName: string | null = null
 
     try {
       const result = await importLocalFiles.mutateAsync({ files, importType, sourceKind })
@@ -464,90 +479,177 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
             : null)
         .filter((entry): entry is { sliceId: number; file: File } => entry !== null)
       const importedSliceIds = successfulImports.map((entry) => entry.sliceId)
+      const shouldPreserveStructure = sourceKind === 'folder' && structureMode === 'preserve'
+      const effectiveBypassParentFolder =
+        sourceKind === 'folder' && collectionMode === 'split-by-folder'
+          ? true
+          : bypassParentFolder
+      const workingFolders = [...(destinationFolders as Folder[])]
+      let effectiveDestinationFolderId = destinationFolderId
+      let effectiveDestinationCollectionId = destinationCollectionId
+      let effectiveDestinationFolder = destinationFolder
 
-      const shouldAssignToCollectionRoot =
-        destinationFolderId === null &&
-        destinationCollectionId !== null &&
-        sourceKind === 'folder' &&
-        structureMode === 'preserve'
+      if (sourceKind === 'folder' && collectionMode === 'new-collection') {
+        const fallbackName = getDefaultCollectionNameForFolderImport(files) || `Imported ${new Date().toISOString().slice(0, 10)}`
+        const collectionName = (newCollectionName?.trim() || fallbackName).trim()
+        const createdCollection = await createCollection.mutateAsync({ name: collectionName })
+        assignmentCollectionName = createdCollection.name
+        createdCollectionCount = 1
+        effectiveDestinationFolderId = null
+        effectiveDestinationCollectionId = createdCollection.id
+        effectiveDestinationFolder = null
+      }
 
-      if ((destinationFolderId !== null || shouldAssignToCollectionRoot) && importedSliceIds.length > 0) {
-        const shouldPreserveStructure = sourceKind === 'folder' && structureMode === 'preserve'
-
+      if (importedSliceIds.length > 0) {
         try {
-          if (shouldPreserveStructure) {
-            const resolvedDestinationFolder = destinationFolder ||
-              (destinationFolderId !== null ? destinationFolderMap.get(destinationFolderId) || null : null)
+          if (sourceKind === 'folder' && collectionMode === 'split-by-folder') {
+            usedCollectionSubdivision = true
+            const groups = buildCollectionSubdivisionGroups(successfulImports)
 
-            if (resolvedDestinationFolder) {
-              const preserveResult = await assignImportsPreservingStructure({
-                destinationFolder: {
-                  id: resolvedDestinationFolder.id,
-                  name: resolvedDestinationFolder.name,
-                  parentId: resolvedDestinationFolder.parentId ?? null,
-                  collectionId: resolvedDestinationFolder.collectionId ?? null,
-                },
-                successfulImports,
-                existingFolders: destinationFolders as Folder[],
-                createFolder: (data) => createFolder.mutateAsync(data),
-                assignSlicesToFolder: (folderId, sliceIds) =>
-                  batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
-                bypassParentFolder,
+            for (const group of groups) {
+              const createdCollection = await createCollection.mutateAsync({ name: group.collectionName })
+              createdCollectionCount += 1
+
+              if (shouldPreserveStructure) {
+                const preserveResult = await assignImportsPreservingStructure({
+                  destinationCollectionId: createdCollection.id,
+                  successfulImports: group.preserveReadyImports,
+                  existingFolders: workingFolders,
+                  createFolder: async (data) => {
+                    const createdFolder = await createFolder.mutateAsync(data)
+                    workingFolders.push(createdFolder)
+                    return createdFolder
+                  },
+                  assignSlicesToFolder: (folderId, sliceIds) =>
+                    batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
+                  bypassParentFolder: true,
+                })
+                assignedCount += preserveResult.assignedCount
+                createdSubfolderCount += preserveResult.createdFolderCount
+                usedPreservedStructure = true
+                continue
+              }
+
+              const createdFolder = await createFolder.mutateAsync({
+                name: `Imported ${new Date().toISOString().slice(0, 10)}`,
+                collectionId: createdCollection.id,
               })
-              assignedCount = preserveResult.assignedCount
-              createdSubfolderCount = preserveResult.createdFolderCount
-              usedPreservedStructure = true
-            } else if (destinationCollectionId !== null) {
-              const preserveResult = await assignImportsPreservingStructure({
-                destinationCollectionId,
-                successfulImports,
-                existingFolders: destinationFolders as Folder[],
-                createFolder: (data) => createFolder.mutateAsync(data),
-                assignSlicesToFolder: (folderId, sliceIds) =>
-                  batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
-                bypassParentFolder,
+              workingFolders.push(createdFolder)
+
+              const groupSliceIds = group.originalImports.map((entry) => entry.sliceId)
+              if (groupSliceIds.length === 0) continue
+
+              await batchAddSlicesToFolder.mutateAsync({
+                folderId: createdFolder.id,
+                sliceIds: groupSliceIds,
               })
-              assignedCount = preserveResult.assignedCount
-              createdSubfolderCount = preserveResult.createdFolderCount
-              usedPreservedStructure = true
-            } else {
-              if (destinationFolderId !== null) {
+              assignedCount += groupSliceIds.length
+            }
+          } else {
+            const shouldAssignToCollectionRoot =
+              effectiveDestinationFolderId === null &&
+              effectiveDestinationCollectionId !== null &&
+              shouldPreserveStructure
+
+            if (!shouldPreserveStructure && effectiveDestinationFolderId === null && effectiveDestinationCollectionId !== null) {
+              const createdFolder = await createFolder.mutateAsync({
+                name: `Imported ${new Date().toISOString().slice(0, 10)}`,
+                collectionId: effectiveDestinationCollectionId,
+              })
+              workingFolders.push(createdFolder)
+              effectiveDestinationFolderId = createdFolder.id
+              effectiveDestinationFolder = createdFolder
+            }
+
+            if (effectiveDestinationFolderId !== null || shouldAssignToCollectionRoot) {
+              if (shouldPreserveStructure) {
+                const resolvedDestinationFolder = effectiveDestinationFolder ||
+                  (effectiveDestinationFolderId !== null ? destinationFolderMap.get(effectiveDestinationFolderId) || null : null)
+
+                if (resolvedDestinationFolder) {
+                  const preserveResult = await assignImportsPreservingStructure({
+                    destinationFolder: {
+                      id: resolvedDestinationFolder.id,
+                      name: resolvedDestinationFolder.name,
+                      parentId: resolvedDestinationFolder.parentId ?? null,
+                      collectionId: resolvedDestinationFolder.collectionId ?? null,
+                    },
+                    successfulImports,
+                    existingFolders: workingFolders,
+                    createFolder: async (data) => {
+                      const createdFolder = await createFolder.mutateAsync(data)
+                      workingFolders.push(createdFolder)
+                      return createdFolder
+                    },
+                    assignSlicesToFolder: (folderId, sliceIds) =>
+                      batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
+                    bypassParentFolder: effectiveBypassParentFolder,
+                  })
+                  assignedCount = preserveResult.assignedCount
+                  createdSubfolderCount = preserveResult.createdFolderCount
+                  usedPreservedStructure = true
+                } else if (effectiveDestinationCollectionId !== null) {
+                  const preserveResult = await assignImportsPreservingStructure({
+                    destinationCollectionId: effectiveDestinationCollectionId,
+                    successfulImports,
+                    existingFolders: workingFolders,
+                    createFolder: async (data) => {
+                      const createdFolder = await createFolder.mutateAsync(data)
+                      workingFolders.push(createdFolder)
+                      return createdFolder
+                    },
+                    assignSlicesToFolder: (folderId, sliceIds) =>
+                      batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
+                    bypassParentFolder: effectiveBypassParentFolder,
+                  })
+                  assignedCount = preserveResult.assignedCount
+                  createdSubfolderCount = preserveResult.createdFolderCount
+                  usedPreservedStructure = true
+                }
+              } else if (effectiveDestinationFolderId !== null) {
                 await batchAddSlicesToFolder.mutateAsync({
-                  folderId: destinationFolderId,
+                  folderId: effectiveDestinationFolderId,
                   sliceIds: importedSliceIds,
                 })
                 assignedCount = importedSliceIds.length
+                effectiveDestinationFolder = effectiveDestinationFolder ||
+                  destinationFolderMap.get(effectiveDestinationFolderId) ||
+                  null
               }
-            }
-          } else {
-            if (destinationFolderId !== null) {
-              await batchAddSlicesToFolder.mutateAsync({
-                folderId: destinationFolderId,
-                sliceIds: importedSliceIds,
-              })
-              assignedCount = importedSliceIds.length
             }
           }
         } catch (assignmentError) {
           showToast({
             kind: 'warning',
-            message: shouldPreserveStructure
-              ? `Imported files but failed to preserve folder structure: ${getErrorMessage(assignmentError)}`
-              : `Imported files but failed to place them in the selected folder: ${getErrorMessage(assignmentError)}`,
+            message:
+              sourceKind === 'folder' && collectionMode === 'split-by-folder'
+                ? `Imported files but failed to create and assign split collections: ${getErrorMessage(assignmentError)}`
+                : shouldPreserveStructure
+                  ? `Imported files but failed to preserve folder structure: ${getErrorMessage(assignmentError)}`
+                  : `Imported files but failed to place them in the selected folder: ${getErrorMessage(assignmentError)}`,
           })
         }
       }
 
       if (result.successful > 0) {
         await refreshSourceQueries()
-        const destinationFolderName = destinationFolderId !== null
-          ? (destinationFolder?.name || destinationFolderMap.get(destinationFolderId)?.name || null)
+        const destinationFolderName = effectiveDestinationFolderId !== null
+          ? (effectiveDestinationFolder?.name || destinationFolderMap.get(effectiveDestinationFolderId)?.name || null)
           : null
-        const assignmentText = destinationFolderName && assignedCount > 0
-          ? usedPreservedStructure
+
+        let assignmentText = ''
+        if (usedCollectionSubdivision && assignedCount > 0) {
+          assignmentText = ` Assigned ${assignedCount} across ${createdCollectionCount} ${createdCollectionCount === 1 ? 'new collection' : 'new collections'}${createdSubfolderCount > 0 ? ` (${createdSubfolderCount} new ${createdSubfolderCount === 1 ? 'folder' : 'folders'} created).` : '.'}`
+        } else if (assignmentCollectionName && assignedCount > 0 && !destinationFolderName) {
+          assignmentText = usedPreservedStructure
+            ? ` Assigned ${assignedCount} into "${assignmentCollectionName}"${createdSubfolderCount > 0 ? ` (${createdSubfolderCount} new ${createdSubfolderCount === 1 ? 'folder' : 'folders'} created).` : '.'}`
+            : ` Assigned ${assignedCount} into "${assignmentCollectionName}".`
+        } else if (destinationFolderName && assignedCount > 0) {
+          assignmentText = usedPreservedStructure
             ? ` Assigned ${assignedCount} into preserved subfolders under "${destinationFolderName}"${createdSubfolderCount > 0 ? ` (${createdSubfolderCount} new ${createdSubfolderCount === 1 ? 'folder' : 'folders'} created).` : '.'}`
             : ` Added ${assignedCount} to "${destinationFolderName}".`
-          : ''
+        }
+
         showToast({
           kind: 'success',
           message: `Imported ${result.successful} ${result.successful === 1 ? 'file' : 'files'}.${assignmentText}`,
@@ -596,6 +698,8 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
       sourceKind,
       structureMode: 'flatten',
       bypassParentFolder: false,
+      collectionMode: 'existing',
+      newCollectionName: null,
     })
   }
 
@@ -644,6 +748,8 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
       sourceKind: request.sourceKind,
       structureMode: choice.structureMode,
       bypassParentFolder: choice.bypassParentFolder,
+      collectionMode: choice.collectionMode,
+      newCollectionName: choice.newCollectionName,
     })
   }
 
@@ -897,22 +1003,43 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
       <div
         ref={menuRef}
         data-preserve-sources-sidebar="true"
+        data-tour="add-source-menu"
         className="fixed z-[290] w-52 rounded-lg border border-surface-border bg-surface-raised p-1.5 shadow-2xl"
         style={{ top: menuPosition.top, left: menuPosition.left }}
       >
-        <button type="button" className={menuItemClassName} onClick={triggerLocalFilesExplorer}>
+        <button
+          type="button"
+          className={menuItemClassName}
+          onClick={triggerLocalFilesExplorer}
+          data-tour="add-source-local-files"
+        >
           <HardDrive size={14} />
           <span>Local files</span>
         </button>
-        <button type="button" className={menuItemClassName} onClick={triggerFolderExplorer}>
+        <button
+          type="button"
+          className={menuItemClassName}
+          onClick={triggerFolderExplorer}
+          data-tour="add-source-folder"
+        >
           <FolderOpen size={14} />
           <span>Folder</span>
         </button>
-        <button type="button" className={menuItemClassName} onClick={() => handleModalOpen('link')}>
+        <button
+          type="button"
+          className={menuItemClassName}
+          onClick={() => handleModalOpen('link')}
+          data-tour="add-source-link"
+        >
           <Link2 size={14} />
           <span>Link</span>
         </button>
-        <button type="button" className={menuItemClassName} onClick={() => handleModalOpen('playlist')}>
+        <button
+          type="button"
+          className={menuItemClassName}
+          onClick={() => handleModalOpen('playlist')}
+          data-tour="add-source-playlist"
+        >
           <ListMusic size={14} />
           <span>Playlist</span>
         </button>
@@ -930,6 +1057,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
       >
         <div
           className="w-full max-w-2xl rounded-xl border border-surface-border bg-surface-raised shadow-2xl"
+          data-tour={activeModal === 'link' ? 'link-import-modal' : 'playlist-import-modal'}
           onClick={(event) => event.stopPropagation()}
         >
           <div className="flex items-center justify-between border-b border-surface-border px-4 py-3">
@@ -958,8 +1086,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
             {activeModal === 'link' && (
               <div className="space-y-3">
                 <div className="rounded-lg border border-surface-border bg-surface-overlay/30 p-3 text-xs text-slate-300 space-y-1">
-                  <div className="font-medium text-white">Features included</div>
-                  <div>Supports YouTube URLs/IDs and playlist links.</div>
+                  <div>Supports URLs/IDs and playlist links.</div>
                   <div>Detects supported streaming links automatically.</div>
                   <div>You can mix supported providers in the same input.</div>
                 </div>
@@ -968,6 +1095,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
                   value={linkText}
                   onChange={(event) => setLinkText(event.target.value)}
                   rows={9}
+                  data-tour="link-import-textarea"
                   placeholder="Paste links here, one per line..."
                   className="w-full rounded-lg border border-surface-border bg-surface-base px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-accent-primary/60"
                 />
@@ -1158,7 +1286,12 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
         folders={destinationFolders as Folder[]}
         collections={destinationCollections as Collection[]}
         isLoading={isDestinationFoldersLoading || isDestinationCollectionsLoading}
-        isSubmitting={importLocalFiles.isPending || batchAddSlicesToFolder.isPending || createFolder.isPending}
+        isSubmitting={
+          importLocalFiles.isPending ||
+          batchAddSlicesToFolder.isPending ||
+          createCollection.isPending ||
+          createFolder.isPending
+        }
         onCancel={handleDestinationPromptCancel}
         onConfirm={handleDestinationPromptConfirm}
       />,
@@ -1180,6 +1313,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
           ref={triggerRef}
           type="button"
           onClick={() => setIsMenuOpen((open) => !open)}
+          data-tour="add-source-button"
           className="w-full min-h-6 px-1.5 py-0.5 text-[12px] rounded-sm transition-colors flex items-center gap-1.5 text-text-secondary hover:text-text-primary hover:bg-surface-overlay"
         >
           <Plus size={14} />
@@ -1190,6 +1324,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
           ref={localFilesInputRef}
           type="file"
           multiple
+          data-tour="add-source-local-files-input"
           accept=".wav,.mp3,.flac,.aiff,.ogg,.m4a"
           onChange={handleLocalFilesChange}
           className="hidden"
@@ -1201,6 +1336,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
           webkitdirectory=""
           directory=""
           multiple
+          data-tour="add-source-folder-input"
           onChange={handleFolderChange}
           className="hidden"
         />

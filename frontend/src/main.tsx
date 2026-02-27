@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { AccessibilityProvider } from './contexts/AccessibilityContext'
 import { DrumRackProvider } from './contexts/DrumRackContext'
 import { ToastProvider } from './contexts/ToastContext'
 import { AppDialogProvider } from './hooks/useAppDialog'
@@ -28,13 +29,15 @@ const queryClient = new QueryClient({
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <DrumRackProvider>
-        <AppDialogProvider>
-          <ToastProvider>
-            <App />
-          </ToastProvider>
-        </AppDialogProvider>
-      </DrumRackProvider>
+      <AccessibilityProvider>
+        <DrumRackProvider>
+          <AppDialogProvider>
+            <ToastProvider>
+              <App />
+            </ToastProvider>
+          </AppDialogProvider>
+        </DrumRackProvider>
+      </AccessibilityProvider>
     </QueryClientProvider>
   </React.StrictMode>,
 )

@@ -1,4 +1,6 @@
 /** @type {import('tailwindcss').Config} */
+const colorWithOpacity = (cssVariable) => `rgb(var(${cssVariable}) / <alpha-value>)`
+
 export default {
   content: [
     "./index.html",
@@ -7,21 +9,21 @@ export default {
   theme: {
     extend: {
       colors: {
-        'surface-base': '#0f1216',
-        'surface-raised': '#151920',
-        'surface-overlay': '#1b2028',
-        'surface-border': '#272d38',
-        'accent-primary': '#5b8def',
-        'accent-secondary': '#22d3ee',
-        'accent-muted': '#6b6578',
-        'accent-warm': '#e8a23a',
-        'accent-warm-dim': '#c47e22',
-        'text-primary': '#f0eef4',
-        'text-secondary': '#9b96a8',
-        'text-muted': '#6b6578',
+        'surface-base': colorWithOpacity('--color-surface-base-rgb'),
+        'surface-raised': colorWithOpacity('--color-surface-raised-rgb'),
+        'surface-overlay': colorWithOpacity('--color-surface-overlay-rgb'),
+        'surface-border': colorWithOpacity('--color-surface-border-rgb'),
+        'accent-primary': colorWithOpacity('--color-accent-primary-rgb'),
+        'accent-secondary': colorWithOpacity('--color-accent-secondary-rgb'),
+        'accent-muted': colorWithOpacity('--color-text-muted-rgb'),
+        'accent-warm': colorWithOpacity('--color-accent-warm-rgb'),
+        'accent-warm-dim': colorWithOpacity('--color-accent-warm-dim-rgb'),
+        'text-primary': colorWithOpacity('--color-text-primary-rgb'),
+        'text-secondary': colorWithOpacity('--color-text-secondary-rgb'),
+        'text-muted': colorWithOpacity('--color-text-muted-rgb'),
       },
       fontFamily: {
-        sans: ['Outfit', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+        sans: ['var(--app-font-family-sans)', 'Outfit', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
         mono: ['JetBrains Mono', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
       },
       backdropBlur: {

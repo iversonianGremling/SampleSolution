@@ -125,7 +125,9 @@ async function reanalyzeAll(options: Options) {
       console.log(`${progress} 🎵 Analyzing: "${slice.name}"`)
 
       // Re-run analysis with specified level
-      const features = await analyzeAudioFeatures(slice.filePath!, options.level)
+      const features = await analyzeAudioFeatures(slice.filePath!, options.level, {
+        filename: slice.name ?? undefined,
+      })
 
       // Update database
       await storeAudioFeatures(slice.id, features)

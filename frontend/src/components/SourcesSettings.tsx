@@ -5,6 +5,11 @@ import { useQuery, useQueryClient, useMutation, useQueries } from '@tanstack/rea
 import { BackupPanel } from './BackupPanel'
 import { useAppDialog } from '../hooks/useAppDialog'
 import {
+  useAccessibility,
+  MIN_FONT_SCALE_PERCENT,
+  MAX_FONT_SCALE_PERCENT,
+} from '../contexts/AccessibilityContext'
+import {
   isDownloadToolsUiVisible,
   isSpotdlIntegrationEnabled,
   SPOTDL_INTEGRATION_EVENT,
@@ -14,10 +19,12 @@ import { formatReanalyzeEtaLabel } from '../utils/reanalyzeEta'
 
 const MAX_REANALYZE_CONCURRENCY = 10
 const DEFAULT_REANALYZE_CONCURRENCY = 2
+const FONT_SCALE_MIDPOINT_PERCENT = Math.round((MIN_FONT_SCALE_PERCENT + MAX_FONT_SCALE_PERCENT) / 2)
 
-// Roughly calibrated from local advanced-analysis benchmarks.
+// Calibrated from local benchmark on 13th Gen Intel Core i9-13900H:
+// 569 samples at 10 processes finished in ~20m at ~80% CPU.
 const REANALYZE_REFERENCE_CPU_THREADS = 20
-const REANALYZE_REFERENCE_PER_SAMPLE_MS = 24_000
+const REANALYZE_REFERENCE_PER_SAMPLE_MS = 19_250
 const REANALYZE_STARTUP_OVERHEAD_MS = 12_000
 const REANALYZE_FILENAME_TAGS_OVERHEAD = 1.08
 const REANALYZE_ESTIMATE_LOW_FACTOR = 0.75
@@ -26,10 +33,21 @@ const REANALYZE_REFERENCE_CORES_PER_WORKER = 1.6
 const REANALYZE_FIRST_WORKER_RAM_GB = 0.65
 const REANALYZE_ADDITIONAL_WORKER_RAM_GB = 0.55
 const REANALYZE_RECOMMENDED_CONCURRENCY_CPU_LOAD_TARGET = 0.85
+const REANALYZE_BENCHMARK_SAMPLE_COUNT = 569
+const REANALYZE_BENCHMARK_DURATION_MS = 20 * 60 * 1000
+const REANALYZE_BENCHMARK_CONCURRENCY = 10
+const REANALYZE_HIGH_PROCESS_WARNING_THRESHOLD = 7
 
 const clampReanalyzeConcurrency = (value: number): number => {
   if (!Number.isFinite(value)) return DEFAULT_REANALYZE_CONCURRENCY
   return Math.min(MAX_REANALYZE_CONCURRENCY, Math.max(1, Math.round(value)))
+}
+
+const detectBrowserCpuThreads = (): number => {
+  if (typeof navigator === 'undefined') return REANALYZE_REFERENCE_CPU_THREADS
+  const rawThreads = Number((navigator as { hardwareConcurrency?: number }).hardwareConcurrency)
+  if (!Number.isFinite(rawThreads) || rawThreads <= 0) return REANALYZE_REFERENCE_CPU_THREADS
+  return Math.max(1, Math.min(128, Math.floor(rawThreads)))
 }
 
 const formatElapsedTime = (elapsedMs: number): string => {
@@ -62,7 +80,7 @@ interface ReanalyzeUsageEstimate {
 }
 
 interface ReanalyzeCpuTierProfile {
-  id: 'i3_ryzen3' | 'i5_ryzen5' | 'i7_ryzen7' | 'workstation_high_end'
+  id: 'i3_ryzen3' | 'i5_ryzen5' | 'i7_ryzen7' | 'i9_ryzen9'
   label: string
   cpuThreads: number
   perThreadPerformanceFactor: number
@@ -96,10 +114,36 @@ const REANALYZE_CPU_TIERS: ReanalyzeCpuTierProfile[] = [
     perThreadPerformanceFactor: 0.95,
   },
   {
-    id: 'workstation_high_end',
-    label: 'AMD Threadripper / Intel Xeon W / Ryzen 9 class (2021-2025)',
-    cpuThreads: 32,
-    perThreadPerformanceFactor: 1.1,
+    id: 'i9_ryzen9',
+    label: 'Intel Core i9 (12th-14th gen, 2021-2025) / AMD Ryzen 9 (5000-9000, 2020-2025)',
+    cpuThreads: 20,
+    perThreadPerformanceFactor: 1,
+  },
+]
+
+const FUTURE_FEATURE_GROUPS: Array<{ title: string; items: string[] }> = [
+  {
+    title: 'Backup and Restore',
+    items: [
+      'Incremental backup jobs that transfer updates to another computer.',
+      'Backup import options to restore as a new collection or replace the full library.',
+      'A safer rollback path for testing and recovery workflows.',
+    ],
+  },
+  {
+    title: 'Library Sync',
+    items: [
+      'Sync mode across connected libraries so all linked machines stay aligned.',
+      'Conflict handling and merge controls for shared library setups.',
+    ],
+  },
+  {
+    title: 'Workflow and Product Expansion',
+    items: [
+      'Playback speed controls for preview and exploration.',
+      'Saving and reusing effect settings/presets.',
+      'A VST version of the app.',
+    ],
   },
 ]
 
@@ -160,8 +204,8 @@ const getCpuTierShortLabel = (tierId: ReanalyzeCpuTierProfile['id']): string => 
       return 'i5 / Ryzen 5'
     case 'i7_ryzen7':
       return 'i7 / Ryzen 7'
-    case 'workstation_high_end':
-      return 'Workstation'
+    case 'i9_ryzen9':
+      return 'i9 / Ryzen 9'
     default:
       return 'CPU tier'
   }
@@ -3603,16 +3647,24 @@ export function SourcesSettings() {
   const [isStoppingReanalyzeRequest, setIsStoppingReanalyzeRequest] = useState(false)
   const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now())
   const [concurrency, setConcurrency] = useState(() => {
+    const detectedThreads = detectBrowserCpuThreads()
+    const cpuDefault = recommendConcurrencyForCpu(MAX_REANALYZE_CONCURRENCY, detectedThreads)
     const saved = localStorage.getItem('analysis-concurrency')
-    const parsed = saved ? Number.parseInt(saved, 10) : DEFAULT_REANALYZE_CONCURRENCY
+    const parsed = saved ? Number.parseInt(saved, 10) : cpuDefault
     return clampReanalyzeConcurrency(parsed)
   })
-  const [allowAiTagging, setAllowAiTagging] = useState(() => {
-    const saved = localStorage.getItem('analysis-ai-tagging')
-    return saved === '1'
-  })
+  const allowAiTagging = true
   const includeFilenameTags = true
   const showDownloadToolsUi = isDownloadToolsUiVisible()
+  const {
+    theme,
+    setTheme,
+    fontScalePercent,
+    setFontScalePercent,
+    fontFamily,
+    setFontFamily,
+    resetAccessibility,
+  } = useAccessibility()
 
   const queryClient = useQueryClient()
   const previousReanalyzeStatusRef = useRef<api.BatchReanalyzeJobState | null>(null)
@@ -3665,6 +3717,7 @@ export function SourcesSettings() {
     return formatReanalyzeEtaLabel({
       isStopping: isStoppingReanalyze,
       startedAt: reanalyzeJobStatus?.startedAt,
+      updatedAt: reanalyzeJobStatus?.updatedAt,
       processed: reanalyzeProcessed,
       total: reanalyzeTotal ?? 0,
       nowMs: elapsedNowMs,
@@ -3672,6 +3725,7 @@ export function SourcesSettings() {
   }, [
     isStoppingReanalyze,
     reanalyzeJobStatus?.startedAt,
+    reanalyzeJobStatus?.updatedAt,
     reanalyzeProcessed,
     reanalyzeTotal,
     elapsedNowMs,
@@ -3680,18 +3734,56 @@ export function SourcesSettings() {
   const projectionSampleCount = typeof librarySampleCount === 'number'
     ? librarySampleCount
     : Math.max(1, concurrency)
+  const detectedCpuThreads = useMemo(() => detectBrowserCpuThreads(), [])
+  const recommendedConcurrencyByDetectedCpu = useMemo(
+    () => recommendConcurrencyForCpu(projectionSampleCount, detectedCpuThreads),
+    [projectionSampleCount, detectedCpuThreads],
+  )
+  const detectedCpuUsage = useMemo(
+    () => estimateReanalyzeUsage(Math.max(1, Math.min(concurrency, projectionSampleCount)), detectedCpuThreads),
+    [concurrency, projectionSampleCount, detectedCpuThreads],
+  )
   const tierProjections = useMemo(
     () => buildTierProjections(projectionSampleCount, concurrency, includeFilenameTags),
     [projectionSampleCount, concurrency, includeFilenameTags],
   )
-  const isHighSystemPressure = tierProjections.some(
-    (projection) => projection.usage.level === 'high' || projection.usage.level === 'extreme',
+  const i3Projection = tierProjections.find((projection) => projection.tier.id === 'i3_ryzen3')
+  const i5Projection = tierProjections.find((projection) => projection.tier.id === 'i5_ryzen5')
+  const i7Projection = tierProjections.find((projection) => projection.tier.id === 'i7_ryzen7')
+  const i9Projection = tierProjections.find((projection) => projection.tier.id === 'i9_ryzen9')
+  const isHighSystemPressure = (
+    detectedCpuUsage.level === 'high' ||
+    detectedCpuUsage.level === 'extreme' ||
+    tierProjections.some((projection) => projection.usage.level === 'high' || projection.usage.level === 'extreme')
   )
   const analysisDetailNotes = useMemo(() => {
     const notes: string[] = []
+    notes.push(
+      `Reference baseline: ${formatSampleCountLabel(REANALYZE_BENCHMARK_SAMPLE_COUNT)} takes about ${formatElapsedTime(REANALYZE_BENCHMARK_DURATION_MS)} at ${formatProcessCountLabel(REANALYZE_BENCHMARK_CONCURRENCY)} on a high-end i9-class CPU.`,
+    )
+
+    if (recommendedConcurrencyByDetectedCpu !== concurrency) {
+      notes.push(
+        `Detected CPU capacity recommends ${formatProcessCountLabel(recommendedConcurrencyByDetectedCpu)}.`,
+      )
+    }
+
+    const comparisonTiers = [i3Projection, i5Projection, i7Projection, i9Projection]
+      .filter((projection): projection is ReanalyzeTierProjection => Boolean(projection))
+      .map((projection) => `${getCpuTierShortLabel(projection.tier.id)} ~ ${formatEstimateRange(projection.runtime)}`)
+    if (comparisonTiers.length > 0) {
+      notes.push(`Approximate same-run timing on other CPUs: ${comparisonTiers.join(' | ')}.`)
+    }
+
     const highPressureTiers = tierProjections
       .filter((projection) => projection.usage.level === 'high' || projection.usage.level === 'extreme')
       .map((projection) => getCpuTierShortLabel(projection.tier.id))
+
+    if (detectedCpuUsage.level === 'high' || detectedCpuUsage.level === 'extreme') {
+      notes.push(
+        `Detected CPU load estimate at ${formatProcessCountLabel(concurrency)}: ${Math.round(detectedCpuUsage.cpuLoadPercent)}% CPU and ${detectedCpuUsage.estimatedRamGb.toFixed(1)} GB RAM.`,
+      )
+    }
 
     if (highPressureTiers.length > 0) {
       const tierList = highPressureTiers.length === 1
@@ -3707,17 +3799,30 @@ export function SourcesSettings() {
     if (typeof librarySampleCount !== 'number') {
       notes.push('Runtime estimates stay approximate until the full library sample count finishes loading.')
     }
+    notes.push('These are generous estimates. Higher process settings might still work on some systems, but increase carefully.')
 
     return notes
-  }, [tierProjections, concurrency, librarySampleCount])
+  }, [
+    detectedCpuUsage.level,
+    detectedCpuUsage.cpuLoadPercent,
+    detectedCpuUsage.estimatedRamGb,
+    recommendedConcurrencyByDetectedCpu,
+    i3Projection,
+    i5Projection,
+    i7Projection,
+    i9Projection,
+    tierProjections,
+    concurrency,
+    librarySampleCount,
+  ])
 
   useEffect(() => {
     localStorage.setItem('analysis-concurrency', String(concurrency))
   }, [concurrency])
 
   useEffect(() => {
-    localStorage.setItem('analysis-ai-tagging', allowAiTagging ? '1' : '0')
-  }, [allowAiTagging])
+    localStorage.setItem('analysis-ai-tagging', '1')
+  }, [])
 
   useEffect(() => {
     if (!isReanalyzing) return
@@ -3789,10 +3894,9 @@ export function SourcesSettings() {
       title: 'Re-analyze All Samples',
       message: [
         `This will re-analyze ${sampleCountMessage} with ${formatProcessCountLabel(safeConcurrency)}.`,
-        allowAiTagging
-          ? 'AI instrument review via Ollama is enabled and can be very slow.'
-          : 'AI instrument review via Ollama is disabled; fallback instrument labeling will be used.',
-        'Lower end processors might have trouble executing this.',
+        safeConcurrency >= REANALYZE_HIGH_PROCESS_WARNING_THRESHOLD
+          ? 'High process counts can put strain on lower-end CPUs. If the app gets sluggish, reduce parallelism by 1-2.'
+          : '',
         'Continue?',
       ]
         .filter(Boolean)
@@ -3839,9 +3943,96 @@ export function SourcesSettings() {
   }
 
   return (
-    <div className="max-w-4xl px-3 md:px-4 md:py-5">
+    <div className="max-w-4xl px-3 md:px-4 md:py-5" data-tour="settings-panel">
       <div className="space-y-4">
-        <div>
+        <div data-tour="settings-accessibility-section">
+          <h3 className="text-base font-medium text-white mb-2">Accessibility</h3>
+          <div className="bg-surface-raised rounded-lg p-4 md:p-5 space-y-3">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg border border-surface-border bg-surface-base/70 p-3">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Theme
+                </div>
+                <div className="mt-2 inline-flex rounded-md border border-surface-border bg-surface-base overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setTheme('dark')}
+                    className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                      theme === 'dark'
+                        ? 'bg-accent-primary text-white'
+                        : 'text-slate-300 hover:bg-surface-overlay'
+                    }`}
+                  >
+                    Dark
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTheme('light')}
+                    className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                      theme === 'light'
+                        ? 'bg-surface-border text-slate-900'
+                        : 'text-slate-300 hover:bg-surface-overlay'
+                    }`}
+                  >
+                    Light
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-surface-border bg-surface-base/70 p-3">
+                <label className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Font
+                </label>
+                <select
+                  value={fontFamily}
+                  onChange={(event) =>
+                    setFontFamily(event.target.value === 'open-dyslexic' ? 'open-dyslexic' : 'default')}
+                  className="mt-2 w-full rounded-md border border-surface-border bg-surface-base px-3 py-2 text-xs text-white focus:outline-none focus:border-accent-primary"
+                >
+                  <option value="default">Outfit (Default)</option>
+                  <option value="open-dyslexic">OpenDyslexic</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-surface-border bg-surface-base/70 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Font Size
+                </label>
+                <span className="text-[11px] font-mono text-slate-200">
+                  {fontScalePercent}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={MIN_FONT_SCALE_PERCENT}
+                max={MAX_FONT_SCALE_PERCENT}
+                step={1}
+                value={fontScalePercent}
+                onChange={(event) => setFontScalePercent(Number.parseInt(event.target.value, 10))}
+                className="mt-2 h-1 w-full accent-accent-primary"
+              />
+              <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+                <span>{MIN_FONT_SCALE_PERCENT}%</span>
+                <span>{FONT_SCALE_MIDPOINT_PERCENT}%</span>
+                <span>{MAX_FONT_SCALE_PERCENT}%</span>
+              </div>
+            </div>
+
+            <div>
+              <button
+                type="button"
+                onClick={resetAccessibility}
+                className="inline-flex items-center gap-2 rounded-md border border-surface-border bg-surface-base px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-surface-overlay"
+              >
+                Reset accessibility defaults
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div data-tour="settings-audio-analysis-section">
           <h3 className="text-base font-medium text-white mb-2">Audio Analysis</h3>
           <div className="bg-surface-raised rounded-lg p-4 md:p-5 space-y-3">
             <div className="flex flex-wrap items-start justify-between gap-2">
@@ -3886,20 +4077,10 @@ export function SourcesSettings() {
                 <span>7</span>
                 <span>10</span>
               </div>
+              <div className="mt-1 text-[10px] text-slate-400">
+                Detected CPU threads: ~{detectedCpuThreads}. Recommended: {formatProcessCountLabel(recommendedConcurrencyByDetectedCpu)}.
+              </div>
             </div>
-
-            <label className="flex items-start gap-2 rounded-lg border border-surface-border bg-surface-base/70 px-3 py-2.5 text-xs text-slate-300">
-              <input
-                type="checkbox"
-                checked={allowAiTagging}
-                onChange={(e) => setAllowAiTagging(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-surface-border bg-surface-base text-accent-primary focus:ring-accent-primary/40"
-                disabled={isReanalyzing}
-              />
-              <span>
-                Advanced semantic/tag analysis with AI (VERY slow but more accurate)
-              </span>
-            </label>
 
             <div
               className={`rounded-lg border p-2.5 ${
@@ -3915,14 +4096,21 @@ export function SourcesSettings() {
                 />
                 <span className={isHighSystemPressure ? 'text-[10px] text-amber-300' : 'text-[10px] text-slate-300'}>
                   {isHighSystemPressure
-                    ? 'High system pressure likely at this setting.'
-                    : 'Estimated runtime and load by CPU tier.'}
+                    ? 'High system pressure likely. Check i3/i5/i7 estimates below.'
+                    : 'Estimated runtime and load from calibrated i9 baseline, projected to i3/i5/i7.'}
                 </span>
               </div>
 
               {typeof librarySampleCount === 'number' ? (
                 <div className="grid gap-1.5 sm:grid-cols-2">
-                  {tierProjections.map((projection) => (
+                  {tierProjections
+                    .filter((projection) => (
+                      projection.tier.id === 'i3_ryzen3' ||
+                      projection.tier.id === 'i5_ryzen5' ||
+                      projection.tier.id === 'i7_ryzen7' ||
+                      projection.tier.id === 'i9_ryzen9'
+                    ))
+                    .map((projection) => (
                     <div
                       key={projection.tier.id}
                       className="rounded-md border border-surface-border bg-surface-base/80 p-2"
@@ -4102,10 +4290,31 @@ export function SourcesSettings() {
           </div>
         )}
 
-        <div>
-          <h3 className="text-lg font-medium text-white mb-4">Manage Backups</h3>
+        <div data-tour="settings-backup-section">
+          <h3 className="text-lg font-medium text-white mb-4">Manage Backups (Currently experimental)</h3>
           <div className="bg-surface-raised rounded-lg p-6">
             <ManageBackupsSection />
+          </div>
+        </div>
+
+        <div data-tour="settings-future-features">
+          <h3 className="text-lg font-medium text-white mb-4">Future Features</h3>
+          <div className="bg-surface-raised rounded-lg p-6 space-y-4">
+            <p className="text-sm text-slate-400">
+              Roadmap ideas currently tracked for upcoming versions.
+            </p>
+
+            {FUTURE_FEATURE_GROUPS.map((group) => (
+              <div key={group.title} className="rounded-lg border border-surface-border bg-surface-base/60 p-4">
+                <h4 className="text-sm font-medium text-white mb-2">{group.title}</h4>
+                <ul className="space-y-1 text-xs text-slate-300">
+                  {group.items.map((item) => (
+                    <li key={item}>• {item}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+
           </div>
         </div>
       </div>

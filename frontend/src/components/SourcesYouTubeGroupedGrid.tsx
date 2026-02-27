@@ -119,6 +119,7 @@ export function SourcesYouTubeGroupedGrid({
   const [useWindowScroll, setUseWindowScroll] = useState(false)
   const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null)
   const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hasGridContent = !isLoading && samples.length > 0
 
   const preparePlaybackForSample = (sample: SliceWithTrackExtended) =>
     prepareSamplePreviewPlayback(sample, tuneTargetNote)
@@ -197,7 +198,7 @@ export function SourcesYouTubeGroupedGrid({
         resizeObserver.disconnect()
       }
     }
-  }, [])
+  }, [hasGridContent])
 
   useEffect(() => {
     const root = rootRef.current
@@ -223,7 +224,7 @@ export function SourcesYouTubeGroupedGrid({
     return () => {
       observer.disconnect()
     }
-  }, [])
+  }, [hasGridContent])
 
   useEffect(() => {
     let frameId: number | null = null
@@ -863,7 +864,7 @@ export function SourcesYouTubeGroupedGrid({
                           } ${isDragging ? 'opacity-50' : ''}`}
                         >
                           {/* YouTube thumbnail as background */}
-                          <div className="aspect-[4/3] relative flex items-center justify-center overflow-hidden rounded-t-lg bg-gradient-to-br from-slate-700/60 via-slate-800/70 to-slate-950/90">
+                          <div className="aspect-[4/3] relative flex items-center justify-center overflow-hidden rounded-t-lg bg-gradient-to-br from-fuchsia-500/35 via-cyan-400/30 to-amber-300/30">
                             {group.thumbnailUrl && (
                               <img
                                 src={group.thumbnailUrl}

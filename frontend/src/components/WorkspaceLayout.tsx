@@ -49,7 +49,6 @@ export function WorkspaceLayout({
   const [isSourcesLoading, setIsSourcesLoading] = useState(false)
   const [viewportWidth, setViewportWidth] = useState(() => getViewportWidth())
   const lastNotifiedSampleIdRef = useRef<number | null>(null)
-  const previousShowRightPanelRef = useRef<boolean | null>(null)
   const [bulkRenameRules, setBulkRenameRules] = useState<BulkRenameRules>(() => ({
     ...DEFAULT_BULK_RENAME_RULES,
     filterText: '',
@@ -84,9 +83,7 @@ export function WorkspaceLayout({
   const hasSelectedSample = workspaceState?.selectedSample !== null
   const shouldShowPanel = isBulkRenameMode || activeTab !== 'details' || hasSelectedSample
   const showRightPanel = isBulkRenameMode ? true : shouldShowPanel && !isPanelHidden
-  const panelVisibilityChangedThisRender =
-    previousShowRightPanelRef.current !== null && previousShowRightPanelRef.current !== showRightPanel
-  const shouldAnimate = !horizontal.isDragging && !panelVisibilityChangedThisRender
+  const shouldAnimate = !horizontal.isDragging
   const shouldReserveToggleGutter = !isBulkRenameMode && shouldShowPanel
 
   useEffect(() => {
@@ -94,10 +91,6 @@ export function WorkspaceLayout({
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
-
-  useEffect(() => {
-    previousShowRightPanelRef.current = showRightPanel
-  }, [showRightPanel])
 
   useEffect(() => {
     // Keep room for panel controls by collapsing labels on narrower viewports.
@@ -164,6 +157,7 @@ export function WorkspaceLayout({
     <div className="h-full flex overflow-hidden bg-surface-base">
       <div
         className={shouldAnimate ? 'panel-animate' : ''}
+        data-tour="sources-panel"
         style={{
           width: showRightPanel ? horizontal.size : '100%',
           minWidth: showRightPanel ? sourcesPanelMinWidth : 0,
@@ -193,9 +187,11 @@ export function WorkspaceLayout({
         {!isBulkRenameMode && shouldShowPanel && (
           <button
             onClick={showRightPanel ? handleClosePanel : handleShowPanel}
+            data-tour="workspace-right-panel-toggle"
             className={`absolute inset-y-0 right-0 border-l border-surface-border bg-surface-overlay flex items-center justify-center transition-colors hover:bg-surface-border/80 z-10 ${showNotification ? 'chevron-notify' : ''}`}
             style={{ width: panelToggleWidth }}
             title={showRightPanel ? "Close panel" : "Show panel"}
+            aria-label={showRightPanel ? 'Close panel' : 'Show panel'}
           >
             <ChevronLeft
               size={12}
@@ -218,6 +214,7 @@ export function WorkspaceLayout({
 
           {/* Main right-side workspace */}
           <div
+            data-tour="workspace-right-panel"
             className="relative flex-1 min-w-0 flex flex-col overflow-hidden"
             style={{ minWidth: sidePanelMinWidth }}
           >
@@ -232,9 +229,10 @@ export function WorkspaceLayout({
             ) : (
               <>
                 <div className="border-b border-surface-border bg-surface-raised px-2 flex items-center justify-end">
-                  <div className="flex items-center gap-0.5">
+                  <div className="flex items-center gap-0.5" data-tour="workspace-tabs">
                     <button
                       onClick={() => setActiveTab('details')}
+                      data-tour="workspace-tab-details"
                       className={`relative inline-flex items-center gap-1.5 px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
                         activeTab === 'details'
                           ? 'text-text-primary'
@@ -250,6 +248,7 @@ export function WorkspaceLayout({
                     </button>
                     <button
                       onClick={() => setActiveTab('rack')}
+                      data-tour="workspace-tab-rack"
                       className={`relative inline-flex items-center gap-1.5 px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
                         activeTab === 'rack'
                           ? 'text-accent-primary'
@@ -265,9 +264,10 @@ export function WorkspaceLayout({
                     </button>
                     <button
                       onClick={() => setActiveTab('lab')}
+                      data-tour="workspace-tab-lab"
                       className={`relative inline-flex items-center gap-1.5 px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
                         activeTab === 'lab'
-                          ? 'text-cyan-300'
+                          ? 'text-accent-secondary'
                           : 'text-text-muted hover:text-text-secondary'
                       }`}
                       title="Lab"
@@ -275,7 +275,7 @@ export function WorkspaceLayout({
                       <FlaskConical size={12} />
                       {!showIconOnlyTabs && <span>Lab</span>}
                       {activeTab === 'lab' && (
-                        <span className="absolute bottom-0 left-2 right-2 h-[2px] bg-cyan-400/50 rounded-t-full" />
+                        <span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent-secondary/60 rounded-t-full" />
                       )}
                     </button>
                   </div>

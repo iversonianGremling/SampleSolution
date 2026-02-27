@@ -592,6 +592,29 @@ type LocalFileWithPath = File & {
   webkitRelativePath?: string
 }
 
+function resolveElectronReferenceImportPayload(files: File[]): {
+  referencePaths: string[]
+  relativePaths: string[]
+} | null {
+  if (typeof window === 'undefined' || !window.electron?.isElectron) {
+    return null
+  }
+
+  const referencePaths: string[] = []
+  const relativePaths: string[] = []
+
+  for (const file of files) {
+    const localFile = file as LocalFileWithPath
+    const rawPath = typeof localFile.path === 'string' ? localFile.path.trim() : ''
+    if (!rawPath) return null
+    referencePaths.push(rawPath)
+    relativePaths.push(localFile.webkitRelativePath || '')
+  }
+
+  if (referencePaths.length === 0) return null
+  return { referencePaths, relativePaths }
+}
+
 export const importLocalFile = async (
   file: File,
   importType?: 'sample' | 'track',
@@ -599,17 +622,27 @@ export const importLocalFile = async (
   _allowAiTagging?: boolean,
 ): Promise<LocalImportResult> => {
   const resolvedImportType = importType ?? 'sample'
-  const formData = new FormData()
   const localFile = file as LocalFileWithPath
+  const referencePayload = resolveElectronReferenceImportPayload([file])
+  const params = new URLSearchParams()
+  params.append('importType', resolvedImportType)
+  if (analysisLevel) params.append('analysisLevel', analysisLevel)
+  const url = `/import/file${params.toString() ? `?${params.toString()}` : ''}`
+
+  if (referencePayload) {
+    const response = await api.post<LocalImportResult>(url, {
+      absolutePath: referencePayload.referencePaths[0],
+      relativePath: referencePayload.relativePaths[0] || localFile.webkitRelativePath || '',
+    })
+    return response.data
+  }
+
+  const formData = new FormData()
   formData.append('file', file)
   formData.append('relativePath', localFile.webkitRelativePath || '')
   if (typeof localFile.path === 'string' && localFile.path.trim()) {
     formData.append('absolutePath', localFile.path)
   }
-  const params = new URLSearchParams()
-  params.append('importType', resolvedImportType)
-  if (analysisLevel) params.append('analysisLevel', analysisLevel)
-  const url = `/import/file${params.toString() ? `?${params.toString()}` : ''}`
   const response = await api.post<LocalImportResult>(url, formData)
   return response.data
 }
@@ -629,18 +662,32 @@ export const importLocalFiles = async (
     totalFiles: files.length,
   })
 
-  const formData = new FormData()
-  files.forEach((file) => {
-    const localFile = file as LocalFileWithPath
-    formData.append('files', file)
-    formData.append('relativePaths', localFile.webkitRelativePath || '')
-    formData.append('absolutePaths', typeof localFile.path === 'string' ? localFile.path : '')
-  })
   const params = new URLSearchParams()
   params.append('importType', resolvedImportType)
   if (analysisLevel) params.append('analysisLevel', analysisLevel)
   const url = `/import/files${params.toString() ? `?${params.toString()}` : ''}`
+  const referencePayload = resolveElectronReferenceImportPayload(files)
+
   try {
+    if (referencePayload) {
+      progress.markProcessing()
+      const response = await api.post<BatchImportResult>(url, referencePayload)
+      progress.complete({
+        total: response.data.total,
+        successful: response.data.successful,
+        failed: response.data.failed,
+      })
+      return response.data
+    }
+
+    const formData = new FormData()
+    files.forEach((file) => {
+      const localFile = file as LocalFileWithPath
+      formData.append('files', file)
+      formData.append('relativePaths', localFile.webkitRelativePath || '')
+      formData.append('absolutePaths', typeof localFile.path === 'string' ? localFile.path : '')
+    })
+
     const response = await api.post<BatchImportResult>(url, formData, {
       onUploadProgress: (event) => {
         if (!event || typeof event.loaded !== 'number') return

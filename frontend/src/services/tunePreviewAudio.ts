@@ -18,6 +18,10 @@ interface TunePreviewOptions {
    */
   maxRenderSeconds?: number
   /**
+   * Render the full decoded sample duration (no preview trim cap).
+   */
+  renderFullSample?: boolean
+  /**
    * Keep HQ algorithm for very short clips if needed. Defaults to false for UI responsiveness.
    */
   allowHqPreview?: boolean
@@ -226,8 +230,17 @@ export const prepareTunePreviewPlayback = async (
 
   const sourceBuffer = await getDecodedSampleBuffer(sampleId, sourceUrl)
   const defaultMaxSeconds = mode === 'hq' ? HQ_PREVIEW_MAX_SECONDS : GRANULAR_PREVIEW_MAX_SECONDS
-  const maxRenderSeconds = clamp(options.maxRenderSeconds ?? defaultMaxSeconds, 0.1, 60)
-  const trimmedSource = trimAudioBuffer(sourceBuffer, maxRenderSeconds)
+  const shouldRenderFullSample = options.renderFullSample === true
+  const maxRenderSeconds = shouldRenderFullSample
+    ? sourceBuffer.duration
+    : clamp(
+        options.maxRenderSeconds ?? defaultMaxSeconds,
+        0.1,
+        Math.max(0.1, sourceBuffer.duration)
+      )
+  const trimmedSource = shouldRenderFullSample
+    ? sourceBuffer
+    : trimAudioBuffer(sourceBuffer, maxRenderSeconds)
 
   // HQ is significantly heavier and can freeze interaction during preview generation.
   // For responsive UI previews we default to granular unless explicitly enabled.
@@ -235,7 +248,8 @@ export const prepareTunePreviewPlayback = async (
     mode === 'hq' && !options.allowHqPreview ? 'granular' : mode
 
   const preserveFormants = Boolean(options.preserveFormants)
-  const renderKey = `${sampleId}|${mode}|${effectiveMode}|${maxRenderSeconds}|${semitoneKey(safeSemitones)}|${preserveFormants ? 'formants' : 'raw'}`
+  const renderLengthKey = shouldRenderFullSample ? 'full' : maxRenderSeconds
+  const renderKey = `${sampleId}|${mode}|${effectiveMode}|${renderLengthKey}|${semitoneKey(safeSemitones)}|${preserveFormants ? 'formants' : 'raw'}`
   const immediateFallback = options.immediateFallbackToTape ?? true
   const readyRendered = renderedPreviewReadyCache.get(renderKey)
   if (readyRendered) {

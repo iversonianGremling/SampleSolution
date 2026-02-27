@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import './assets/fonts/opendyslexic/opendyslexic.css';
 
 @tailwind base;
 @tailwind components;
@@ -6,17 +7,56 @@
 
 @layer base {
   :root {
-    --color-surface-base: #0f1216;
-    --color-surface-raised: #151920;
-    --color-surface-overlay: #1b2028;
-    --color-surface-border: #272d38;
-    --color-accent-primary: #5b8def;
-    --color-accent-secondary: #22d3ee;
-    --color-accent-warm: #e8a23a;
-    --color-accent-warm-dim: #c47e22;
-    --color-text-primary: #f0eef4;
-    --color-text-secondary: #9b96a8;
-    --color-text-muted: #6b6578;
+    --color-surface-base-rgb: 15 18 22;
+    --color-surface-raised-rgb: 21 25 32;
+    --color-surface-overlay-rgb: 27 32 40;
+    --color-surface-border-rgb: 39 45 56;
+    --color-accent-primary-rgb: 91 141 239;
+    --color-accent-secondary-rgb: 34 211 238;
+    --color-accent-warm-rgb: 232 162 58;
+    --color-accent-warm-dim-rgb: 196 126 34;
+    --color-text-primary-rgb: 240 238 244;
+    --color-text-secondary-rgb: 155 150 168;
+    --color-text-muted-rgb: 107 101 120;
+    --color-scrollbar-track-rgb: 37 34 41;
+    --color-scrollbar-thumb-rgb: 91 141 239;
+
+    --color-surface-base: rgb(var(--color-surface-base-rgb));
+    --color-surface-raised: rgb(var(--color-surface-raised-rgb));
+    --color-surface-overlay: rgb(var(--color-surface-overlay-rgb));
+    --color-surface-border: rgb(var(--color-surface-border-rgb));
+    --color-accent-primary: rgb(var(--color-accent-primary-rgb));
+    --color-accent-secondary: rgb(var(--color-accent-secondary-rgb));
+    --color-accent-warm: rgb(var(--color-accent-warm-rgb));
+    --color-accent-warm-dim: rgb(var(--color-accent-warm-dim-rgb));
+    --color-text-primary: rgb(var(--color-text-primary-rgb));
+    --color-text-secondary: rgb(var(--color-text-secondary-rgb));
+    --color-text-muted: rgb(var(--color-text-muted-rgb));
+
+    --app-font-family-sans: 'Outfit', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --app-font-scale-factor: 1;
+    color-scheme: dark;
+  }
+
+  :root[data-theme='light'] {
+    --color-surface-base-rgb: 255 255 255;
+    --color-surface-raised-rgb: 255 255 255;
+    --color-surface-overlay-rgb: 248 251 255;
+    --color-surface-border-rgb: 209 219 232;
+    --color-accent-primary-rgb: 45 98 194;
+    --color-accent-secondary-rgb: 12 137 175;
+    --color-accent-warm-rgb: 242 145 43;
+    --color-accent-warm-dim-rgb: 214 118 24;
+    --color-text-primary-rgb: 15 23 42;
+    --color-text-secondary-rgb: 51 65 85;
+    --color-text-muted-rgb: 100 116 139;
+    --color-scrollbar-track-rgb: 236 241 247;
+    --color-scrollbar-thumb-rgb: 125 141 162;
+    color-scheme: light;
+  }
+
+  :root[data-font-family='open-dyslexic'] {
+    --app-font-family-sans: 'OpenDyslexic', 'Open Dyslexic', 'OpenDyslexicAlta', system-ui, sans-serif;
   }
 
   html {
@@ -33,7 +73,7 @@
   body {
     @apply bg-surface-base antialiased;
     color: var(--color-text-primary);
-    font-family: 'Outfit', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: var(--app-font-family-sans);
     font-feature-settings: 'cv02', 'cv03', 'cv04';
   }
 }
@@ -45,17 +85,17 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(37, 34, 41, 0.3);
+  background: rgb(var(--color-scrollbar-track-rgb) / 0.3);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(91, 141, 239, 0.35);
+  background: rgb(var(--color-scrollbar-thumb-rgb) / 0.35);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(91, 141, 239, 0.6);
+  background: rgb(var(--color-scrollbar-thumb-rgb) / 0.6);
 }
 
 @layer components {
@@ -180,7 +220,7 @@
   }
 
   .font-vst {
-    font-family: 'Outfit', system-ui, sans-serif;
+    font-family: var(--app-font-family-sans);
   }
 
   .font-vst-mono {
@@ -368,4 +408,249 @@
     opacity: 1;
     transform: translateX(0) scale(1);
   }
+}
+
+/* ─── Guided Tour (Driver.js) ─────────────────────────── */
+
+.driver-popover.app-tour-popover {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-surface-border);
+  border-radius: 10px;
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.45);
+  color: var(--color-text-primary);
+}
+
+.driver-popover.app-tour-popover .driver-popover-title {
+  color: var(--color-text-primary);
+}
+
+.driver-popover.app-tour-popover .driver-popover-description {
+  color: var(--color-text-secondary);
+}
+
+.driver-popover.app-tour-popover .driver-popover-progress-text {
+  color: var(--color-text-muted);
+}
+
+.driver-popover.app-tour-popover .driver-popover-close-btn {
+  color: var(--color-text-muted);
+}
+
+.driver-popover.app-tour-popover .driver-popover-close-btn:hover,
+.driver-popover.app-tour-popover .driver-popover-close-btn:focus {
+  color: var(--color-text-primary);
+}
+
+.driver-popover.app-tour-popover .driver-popover-footer button {
+  border: 1px solid var(--color-surface-border);
+  border-radius: 6px;
+  background: var(--color-surface-overlay);
+  color: var(--color-text-secondary);
+  text-shadow: none;
+}
+
+.driver-popover.app-tour-popover .driver-popover-footer button:hover,
+.driver-popover.app-tour-popover .driver-popover-footer button:focus {
+  background: rgba(91, 141, 239, 0.15);
+  border-color: rgba(91, 141, 239, 0.45);
+  color: var(--color-text-primary);
+}
+
+.driver-popover.app-tour-popover .driver-popover-next-btn {
+  background: rgba(91, 141, 239, 0.2);
+  border-color: rgba(91, 141, 239, 0.55);
+  color: var(--color-text-primary);
+}
+
+.driver-popover-arrow {
+  border-color: var(--color-surface-raised);
+}
+
+/* ─── Accessibility Font Scale Support ───────────────── */
+
+.text-\[8px\] {
+  font-size: calc(8px * var(--app-font-scale-factor));
+}
+
+.text-\[9px\] {
+  font-size: calc(9px * var(--app-font-scale-factor));
+}
+
+.text-\[10px\] {
+  font-size: calc(10px * var(--app-font-scale-factor));
+}
+
+.text-\[11px\] {
+  font-size: calc(11px * var(--app-font-scale-factor));
+}
+
+.text-\[12px\] {
+  font-size: calc(12px * var(--app-font-scale-factor));
+}
+
+.text-\[13px\] {
+  font-size: calc(13px * var(--app-font-scale-factor));
+}
+
+/* ─── Light Theme Compatibility ───────────────────────── */
+
+:root[data-theme='light'] .text-white {
+  color: rgb(15 23 42) !important;
+}
+
+:root[data-theme='light'] .text-slate-100 {
+  color: rgb(30 41 59) !important;
+}
+
+:root[data-theme='light'] .text-slate-200 {
+  color: rgb(51 65 85) !important;
+}
+
+:root[data-theme='light'] .text-slate-300 {
+  color: rgb(71 85 105) !important;
+}
+
+:root[data-theme='light'] .text-slate-400 {
+  color: rgb(100 116 139) !important;
+}
+
+:root[data-theme='light'] .text-slate-500 {
+  color: rgb(116 134 158) !important;
+}
+
+:root[data-theme='light'] .text-slate-600 {
+  color: rgb(100 116 139) !important;
+}
+
+:root[data-theme='light'] .text-gray-200 {
+  color: rgb(71 85 105) !important;
+}
+
+:root[data-theme='light'] .text-gray-300 {
+  color: rgb(71 85 105) !important;
+}
+
+:root[data-theme='light'] .text-gray-400 {
+  color: rgb(100 116 139) !important;
+}
+
+:root[data-theme='light'] .text-gray-500 {
+  color: rgb(116 134 158) !important;
+}
+
+:root[data-theme='light'] .text-gray-600 {
+  color: rgb(100 116 139) !important;
+}
+
+:root[data-theme='light'] .text-cyan-100,
+:root[data-theme='light'] .text-cyan-200 {
+  color: rgb(14 116 144) !important;
+}
+
+:root[data-theme='light'] .text-cyan-300 {
+  color: rgb(8 115 145) !important;
+}
+
+:root[data-theme='light'] .text-cyan-400 {
+  color: rgb(8 145 178) !important;
+}
+
+:root[data-theme='light'] .bg-gray-900,
+:root[data-theme='light'] .bg-gray-900\/95,
+:root[data-theme='light'] .bg-gray-900\/50,
+:root[data-theme='light'] .bg-slate-900,
+:root[data-theme='light'] .bg-slate-900\/90 {
+  background-color: rgb(255 255 255 / 0.97) !important;
+}
+
+:root[data-theme='light'] .bg-gray-800,
+:root[data-theme='light'] .bg-gray-800\/90,
+:root[data-theme='light'] .bg-gray-800\/80,
+:root[data-theme='light'] .bg-gray-800\/50,
+:root[data-theme='light'] .bg-slate-800\/50 {
+  background-color: rgb(250 252 255 / 0.94) !important;
+}
+
+:root[data-theme='light'] .bg-gray-700,
+:root[data-theme='light'] .bg-gray-700\/90,
+:root[data-theme='light'] .bg-gray-700\/50,
+:root[data-theme='light'] .bg-gray-700\/30,
+:root[data-theme='light'] .bg-slate-700,
+:root[data-theme='light'] .bg-slate-700\/50 {
+  background-color: rgb(244 248 253 / 0.88) !important;
+}
+
+:root[data-theme='light'] .bg-gray-600,
+:root[data-theme='light'] .bg-slate-600,
+:root[data-theme='light'] .bg-slate-500 {
+  background-color: rgb(236 242 249 / 0.8) !important;
+}
+
+:root[data-theme='light'] .bg-slate-400,
+:root[data-theme='light'] .bg-slate-400\/10 {
+  background-color: rgb(223 232 243 / 0.65) !important;
+}
+
+:root[data-theme='light'] .bg-cyan-500\/5,
+:root[data-theme='light'] .bg-cyan-400\/10 {
+  background-color: rgb(8 145 178 / 0.15) !important;
+}
+
+:root[data-theme='light'] .border-gray-700,
+:root[data-theme='light'] .border-gray-600,
+:root[data-theme='light'] .border-gray-600\/50,
+:root[data-theme='light'] .border-slate-700,
+:root[data-theme='light'] .border-slate-600,
+:root[data-theme='light'] .border-slate-500,
+:root[data-theme='light'] .border-slate-500\/20,
+:root[data-theme='light'] .border-slate-400,
+:root[data-theme='light'] .border-slate-400\/60,
+:root[data-theme='light'] .border-slate-400\/40,
+:root[data-theme='light'] .border-slate-400\/30 {
+  border-color: rgb(193 207 223 / 0.65) !important;
+}
+
+:root[data-theme='light'] .border-cyan-500\/25,
+:root[data-theme='light'] .border-cyan-400\/50 {
+  border-color: rgb(8 145 178 / 0.5) !important;
+}
+
+:root[data-theme='light'] .placeholder-slate-500::placeholder,
+:root[data-theme='light'] .placeholder-gray-500::placeholder {
+  color: rgb(116 134 158) !important;
+}
+
+:root[data-theme='light'] .sample-space-info-overlay {
+  background-image: none !important;
+  background-color: rgb(255 255 255 / 0.94) !important;
+  border-top: 1px solid rgb(193 207 223 / 0.9);
+  backdrop-filter: blur(2px);
+}
+
+:root[data-theme='light'] .sample-space-info-overlay .text-slate-500 {
+  color: rgb(71 85 105) !important;
+}
+
+:root[data-theme='light'] .sample-space-info-overlay .text-slate-400 {
+  color: rgb(51 65 85) !important;
+}
+
+:root[data-theme='light'] .sample-space-info-overlay .text-slate-200 {
+  color: rgb(15 23 42) !important;
+}
+
+:root[data-theme='light'] .sample-space-cluster-dot {
+  border: 1px solid rgb(15 23 42 / 0.35);
+}
+
+:root[data-theme='light'] .sample-space-control-btn,
+:root[data-theme='light'] .sample-space-refresh-btn {
+  background-color: rgb(255 255 255 / 0.96) !important;
+  border-color: rgb(193 207 223 / 0.9) !important;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 0.12);
+}
+
+:root[data-theme='light'] .sample-space-control-btn:hover,
+:root[data-theme='light'] .sample-space-refresh-btn:hover {
+  background-color: rgb(248 251 255 / 1) !important;
 }

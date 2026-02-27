@@ -2782,7 +2782,9 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
     })
 
     // Analyze audio with Python (Essentia + Librosa)
-    const features = await analyzeAudioFeatures(audioPath, level)
+    const features = await analyzeAudioFeatures(audioPath, level, {
+      filename: sliceContext[0]?.name ?? undefined,
+    })
     const fileMetadata = await getAudioFileMetadata(audioPath).catch(() => null)
     const enrichedFeatures = {
       ...features,
@@ -2903,6 +2905,110 @@ router.get('/slices/count', async (_req, res) => {
   }
 })
 
+function parseOptionalJson<T>(raw: string | null | undefined): T | null {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+function serializeSliceAudioFeaturesForList(
+  feature: typeof schema.audioFeatures.$inferSelect | undefined
+) {
+  if (!feature) return null
+
+  return {
+    id: feature.id,
+    sliceId: feature.sliceId,
+    duration: feature.duration,
+    sampleRate: feature.sampleRate,
+    channels: feature.channels,
+    fileFormat: feature.fileFormat,
+    sourceMtime: feature.sourceMtime,
+    sourceCtime: feature.sourceCtime,
+    isOneShot: feature.isOneShot === 1,
+    isLoop: feature.isLoop === 1,
+    bpm: feature.bpm,
+    beatsCount: feature.beatsCount,
+    onsetCount: feature.onsetCount,
+    spectralCentroid: feature.spectralCentroid,
+    spectralRolloff: feature.spectralRolloff,
+    spectralBandwidth: feature.spectralBandwidth,
+    spectralContrast: feature.spectralContrast,
+    zeroCrossingRate: feature.zeroCrossingRate,
+    mfccMean: parseOptionalJson<number[]>(feature.mfccMean),
+    rmsEnergy: feature.rmsEnergy,
+    loudness: feature.loudness,
+    dynamicRange: feature.dynamicRange,
+    keyEstimate: feature.keyEstimate,
+    scale: feature.scale,
+    keyStrength: feature.keyStrength,
+    instrumentPredictions: parseOptionalJson<unknown[]>(feature.instrumentPredictions),
+    attackTime: feature.attackTime,
+    spectralFlux: feature.spectralFlux,
+    spectralFlatness: feature.spectralFlatness,
+    kurtosis: feature.kurtosis,
+    dissonance: feature.dissonance,
+    inharmonicity: feature.inharmonicity,
+    tristimulus: parseOptionalJson<number[]>(feature.tristimulus),
+    spectralComplexity: feature.spectralComplexity,
+    spectralCrest: feature.spectralCrest,
+    brightness: feature.brightness,
+    warmth: feature.warmth,
+    hardness: feature.hardness,
+    noisiness: feature.noisiness,
+    roughness: feature.roughness,
+    sharpness: feature.sharpness,
+    melBandsMean: parseOptionalJson<number[]>(feature.melBandsMean),
+    melBandsStd: parseOptionalJson<number[]>(feature.melBandsStd),
+    stereoWidth: feature.stereoWidth,
+    panningCenter: feature.panningCenter,
+    stereoImbalance: feature.stereoImbalance,
+    harmonicPercussiveRatio: feature.harmonicPercussiveRatio,
+    harmonicEnergy: feature.harmonicEnergy,
+    percussiveEnergy: feature.percussiveEnergy,
+    harmonicCentroid: feature.harmonicCentroid,
+    percussiveCentroid: feature.percussiveCentroid,
+    onsetRate: feature.onsetRate,
+    beatStrength: feature.beatStrength,
+    rhythmicRegularity: feature.rhythmicRegularity,
+    danceability: feature.danceability,
+    decayTime: feature.decayTime,
+    sustainLevel: feature.sustainLevel,
+    releaseTime: feature.releaseTime,
+    envelopeType: feature.envelopeType,
+    instrumentClasses: parseOptionalJson<unknown[]>(feature.instrumentClasses),
+    genreClasses: parseOptionalJson<unknown[]>(feature.genreClasses),
+    genrePrimary: feature.genrePrimary,
+    yamnetEmbeddings: parseOptionalJson<number[]>(feature.yamnetEmbeddings),
+    mlEmbeddings: parseOptionalJson<number[]>(feature.mlEmbeddings),
+    mlEmbeddingModel: feature.mlEmbeddingModel,
+    moodClasses: parseOptionalJson<unknown[]>(feature.moodClasses),
+    loudnessIntegrated: feature.loudnessIntegrated,
+    loudnessRange: feature.loudnessRange,
+    loudnessMomentaryMax: feature.loudnessMomentaryMax,
+    truePeak: feature.truePeak,
+    eventCount: feature.eventCount,
+    eventDensity: feature.eventDensity,
+    chromaprintFingerprint: feature.chromaprintFingerprint,
+    similarityHash: feature.similarityHash,
+    instrumentType: feature.instrumentType,
+    temporalCentroid: feature.temporalCentroid,
+    crestFactor: feature.crestFactor,
+    transientSpectralCentroid: feature.transientSpectralCentroid,
+    transientSpectralFlatness: feature.transientSpectralFlatness,
+    sampleTypeConfidence: feature.sampleTypeConfidence,
+    fundamentalFrequency: feature.fundamentalFrequency,
+    polyphony: feature.polyphony,
+    analysisLevel: feature.analysisLevel,
+    analysisVersion: feature.analysisVersion,
+    createdAt: feature.createdAt,
+    analysisDurationMs: feature.analysisDurationMs,
+  }
+}
+
 // Get ALL slices (for Samples browser)
 router.get('/slices', async (_req, res) => {
   try {
@@ -2929,6 +3035,20 @@ router.get('/slices', async (_req, res) => {
 
     // Get tags for all slices
     const sliceIds = slices.map((s) => s.id)
+
+    const audioFeaturesRows =
+      sliceIds.length > 0
+        ? await db
+            .select()
+            .from(schema.audioFeatures)
+            .where(inArray(schema.audioFeatures.sliceId, sliceIds))
+        : []
+
+    const audioFeaturesBySlice = new Map<number, typeof schema.audioFeatures.$inferSelect>()
+    for (const feature of audioFeaturesRows) {
+      audioFeaturesBySlice.set(feature.sliceId, feature)
+    }
+
     const sliceTagsResult =
       sliceIds.length > 0
         ? await db
@@ -2969,6 +3089,7 @@ router.get('/slices', async (_req, res) => {
         tagsBySlice.get(slice.id) || [],
         slice.sampleType
       )
+      const audioFeatures = serializeSliceAudioFeaturesForList(audioFeaturesBySlice.get(slice.id))
 
       return {
       id: slice.id,
@@ -2982,6 +3103,9 @@ router.get('/slices', async (_req, res) => {
       sampleModified: slice.sampleModified === 1,
       sampleModifiedAt: slice.sampleModifiedAt,
       createdAt: slice.createdAt,
+      bpm: audioFeatures?.bpm ?? null,
+      beatsCount: audioFeatures?.beatsCount ?? null,
+      audioFeatures,
       tags: normalizedTags.tags,
       folderIds: foldersBySlice.get(slice.id) || [],
       track: {
@@ -4405,7 +4529,10 @@ async function runBatchReanalyze(options: BatchReanalyzeRunOptions): Promise<Bat
             filename: slice.name ?? null,
           })
 
-          const features = await analyzeAudioFeatures(filePath, 'advanced', { signal })
+          const features = await analyzeAudioFeatures(filePath, 'advanced', {
+            signal,
+            filename: slice.name ?? undefined,
+          })
           const modelEvidenceTags = featuresToTags(features)
           ensureNotCanceled()
 

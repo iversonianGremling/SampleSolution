@@ -118,7 +118,7 @@ export function SourcesDimensionFilter({
   }) || (category === 'space' && (filterState.stereoChannelMode ?? 'all') !== 'all')
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-tour={`filters-dimensions-range-${category}`}>
       {dimensions.map((dimension) => {
         const min = getMinValue(filterState, dimension.minKey)
         const max = getMaxValue(filterState, dimension.maxKey)
@@ -126,8 +126,13 @@ export function SourcesDimensionFilter({
         const prioritizeMinHandle = handlesOverlap && min > 0.5
         const minHandleZIndex = prioritizeMinHandle ? 5 : 3
         const maxHandleZIndex = handlesOverlap && !prioritizeMinHandle ? 5 : 4
+        const dimensionTourSuffix = dimension.label.toLowerCase().replace(/\s+/g, '-')
         return (
-          <div key={dimension.label} className="space-y-1.5">
+          <div
+            key={dimension.label}
+            className="space-y-1.5"
+            data-tour={`filters-dimension-${dimensionTourSuffix}`}
+          >
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-slate-300">{dimension.label}:</span>
               <div className="flex items-center gap-2">
@@ -151,6 +156,7 @@ export function SourcesDimensionFilter({
                 max={1}
                 step={0.01}
                 value={min}
+                data-tour={`filters-dimension-${dimensionTourSuffix}-min`}
                 onChange={(event) =>
                   setRangeValue(
                     dimension.minKey,
@@ -168,6 +174,7 @@ export function SourcesDimensionFilter({
                 max={1}
                 step={0.01}
                 value={max}
+                data-tour={`filters-dimension-${dimensionTourSuffix}-max`}
                 onChange={(event) =>
                   setRangeValue(
                     dimension.minKey,

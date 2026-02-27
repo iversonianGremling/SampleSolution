@@ -239,7 +239,6 @@ export function matchesSampleSearchTerm(
     includesTerm(sample.track.genre, normalizedSearchTerm) ||
     includesTerm(sample.genrePrimary, normalizedSearchTerm)
   const matchesComposer = includesTerm(sample.track.composer, normalizedSearchTerm)
-  const matchesPathText = matchesPath(sample, normalizedSearchTerm)
   const matchesCollectionName = matchesCollection(sample, normalizedSearchTerm, context)
   const effectiveCustomFields = normalizeCustomFields(
     context.customFields?.length ? context.customFields : DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS,
@@ -269,7 +268,6 @@ export function matchesSampleSearchTerm(
         matchesAlbumArtist ||
         matchesGenre ||
         matchesComposer ||
-        matchesPathText ||
         matchesCollectionName
       )
   }

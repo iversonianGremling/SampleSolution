@@ -116,6 +116,7 @@ import {
   readPersistedSetting,
   writePersistedSetting,
 } from '../utils/persistentSettings'
+import { isElectron } from '../utils/platform'
 import {
   applyBulkRenameRules,
   DEFAULT_BULK_RENAME_RULES,
@@ -209,6 +210,7 @@ const LOUDNESS_PRESETS: ReadonlyArray<LoudnessPreset> = [
   { id: 'extreme', label: 'Extreme', min: -6, max: 0 },
 ]
 const SOURCES_VIEW_PREFERENCES_STORAGE_KEY = 'sources-view-preferences-v1'
+const ELECTRON_REFERENCE_DELETE_WARNING_DISMISSED_KEY = 'sources.electron.reference-delete-warning.dismissed'
 const SEARCH_SCOPES = new Set<SampleSearchScope>([
   'all',
   'name',
@@ -281,6 +283,12 @@ function loadSourcesViewPreferences(): SourcesViewPreferences {
       customSearchFields: DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS,
     }
   )
+}
+
+function parseBooleanPersistedSetting(value: string | null): boolean {
+  if (!value) return false
+  const normalized = value.trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
 }
 
 function getViewportWidth(): number {
@@ -508,6 +516,9 @@ export function SourcesView({
   const [isSourcesViewPreferencesReady, setIsSourcesViewPreferencesReady] = useState(
     () => typeof window === 'undefined' || !window.electron?.getSetting
   )
+  const [isElectronReferenceDeleteWarningDismissed, setIsElectronReferenceDeleteWarningDismissed] = useState(() =>
+    parseBooleanPersistedSetting(readPersistedSetting(ELECTRON_REFERENCE_DELETE_WARNING_DISMISSED_KEY))
+  )
   const [selectedSampleIds, setSelectedSampleIds] = useState<Set<number>>(new Set())
   const [showBulkEditModal, setShowBulkEditModal] = useState(false)
   const [isBulkEditSubmitting, setIsBulkEditSubmitting] = useState(false)
@@ -620,6 +631,26 @@ export function SourcesView({
     return () => {
       window.removeEventListener(TUNE_PLAYBACK_MODE_EVENT, handleTunePlaybackModeChanged)
       window.removeEventListener('storage', handleStorage)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.electron?.getSetting) {
+      return
+    }
+
+    let cancelled = false
+
+    const hydrateElectronReferenceDeleteWarningPreference = async () => {
+      const rawValue = await hydratePersistedSettingFromElectron(ELECTRON_REFERENCE_DELETE_WARNING_DISMISSED_KEY)
+      if (cancelled) return
+      setIsElectronReferenceDeleteWarningDismissed(parseBooleanPersistedSetting(rawValue))
+    }
+
+    void hydrateElectronReferenceDeleteWarningPreference()
+
+    return () => {
+      cancelled = true
     }
   }, [])
 
@@ -1871,14 +1902,40 @@ export function SourcesView({
   const handleDeleteSource = (scope: string, label: string) => {
     if (!scope.trim()) return
     void (async () => {
-      const confirmed = await confirm({
-        title: 'Delete Source',
-        message: `Delete ${label}? This will remove its imported tracks and slices from the library.`,
-        confirmText: 'Delete',
-        cancelText: 'Cancel',
-        isDestructive: true,
-      })
+      const isElectronReferenceSourceScope =
+        isElectron() && (scope === 'local' || scope.startsWith('folder:') || scope.startsWith('library:'))
+
+      let skipFutureWarning = false
+      const confirmed = await confirm(
+        isElectronReferenceSourceScope && !isElectronReferenceDeleteWarningDismissed
+          ? {
+              title: 'Delete Source Reference',
+              message:
+                `Delete ${label}? In Electron, this removes imported track references from the library only. ` +
+                'Original files on disk are kept.',
+              confirmText: 'Delete Reference',
+              cancelText: 'Cancel',
+              isDestructive: true,
+              checkboxLabel: "Don't show this again",
+              checkboxDefaultChecked: false,
+              onCheckboxChange: (checked) => {
+                skipFutureWarning = checked
+              },
+            }
+          : {
+              title: 'Delete Source',
+              message: `Delete ${label}? This will remove its imported tracks and slices from the library.`,
+              confirmText: 'Delete',
+              cancelText: 'Cancel',
+              isDestructive: true,
+            },
+      )
       if (!confirmed) return
+
+      if (isElectronReferenceSourceScope && !isElectronReferenceDeleteWarningDismissed && skipFutureWarning) {
+        setIsElectronReferenceDeleteWarningDismissed(true)
+        writePersistedSetting(ELECTRON_REFERENCE_DELETE_WARNING_DISMISSED_KEY, '1')
+      }
 
       try {
         await deleteSource.mutateAsync({ scope })
@@ -3393,6 +3450,7 @@ export function SourcesView({
           <button
             type="button"
             onClick={() => setIsTreeSidebarCollapsed(!isTreeSidebarCollapsed)}
+            data-tour="sources-sidebar-toggle"
             className="absolute inset-y-0 right-0 w-[14px] border-l border-surface-border bg-surface-overlay flex items-center justify-center transition-colors hover:bg-surface-border/80"
             title={isTreeSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
             aria-label={isTreeSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -3471,6 +3529,7 @@ export function SourcesView({
               setIsTreeSidebarTransitioning(false)
               setTreeSidebarTargetOpen(!isTreeSidebarOpen)
             }}
+            data-tour="sources-sidebar-toggle"
             className="absolute inset-y-0 right-0 z-10 w-[14px] border-l border-surface-border bg-surface-overlay flex items-center justify-center transition-colors hover:bg-surface-border/80"
             title={isTreeSidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
             aria-label={isTreeSidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
@@ -3492,14 +3551,18 @@ export function SourcesView({
         }}
       >
         {/* Top controls */}
-        <div className="sticky top-0 z-20 px-3 py-0 border-b border-surface-border bg-surface-raised flex-shrink-0">
+        <div
+          className="sticky top-0 z-20 px-3 py-0 border-b border-surface-border bg-surface-raised flex-shrink-0"
+          data-tour="samples-main-controls"
+        >
           {/* Row 1: search + controls */}
           <div className="flex flex-wrap items-center gap-2 min-w-0 w-full">
-            <div className="flex items-center gap-1.5 flex-shrink-0">
+            <div className={`flex items-center gap-1.5 flex-shrink-0 ${isNarrow ? 'order-2 mt-1' : ''}`}>
               <button
                 type="button"
                 onClick={handleToggleSelectAll}
                 disabled={samples.length === 0}
+                data-tour="samples-select-all"
                 className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors ${
                   samples.length === 0
                     ? 'cursor-not-allowed border-surface-border text-text-muted/40'
@@ -3524,11 +3587,12 @@ export function SourcesView({
                 onSortByChange={handleSortByChange}
                 onSortOrderChange={handleSortOrderChange}
                 similarityEnabled={selectedSampleId !== null}
+                triggerTourId="samples-sort-button"
               />
             </div>
 
             {/* Search input with scope controls */}
-            <div className={`min-w-0 ${isNarrow ? 'w-full' : 'flex-1'}`}>
+            <div className={`min-w-0 ${isNarrow ? 'order-1 w-full' : 'flex-1'}`}>
               <div className="relative min-w-0">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" size={15} />
                 <input
@@ -3536,6 +3600,7 @@ export function SourcesView({
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={`Search ${searchScopeDescriptor} in ${scopeLabel}...`}
+                  data-tour="samples-search-input"
                   className="w-full pl-9 pr-44 py-1.5 bg-surface-base border border-surface-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-accent-primary/60 transition-colors"
                 />
                 <SampleSearchScopeMenu
@@ -3545,13 +3610,18 @@ export function SourcesView({
                   onScopeChange={setSearchScope}
                   onToggleCustomField={toggleCustomSearchField}
                   onResetCustomFields={() => setCustomSearchFields(DEFAULT_SAMPLE_SEARCH_CUSTOM_FIELDS)}
+                  triggerTourId="samples-search-fields-menu"
                 />
               </div>
             </div>
 
             {/* Workspace tab switcher */}
             {onWorkspaceTabChange && (
-              <div className="flex items-center gap-0.5 bg-surface-base border border-surface-border rounded-lg p-0.5 flex-shrink-0">
+              <div
+                className={`flex items-center gap-0.5 bg-surface-base border border-surface-border rounded-lg p-0.5 ${
+                  isNarrow ? 'order-4 w-full mt-1 justify-start' : 'flex-shrink-0'
+                }`}
+              >
                 <button
                   onClick={() => onWorkspaceTabChange('details')}
                   className={`inline-flex items-center gap-1 rounded-md border px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
@@ -3580,7 +3650,7 @@ export function SourcesView({
                   onClick={() => onWorkspaceTabChange('lab')}
                   className={`inline-flex items-center gap-1 rounded-md border px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
                     workspaceTab === 'lab'
-                      ? 'border-cyan-400/50 bg-cyan-400/10 text-cyan-300'
+                      ? 'border-accent-secondary/55 bg-accent-secondary/15 text-accent-secondary'
                       : 'border-transparent text-text-muted hover:text-text-secondary'
                   }`}
                   title="Lab"
@@ -3592,9 +3662,15 @@ export function SourcesView({
             )}
 
             {/* View mode toggle */}
-            <div className="flex items-center gap-0.5 bg-surface-base border border-surface-border rounded-lg p-0.5 flex-shrink-0">
+            <div
+              className={`flex items-center gap-0.5 bg-surface-base border border-surface-border rounded-lg p-0.5 ${
+                isNarrow ? 'order-3 mt-1 ml-auto' : 'flex-shrink-0'
+              }`}
+              data-tour="samples-view-toggle"
+            >
               <button
                 onClick={() => handleViewModeChange('grid')}
+                data-tour="samples-view-card"
                 className={`p-1.5 rounded-md transition-colors ${
                   viewMode === 'grid' ? 'bg-surface-overlay text-text-primary' : 'text-text-muted hover:text-text-secondary'
                 }`}
@@ -3604,6 +3680,7 @@ export function SourcesView({
               </button>
               <button
                 onClick={() => handleViewModeChange('list')}
+                data-tour="samples-view-list"
                 className={`p-1.5 rounded-md transition-colors ${
                   viewMode === 'list' ? 'bg-surface-overlay text-text-primary' : 'text-text-muted hover:text-text-secondary'
                 }`}
@@ -3613,6 +3690,7 @@ export function SourcesView({
               </button>
               <button
                 onClick={() => handleViewModeChange('space')}
+                data-tour="samples-view-space"
                 disabled={isDuplicateModeActive}
                 className={`p-1.5 rounded-md transition-colors ${
                   isDuplicateModeActive
@@ -3703,7 +3781,7 @@ export function SourcesView({
         )}
 
         {/* Sample grid/list */}
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden" data-tour="samples-main-pane">
           <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
             {showEmptyDatabaseWelcome ? (
               <div className="h-full min-h-0 flex items-center justify-center p-6">
@@ -3836,7 +3914,10 @@ export function SourcesView({
                 ) : viewMode === 'list' ? (
                   <div className="flex-1 flex flex-col overflow-hidden min-h-0">
                     {similarityMode?.enabled && (
-                      <div className="bg-accent-primary/10 border-l-4 border-accent-primary px-4 py-3 flex items-center justify-between flex-shrink-0">
+                      <div
+                        className="bg-accent-primary/10 border-l-4 border-accent-primary px-4 py-3 flex items-center justify-between flex-shrink-0"
+                        data-tour="samples-similarity-banner"
+                      >
                         <div className="flex items-center gap-3">
                           <Sparkles size={16} className="text-accent-primary" />
                           <div>
@@ -3876,6 +3957,7 @@ export function SourcesView({
                           {/* Exit button */}
                           <button
                             onClick={() => setSimilarityMode(null)}
+                            data-tour="samples-similarity-exit"
                             className="px-3 py-1 text-sm bg-surface-overlay hover:bg-surface-base rounded-lg text-slate-300 hover:text-white transition-colors flex items-center gap-1"
                           >
                             <X size={14} />
@@ -3944,6 +4026,7 @@ export function SourcesView({
             <button
               type="button"
               onClick={() => setIsFilterDockOpen((open) => !open)}
+              data-tour="filters-dock-toggle"
               className="h-[14px] w-full border-b border-surface-border bg-surface-overlay flex items-center justify-center transition-colors hover:bg-surface-border/80"
               title={isFilterDockOpen ? 'Hide filters' : 'Show filters'}
               aria-label={isFilterDockOpen ? 'Hide filters' : 'Show filters'}
@@ -3984,6 +4067,7 @@ export function SourcesView({
                       <button
                         type="button"
                         onClick={() => setIsEnabledFiltersListOpen((open) => !open)}
+                        data-tour="filters-enabled-list-toggle"
                         className="inline-flex items-center gap-1.5 rounded-sm border border-accent-primary/45 bg-accent-primary/10 px-2 py-1 text-[11px] font-semibold tracking-wide text-slate-200 uppercase transition-colors hover:bg-accent-primary/20"
                         aria-expanded={isEnabledFiltersListOpen}
                         aria-controls="sources-enabled-filters-list"
@@ -3998,29 +4082,23 @@ export function SourcesView({
                         />
                       </button>
 
-                      {activeFilterCount > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleClearAllFilters}
-                          className="inline-flex items-center rounded-sm border border-surface-border px-2 py-1 text-[11px] font-medium text-slate-300 transition-colors hover:border-slate-400/60 hover:text-white"
-                        >
-                          Clear all
-                        </button>
-                      )}
-
                       <div className="flex-1 min-w-0 overflow-x-auto">
-                        <div className="inline-flex items-center gap-0.5 rounded-md border border-surface-border bg-surface-base p-0.5 min-w-max">
+                        <div
+                          className="inline-flex items-center gap-0.5 rounded-md border border-surface-border bg-surface-base p-0.5 min-w-max"
+                          data-tour="filters-tab-strip"
+                        >
                           {[
-                            { id: 'categories' as const, label: 'Instruments' },
-                            { id: 'dimensions' as const, label: 'Dimensions' },
-                            { id: 'features' as const, label: 'Features' },
-                            { id: 'advanced' as const, label: 'Advanced' },
-                            { id: 'bulkActions' as const, label: 'Bulk Actions' },
-                            { id: 'duplicates' as const, label: 'Duplicates' },
+                            { id: 'categories' as const, label: 'Instruments', tourId: 'filters-tab-instruments' },
+                            { id: 'dimensions' as const, label: 'Dimensions', tourId: 'filters-tab-dimensions' },
+                            { id: 'features' as const, label: 'Features', tourId: 'filters-tab-features' },
+                            { id: 'advanced' as const, label: 'Advanced', tourId: 'filters-tab-advanced' },
+                            { id: 'bulkActions' as const, label: 'Bulk Actions', tourId: 'filters-tab-bulk-actions' },
+                            { id: 'duplicates' as const, label: 'Duplicates', tourId: 'filters-tab-duplicates' },
                           ].map((tab) => (
                             <button
                               key={tab.id}
                               type="button"
+                              data-tour={tab.tourId}
                               onClick={() => {
                                 setActiveFilterDockTab(tab.id)
                                 setIsFilterDockOpen(true)
@@ -4043,6 +4121,21 @@ export function SourcesView({
                         id="sources-enabled-filters-list"
                         className="mt-2 rounded-md border border-surface-border bg-surface-base/95 px-2 py-2"
                       >
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                            Active filters
+                          </div>
+                          {activeFilterCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={handleClearAllFilters}
+                              data-tour="filters-clear-all"
+                              className="inline-flex items-center rounded-sm border border-surface-border px-2 py-0.5 text-[10px] font-medium text-slate-300 transition-colors hover:border-slate-400/60 hover:text-white"
+                            >
+                              Clear all
+                            </button>
+                          )}
+                        </div>
                         {activeFilters.length > 0 ? (
                           <div className="flex flex-wrap gap-1.5">
                             {activeFilters.map((filter) => (
@@ -4078,7 +4171,10 @@ export function SourcesView({
                   </div>
 
                   {activeFilterDockTab === 'categories' && (
-                    <div className="pl-2 pr-3 py-1 border-b border-surface-border/70 bg-surface-base/80 space-y-2 rounded-e">
+                    <div
+                      className="pl-2 pr-3 py-1 border-b border-surface-border/70 bg-surface-base/80 space-y-2 rounded-e"
+                      data-tour="filters-instruments-panel"
+                    >
                       <div className="flex items-center gap-2">
                         <div className="relative w-52 shrink-0">
                           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
@@ -4097,6 +4193,7 @@ export function SourcesView({
                             onClick={() =>
                               setSampleTypeFilter((current) => (current === 'one-shot' ? null : 'one-shot'))
                             }
+                            data-tour="filters-type-one-shot"
                             aria-pressed={sampleTypeFilter === 'one-shot'}
                             className={`inline-flex items-center gap-1 rounded-sm border px-2 py-1 text-[11px] transition-colors ${
                               sampleTypeFilter === 'one-shot'
@@ -4114,6 +4211,7 @@ export function SourcesView({
                             onClick={() =>
                               setSampleTypeFilter((current) => (current === 'loop' ? null : 'loop'))
                             }
+                            data-tour="filters-type-loop"
                             aria-pressed={sampleTypeFilter === 'loop'}
                             className={`inline-flex items-center gap-1 rounded-sm border px-2 py-1 text-[11px] transition-colors ${
                               sampleTypeFilter === 'loop'
@@ -4160,7 +4258,10 @@ export function SourcesView({
                     {activeFilterDockTab === 'categories' && (
                       <div className="space-y-2 h-full min-h-0 flex flex-col">
                         <div className="border-surface-border bg-surface-base min-h-0 overflow-y-auto flex-1">
-                          <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))]">
+                          <div
+                            className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))]"
+                            data-tour="filters-tag-grid"
+                          >
                             {visibleTagTiles.map((tag) => {
                               const isSelected = selectedTags.includes(tag.id)
                               const usageCount =
@@ -4297,9 +4398,12 @@ export function SourcesView({
                     )}
 
                     {activeFilterDockTab === 'features' && (
-                      <div className="rounded-lg border border-surface-border bg-surface-base p-3">
+                      <div
+                        className="rounded-lg border border-surface-border bg-surface-base p-3"
+                        data-tour="filters-features-panel"
+                      >
                         <div className="space-y-1.5">
-                          <div className="space-y-1.5">
+                          <div className="space-y-1.5" data-tour="filters-features-duration">
                             <div className="text-[11px] text-slate-400 uppercase tracking-wide">Duration (seconds)</div>
                             <div className="flex flex-wrap items-center gap-1.5">
                               <input
@@ -4361,13 +4465,20 @@ export function SourcesView({
                     )}
 
                     {activeFilterDockTab === 'dimensions' && (
-                      <div className="rounded-lg border border-surface-border bg-surface-base p-3 space-y-3">
+                      <div
+                        className="rounded-lg border border-surface-border bg-surface-base p-3 space-y-3"
+                        data-tour="filters-dimensions-panel"
+                      >
                         <div className="flex items-center gap-2">
-                          <div className="inline-flex items-center gap-1 rounded-sm border border-surface-border bg-surface-raised p-0.5">
+                          <div
+                            className="inline-flex items-center gap-1 rounded-sm border border-surface-border bg-surface-raised p-0.5"
+                            data-tour="filters-dimensions-categories"
+                          >
                             {dimensionCategoryTabs.map((tab) => (
                               <button
                                 key={tab.key}
                                 type="button"
+                                data-tour={`filters-dimensions-category-${tab.key}`}
                                 onClick={() => setActiveDimensionCategory(tab.key)}
                                 className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[11px] transition-colors ${
                                   activeDimensionCategory === tab.key
@@ -4381,7 +4492,10 @@ export function SourcesView({
                           </div>
 
                           {activeDimensionCategory === 'energy' && (
-                            <div className="ml-auto flex items-center gap-1.5 overflow-x-auto whitespace-nowrap">
+                            <div
+                              className="ml-auto flex items-center gap-1.5 overflow-x-auto whitespace-nowrap"
+                              data-tour="filters-dimensions-loudness"
+                            >
                               <span className="text-[11px] text-slate-400 uppercase tracking-wide">Loudness (dB)</span>
                               <input
                                 type="number"
@@ -4448,7 +4562,10 @@ export function SourcesView({
                           )}
 
                           {activeDimensionCategory === 'space' && (
-                            <div className="ml-auto inline-flex items-center gap-1 rounded-sm border border-surface-border bg-surface-raised p-0.5">
+                            <div
+                              className="ml-auto inline-flex items-center gap-1 rounded-sm border border-surface-border bg-surface-raised p-0.5"
+                              data-tour="filters-dimensions-stereo-mode"
+                            >
                               <button
                                 type="button"
                                 onClick={() => setStereoChannelMode('mono')}
@@ -4483,7 +4600,10 @@ export function SourcesView({
                     )}
 
                     {activeFilterDockTab === 'advanced' && (
-                      <div className="rounded-lg border border-surface-border bg-surface-base p-3 space-y-2">
+                      <div
+                        className="rounded-lg border border-surface-border bg-surface-base p-3 space-y-2"
+                        data-tour="filters-advanced-panel"
+                      >
                         <div className="text-xs text-slate-400">
                           Build exact metadata query rules for fields like BPM, key, artist, or path.
                         </div>
@@ -4507,6 +4627,7 @@ export function SourcesView({
 
                     {activeFilterDockTab === 'duplicates' && (
                       <div
+                        data-tour="filters-duplicates-panel"
                         className={`bg-surface-base border border-surface-border rounded-xl overflow-hidden ${
                           isDuplicatePanelCompact ? '' : 'h-full min-h-0 flex flex-col'
                         }`}
@@ -4549,6 +4670,7 @@ export function SourcesView({
                                   )}
 
                                   <button
+                                    data-tour="filters-duplicates-find-button"
                                     onClick={handleFindDuplicates}
                                     disabled={isDuplicateScanRunning}
                                     className={`inline-flex items-center gap-2 px-3 py-1.5 rounded text-xs font-medium transition-colors ${

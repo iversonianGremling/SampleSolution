@@ -21,6 +21,65 @@ A practical audio sample management and analysis platform for music producers an
 
 ---
 
+## GitHub Automation (Updates + Releases)
+
+This repository includes GitHub Actions workflows for update monitoring and release automation.
+
+### Check for repo updates
+- Workflow: `.github/workflows/check-updates.yml`
+- Triggers:
+  - Manual (`workflow_dispatch`)
+  - Daily schedule at `09:00 UTC`
+- What it reports:
+  - Latest release tag (`v*`)
+  - Commit count since latest release
+  - Whether unreleased updates exist
+- Optional manual mode:
+  - Set `fail_if_unreleased=true` to fail the run when unreleased commits are found
+
+### Automatic dependency update checks
+- Config: `.github/dependabot.yml`
+- Checks weekly for:
+  - `backend` npm dependencies
+  - `frontend` npm dependencies
+  - GitHub Actions version updates
+- Dependabot opens PRs with labels so updates are easy to review.
+
+### Enforce version consistency in PRs
+- Workflow: `.github/workflows/version-consistency.yml`
+- Triggers:
+  - Pull requests
+  - Pushes to `main`
+- What it validates:
+  - `VERSION` exists and contains valid semver
+  - `VERSION`, `backend/package.json`, and `frontend/package.json` all match
+
+### Create named releases from GitHub Actions
+- Workflow: `.github/workflows/release.yml`
+- Trigger: Manual (`workflow_dispatch`)
+- Inputs:
+  - `bump`: `patch | minor | major | custom`
+  - `custom_version`: required only when `bump=custom`
+  - `release_name`: optional custom name shown in GitHub Releases
+  - `draft` / `prerelease`
+- Default release naming:
+  - Uses `Release vX.Y.Z - <CODENAME>` when a root `CODENAME` file is present
+  - Falls back to `Release vX.Y.Z` if `CODENAME` is missing/empty
+- What it does automatically:
+  1. Resolves the next version
+  2. Updates `VERSION`, `backend/package*.json`, and `frontend/package*.json`
+  3. Commits version bump and creates tag `vX.Y.Z`
+  4. Pushes commit + tag
+  5. Builds desktop artifacts on GitHub Actions for:
+     - Linux (`AppImage`, `.deb`)
+     - Windows (`.exe` installer + portable)
+     - macOS (`.dmg`, `.zip`) when runner/platform supports
+  6. Creates the GitHub Release with generated release notes and uploads binaries
+
+If branch protection blocks pushes from `github-actions[bot]`, allow workflow pushes or use a release branch flow.
+
+---
+
 ## What It Does
 
 ### Import
@@ -167,6 +226,8 @@ BACKEND_URL=http://localhost:4000
 # Optional override if building frontend manually
 VITE_ENABLE_SPOTIFY_IMPORT=1
 VITE_SHOW_DOWNLOAD_TOOLS_UI=0
+# Optional: Stripe donation payment link for header Donate button
+VITE_STRIPE_DONATION_URL=https://donate.stripe.com/your-payment-link
 ```
 
 Access:

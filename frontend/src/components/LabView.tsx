@@ -92,10 +92,22 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
   const { peaks, offsetRatio, fadeInRatio, fadeOutRatio, effectiveRate, sampleDurationSec } = params
   if (peaks.length === 0) return
 
+  const isLightTheme = document.documentElement.dataset.theme === 'light'
+  const gridLineColor = isLightTheme ? 'rgba(51,65,85,0.12)' : 'rgba(148,163,184,0.08)'
+  const markerLineColor = isLightTheme ? 'rgba(51,65,85,0.2)' : 'rgba(148,163,184,0.12)'
+  const markerTextColor = isLightTheme ? 'rgba(71,85,105,0.75)' : 'rgba(148,163,184,0.35)'
+  const waveformTopColor = isLightTheme ? 'rgba(8,145,178,0.62)' : 'rgba(6,182,212,0.7)'
+  const waveformMidColor = isLightTheme ? 'rgba(8,145,178,0.34)' : 'rgba(6,182,212,0.3)'
+  const waveformCenterColor = isLightTheme ? 'rgba(8,145,178,0.4)' : 'rgba(6,182,212,0.25)'
+  const offsetShadeColor = isLightTheme ? 'rgba(255,255,255,0.42)' : 'rgba(0,0,0,0.5)'
+  const offsetLineColor = isLightTheme ? '#b45309' : '#fbbf24'
+  const fadeFillColor = isLightTheme ? 'rgba(124,58,237,0.16)' : 'rgba(167,139,250,0.18)'
+  const fadeLineColor = isLightTheme ? '#7c3aed' : '#a78bfa'
+
   const midY = h / 2
 
   // Grid lines
-  ctx.strokeStyle = 'rgba(148,163,184,0.08)'
+  ctx.strokeStyle = gridLineColor
   ctx.lineWidth = 1
   for (let i = 0; i <= 4; i++) {
     const y = (h / 4) * i
@@ -107,8 +119,8 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
 
   // Time markers with labels (adapted to playback rate)
   const effectiveDuration = sampleDurationSec / Math.max(0.01, effectiveRate)
-  ctx.strokeStyle = 'rgba(148,163,184,0.12)'
-  ctx.fillStyle = 'rgba(148,163,184,0.35)'
+  ctx.strokeStyle = markerLineColor
+  ctx.fillStyle = markerTextColor
   ctx.font = `${9 * dpr}px "JetBrains Mono", monospace`
   ctx.textAlign = 'center'
   const numMarkers = 10
@@ -125,10 +137,10 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
   // Offset dimming region
   if (offsetRatio > 0.001) {
     const ox = offsetRatio * w
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'
+    ctx.fillStyle = offsetShadeColor
     ctx.fillRect(0, 0, ox, h)
 
-    ctx.strokeStyle = '#fbbf24'
+    ctx.strokeStyle = offsetLineColor
     ctx.lineWidth = 1.5 * dpr
     ctx.setLineDash([4 * dpr, 3 * dpr])
     ctx.beginPath()
@@ -140,9 +152,9 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
 
   // Waveform polygon
   const waveGrad = ctx.createLinearGradient(0, 0, 0, h)
-  waveGrad.addColorStop(0, 'rgba(6,182,212,0.7)')
-  waveGrad.addColorStop(0.5, 'rgba(6,182,212,0.3)')
-  waveGrad.addColorStop(1, 'rgba(6,182,212,0.7)')
+  waveGrad.addColorStop(0, waveformTopColor)
+  waveGrad.addColorStop(0.5, waveformMidColor)
+  waveGrad.addColorStop(1, waveformTopColor)
 
   ctx.fillStyle = waveGrad
   ctx.beginPath()
@@ -164,7 +176,7 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
   ctx.fill()
 
   // Center line
-  ctx.strokeStyle = 'rgba(6,182,212,0.25)'
+  ctx.strokeStyle = waveformCenterColor
   ctx.lineWidth = 1
   ctx.beginPath()
   ctx.moveTo(0, midY)
@@ -176,7 +188,7 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
     const startX = offsetRatio * w
     const endX = Math.min(1, offsetRatio + fadeInRatio) * w
 
-    ctx.fillStyle = 'rgba(167,139,250,0.18)'
+    ctx.fillStyle = fadeFillColor
     ctx.beginPath()
     ctx.moveTo(startX, 0)
     ctx.lineTo(endX, 0)
@@ -191,7 +203,7 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
     ctx.closePath()
     ctx.fill()
 
-    ctx.strokeStyle = '#a78bfa'
+    ctx.strokeStyle = fadeLineColor
     ctx.lineWidth = 1.5 * dpr
     ctx.beginPath()
     ctx.moveTo(startX, midY)
@@ -209,7 +221,7 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
     const startX = Math.max(0, 1 - fadeOutRatio) * w
     const endX = w
 
-    ctx.fillStyle = 'rgba(167,139,250,0.18)'
+    ctx.fillStyle = fadeFillColor
     ctx.beginPath()
     ctx.moveTo(startX, 0)
     ctx.lineTo(endX, 0)
@@ -224,7 +236,7 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
     ctx.closePath()
     ctx.fill()
 
-    ctx.strokeStyle = '#a78bfa'
+    ctx.strokeStyle = fadeLineColor
     ctx.lineWidth = 1.5 * dpr
     ctx.beginPath()
     ctx.moveTo(startX, 2)
@@ -461,6 +473,12 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
     setIsPreparingPreview(false)
     stopPlayheadAnimation()
   }, [stopPlayheadAnimation])
+
+  useEffect(() => {
+    if (selectedSampleId === null) return
+    stopPreview()
+    setSettings((prev) => (prev.offset === 0 ? prev : { ...prev, offset: 0 }))
+  }, [selectedSampleId, stopPreview])
 
   useEffect(() => {
     const handlePanicStop = () => {
@@ -946,7 +964,7 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
           <div className="flex flex-col gap-2">
             <div className="space-y-1">
               <div className="flex items-center justify-between">
-                <span className="font-vst text-[9px] uppercase tracking-widest text-slate-500">Threshold</span>
+                <span className="font-vst text-[9px] uppercase tracking-widest text-text-muted">Threshold</span>
                 <span className="font-vst-mono text-[10px] text-rose-400">{Math.round(settings.compressorThreshold)}dB</span>
               </div>
               {/* Threshold slider with RMS meter */}
@@ -959,7 +977,7 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
                   value={settings.compressorThreshold}
                   onChange={(e) => updateSettings('compressorThreshold', Number(e.target.value))}
                   className="w-full h-2 appearance-none rounded-full slider-thumb relative z-10"
-                  style={{ background: '#1e2028' }}
+                  style={{ background: 'rgb(var(--color-surface-border-rgb) / 0.8)' }}
                 />
                 {/* RMS level bar */}
                 {settings.compressorEnabled && isPreviewing && Number.isFinite(rmsDb) && (
@@ -1116,17 +1134,17 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
 
   return (
     <div
-      className="relative h-full min-h-0 flex overflow-hidden font-vst"
-      style={{ background: '#09090c' }}
+      data-tour="lab-view"
+      className="relative h-full min-h-0 flex overflow-hidden font-vst bg-surface-base"
       onDragOver={handleSampleDragOver}
       onDragLeave={handleSampleDragLeave}
       onDrop={handleSampleDrop}
     >
       {isSampleDragOver && (
-        <div className="absolute inset-3 z-20 pointer-events-none rounded-xl border-2 border-dashed border-cyan-400/70 bg-cyan-500/10 flex items-center justify-center">
+        <div className="absolute inset-3 z-20 pointer-events-none rounded-xl border-2 border-dashed border-accent-secondary/70 bg-accent-secondary/15 flex items-center justify-center">
           <div className="text-center px-4">
-            <div className="text-sm font-semibold text-cyan-200">Drop sample to load Lab</div>
-            <div className="text-[11px] text-cyan-100/70 mt-1">Drag from the Sources panel on the left</div>
+            <div className="text-sm font-semibold text-accent-secondary">Drop sample to load Lab</div>
+            <div className="text-[11px] text-text-secondary mt-1">Drag from the Sources panel on the left</div>
           </div>
         </div>
       )}
@@ -1134,13 +1152,13 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
       <section className="flex-1 min-w-0 flex flex-col overflow-hidden">
         {!selectedSample ? (
           <div className="h-full flex items-center justify-center px-6">
-            <div className="w-full max-w-md rounded-xl border border-dashed border-slate-700 bg-surface-overlay/50 p-6 text-center">
-              <div className="text-sm text-slate-300">Drop a sample here to start Lab processing</div>
-              <div className="text-xs text-slate-500 mt-2">
+            <div className="w-full max-w-md rounded-xl border border-dashed border-surface-border bg-surface-overlay/60 p-6 text-center">
+              <div className="text-sm text-text-secondary">Select a sample to start Lab processing</div>
+              <div className="text-xs text-text-muted mt-2">
                 Open the Sources panel using the left sidebar button, then drag and drop a sample into this area.
               </div>
               {isSamplesLoading ? (
-                <div className="mt-3 inline-flex items-center gap-2 text-xs text-slate-500">
+                <div className="mt-3 inline-flex items-center gap-2 text-xs text-text-muted">
                   <Loader2 className="animate-spin" size={12} /> Loading samples…
                 </div>
               ) : samples.length === 0 ? (
@@ -1151,7 +1169,7 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
         ) : (
           <>
             {/* ─── Waveform Display ─────────────────── */}
-            <div className="relative mx-3 mt-3 rounded-lg overflow-hidden" style={{ background: '#080a0f' }}>
+            <div className="relative mx-3 mt-3 rounded-lg overflow-hidden border border-surface-border bg-surface-base">
               <div
                 ref={canvasWrapRef}
                 className="relative cursor-crosshair"
@@ -1161,11 +1179,11 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
                 onPointerUp={handleWaveformPointerUp}
               >
                 {isWaveformLoading ? (
-                  <div className="absolute inset-0 flex items-center justify-center text-[11px] text-slate-600">
+                  <div className="absolute inset-0 flex items-center justify-center text-[11px] text-text-muted">
                     Loading waveform...
                   </div>
                 ) : waveformOverview.length === 0 ? (
-                  <div className="absolute inset-0 flex items-center justify-center text-[11px] text-slate-600">
+                  <div className="absolute inset-0 flex items-center justify-center text-[11px] text-text-muted">
                     No waveform data
                   </div>
                 ) : null}
@@ -1188,7 +1206,7 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
                 {/* Offset label */}
                 {settings.offset > 0.01 && sampleDuration > 0 && (
                   <div
-                    className="absolute top-1 pointer-events-none font-vst-mono text-[10px] text-amber-400/80"
+                    className="absolute top-1 pointer-events-none font-vst-mono text-[10px] text-accent-warm"
                     style={{ left: `${(settings.offset / sampleDuration) * 100}%`, transform: 'translateX(4px)' }}
                   >
                     {settings.offset.toFixed(2)}s
@@ -1197,11 +1215,8 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
               </div>
 
               {/* Offset info bar */}
-              <div
-                className="flex items-center gap-2 px-2 py-1"
-                style={{ background: '#0a0c10', borderTop: '1px solid #1a1c2233' }}
-              >
-                <span className="font-vst text-[10px] text-slate-600 uppercase tracking-wider">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1 border-t border-surface-border bg-surface-overlay">
+                <span className="min-w-0 flex-1 font-vst text-[10px] text-text-muted uppercase tracking-wider">
                   Click waveform to set offset
                 </span>
                 <input
@@ -1211,105 +1226,112 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
                   step={0.01}
                   value={settings.offset.toFixed(2)}
                   onChange={(e) => updateSettings('offset', clamp(Number(e.target.value), 0, sampleDuration))}
-                  className="w-20 px-1.5 py-0.5 text-[10px] font-vst-mono rounded border text-amber-400 focus:outline-none focus:border-cyan-800"
-                  style={{ background: '#0d0f14', borderColor: '#1e2028' }}
+                  className="w-20 px-1.5 py-0.5 text-[10px] font-vst-mono rounded border border-surface-border bg-surface-base text-accent-warm focus:outline-none focus:border-accent-secondary"
                 />
-                <span className="font-vst-mono text-[10px] text-slate-600">sec</span>
+                <span className="font-vst-mono text-[10px] text-text-muted">sec</span>
               </div>
             </div>
 
             {/* ─── Transport Bar ────────────────────── */}
-            <div className="mx-3 mt-2 flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: '#0d0f14', border: '1px solid #1a1c22' }}>
-              {/* Play/Stop */}
-              <button
-                onClick={handlePreviewToggle}
-                disabled={isExportingCopy || isOverwriting}
-                className="inline-flex items-center justify-center w-9 h-9 rounded-md border transition-all disabled:opacity-50 flex-shrink-0"
-                style={{
-                  background: isPreviewing ? '#0d0f14' : '#06b6d422',
-                  borderColor: isPreviewing ? '#ef4444' : '#06b6d4',
-                  boxShadow: isPreviewing ? '0 0 8px rgba(239,68,68,0.3)' : '0 0 8px rgba(6,182,212,0.2)',
-                }}
-              >
-                {isPreparingPreview ? (
-                  <Loader2 size={16} className="animate-spin text-cyan-400" />
-                ) : isPreviewing ? (
-                  <Square size={14} className="text-red-400" />
-                ) : (
-                  <Play size={14} className="text-cyan-400 ml-0.5" />
-                )}
-              </button>
+            <div className="mx-3 mt-2 flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg border border-surface-border bg-surface-overlay" data-tour="lab-transport">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                {/* Play/Stop */}
+                <button
+                  onClick={handlePreviewToggle}
+                  disabled={isExportingCopy || isOverwriting}
+                  className="inline-flex items-center justify-center w-9 h-9 rounded-md border transition-all disabled:opacity-50 flex-shrink-0"
+                  style={{
+                    background: isPreviewing
+                      ? 'rgb(var(--color-surface-base-rgb) / 0.95)'
+                      : 'rgb(var(--color-accent-secondary-rgb) / 0.2)',
+                    borderColor: isPreviewing
+                      ? 'rgb(239 68 68 / 0.72)'
+                      : 'rgb(var(--color-accent-secondary-rgb) / 0.7)',
+                    boxShadow: isPreviewing
+                      ? '0 0 8px rgba(239,68,68,0.25)'
+                      : '0 0 8px rgb(var(--color-accent-secondary-rgb) / 0.22)',
+                  }}
+                >
+                  {isPreparingPreview ? (
+                    <Loader2 size={16} className="animate-spin text-accent-secondary" />
+                  ) : isPreviewing ? (
+                    <Square size={14} className="text-red-400" />
+                  ) : (
+                    <Play size={14} className="text-accent-secondary ml-0.5" />
+                  )}
+                </button>
 
-              {/* Reset */}
-              <button
-                onClick={() => { setSettings(DEFAULT_LAB_SETTINGS); stopPreview() }}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] rounded border transition-colors text-slate-400 hover:text-white flex-shrink-0"
-                style={{ background: '#0d0f14', borderColor: '#1e2028' }}
-              >
-                <RotateCcw size={11} /> Reset
-              </button>
+                {/* Reset */}
+                <button
+                  onClick={() => { setSettings(DEFAULT_LAB_SETTINGS); stopPreview() }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] rounded border transition-colors text-text-muted hover:text-text-primary flex-shrink-0 border-surface-border bg-surface-base"
+                >
+                  <RotateCcw size={11} /> Reset
+                </button>
 
-              {/* Export Copy */}
-              <button
-                onClick={handleExportCopy}
-                disabled={isExportingCopy || isOverwriting || isPreparingPreview}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] rounded border transition-colors disabled:opacity-50 flex-shrink-0"
-                style={{ background: '#34d39911', borderColor: '#34d39944', color: '#34d399' }}
-              >
-                {isExportingCopy ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
-                Copy
-              </button>
+                {/* Export Copy */}
+                <button
+                  onClick={handleExportCopy}
+                  disabled={isExportingCopy || isOverwriting || isPreparingPreview}
+                  data-tour="lab-copy-button"
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] rounded border transition-colors disabled:opacity-50 flex-shrink-0"
+                  style={{ background: 'rgb(16 185 129 / 0.13)', borderColor: 'rgb(16 185 129 / 0.45)', color: 'rgb(5 150 105)' }}
+                >
+                  {isExportingCopy ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                  Copy
+                </button>
 
-              {/* Overwrite */}
-              <button
-                onClick={handleOverwrite}
-                disabled={isOverwriting || isExportingCopy || isPreparingPreview}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] rounded border transition-colors disabled:opacity-50 flex-shrink-0"
-                style={{ background: '#fbbf2411', borderColor: '#fbbf2444', color: '#fbbf24' }}
-              >
-                {isOverwriting ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
-                Overwrite
-              </button>
-
-              {/* Spacer */}
-              <div className="flex-1" />
-
-              {/* Sample name + speed */}
-              <div className="min-w-0 text-right">
-                <div className="text-[12px] text-slate-200 truncate">{selectedSample.name}</div>
-                {effectiveRate !== 1 && (
-                  <div className="text-[10px] text-slate-500 font-vst-mono">
-                    {effectiveRate.toFixed(2)}x speed
-                  </div>
-                )}
+                {/* Overwrite */}
+                <button
+                  onClick={handleOverwrite}
+                  disabled={isOverwriting || isExportingCopy || isPreparingPreview}
+                  data-tour="lab-overwrite-button"
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] rounded border transition-colors disabled:opacity-50 flex-shrink-0"
+                  style={{ background: 'rgb(234 179 8 / 0.14)', borderColor: 'rgb(234 179 8 / 0.45)', color: 'rgb(161 98 7)' }}
+                >
+                  {isOverwriting ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
+                  Overwrite
+                </button>
               </div>
 
-              {/* Time readout */}
-              <div className="text-right flex-shrink-0">
-                <span className="font-vst-mono text-[12px] text-cyan-400 tabular-nums block">
-                  {formatTime(effectiveDuration)}
-                </span>
-                {effectiveRate !== 1 && (
-                  <span className="font-vst-mono text-[9px] text-slate-500 tabular-nums block">
-                    raw {formatTime(sampleDuration - settings.offset)}
+              <div className="ml-auto flex min-w-0 items-end gap-3">
+                {/* Sample name + speed */}
+                <div className="min-w-0 max-w-[160px] text-right">
+                  <div className="text-[12px] text-text-primary truncate">{selectedSample.name}</div>
+                  {effectiveRate !== 1 && (
+                    <div className="text-[10px] text-text-muted font-vst-mono">
+                      {effectiveRate.toFixed(2)}x speed
+                    </div>
+                  )}
+                </div>
+
+                {/* Time readout */}
+                <div className="text-right flex-shrink-0">
+                  <span className="font-vst-mono text-[12px] text-accent-secondary tabular-nums block">
+                    {formatTime(effectiveDuration)}
                   </span>
-                )}
+                  {effectiveRate !== 1 && (
+                    <span className="font-vst-mono text-[9px] text-text-muted tabular-nums block">
+                      raw {formatTime(sampleDuration - settings.offset)}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
             {errorMessage && (
-              <div className="mx-3 mt-1 px-3 py-1.5 text-[11px] text-red-300 rounded" style={{ background: '#ef44441a' }}>
+              <div className="mx-3 mt-1 px-3 py-1.5 text-[11px] text-red-500 rounded border border-red-500/35 bg-red-500/10">
                 {errorMessage}
               </div>
             )}
 
             {/* ─── Module Rack ──────────────────────── */}
-            <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
+            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 py-3" data-tour="lab-fx-rack">
               <div className="flex flex-wrap gap-2">
                 {/* CORE + ENV row */}
-                <div className="flex gap-2 w-full">
+                <div className="flex flex-wrap gap-2 w-full">
                   {/* CORE (always first, not reorderable) */}
-                  <div className="flex-shrink-0">
+                  <div className="flex-1 min-w-0">
                     <FxModule title="Core" color="#06b6d4">
                       <div className="flex flex-col gap-2">
                         <div className="flex items-start gap-2">
@@ -1334,9 +1356,15 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
                                   onClick={() => updateSettings('pitchMode', mode)}
                                   className="px-1.5 py-0.5 rounded text-[9px] tracking-wider uppercase transition-all"
                                   style={{
-                                    background: active ? '#06b6d422' : '#1a1c22',
-                                    color: active ? '#06b6d4' : '#4a4e58',
-                                    border: `1px solid ${active ? '#06b6d4' : '#1e2028'}`,
+                                    background: active
+                                      ? 'rgb(var(--color-accent-secondary-rgb) / 0.18)'
+                                      : 'rgb(var(--color-surface-overlay-rgb) / 0.75)',
+                                    color: active
+                                      ? 'rgb(var(--color-accent-secondary-rgb) / 1)'
+                                      : 'rgb(var(--color-text-secondary-rgb) / 1)',
+                                    border: `1px solid ${active
+                                      ? 'rgb(var(--color-accent-secondary-rgb) / 0.55)'
+                                      : 'rgb(var(--color-surface-border-rgb) / 0.85)'}`,
                                   }}
                                 >
                                   {getPitchModeLabel(mode)}
@@ -1349,9 +1377,15 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
                               disabled={settings.pitchMode === 'tape'}
                               className="px-1.5 py-0.5 rounded text-[8px] tracking-wider uppercase transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                               style={{
-                                background: settings.preserveFormants ? '#10b98133' : '#1a1c22',
-                                color: settings.preserveFormants ? '#6ee7b7' : '#4a4e58',
-                                border: `1px solid ${settings.preserveFormants ? '#34d399' : '#1e2028'}`,
+                                background: settings.preserveFormants
+                                  ? 'rgb(16 185 129 / 0.22)'
+                                  : 'rgb(var(--color-surface-overlay-rgb) / 0.75)',
+                                color: settings.preserveFormants
+                                  ? 'rgb(16 185 129 / 1)'
+                                  : 'rgb(var(--color-text-primary-rgb) / 1)',
+                                border: `1px solid ${settings.preserveFormants
+                                  ? 'rgb(16 185 129 / 0.65)'
+                                  : 'rgb(var(--color-surface-border-rgb) / 0.85)'}`,
                               }}
                               title="Preserve vocal formants when using Granular/HQ pitch modes"
                             >
@@ -1392,13 +1426,17 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
 
                   {/* ENVELOPE (fills remaining space) */}
                   <div
-                    className="flex-1 flex flex-col items-center justify-center gap-3 rounded-lg px-3 py-2"
-                    style={{ background: '#0d0f14', border: '1px solid #a78bfa44' }}
+                    className="basis-[170px] flex-1 flex flex-col items-center justify-center gap-3 rounded-lg px-3 py-2"
+                    style={{
+                      minWidth: 'min(170px, 100%)',
+                      background: 'rgb(var(--color-surface-base-rgb) / 0.95)',
+                      border: '1px solid rgb(167 139 250 / 0.42)',
+                    }}
                   >
-                    <span className="font-vst text-[11px] tracking-[0.2em] uppercase font-semibold" style={{ color: '#a78bfa' }}>
+                    <span className="font-vst text-[11px] tracking-[0.2em] uppercase font-semibold" style={{ color: 'rgb(124 58 237)' }}>
                       Env
                     </span>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center justify-center gap-3">
                       <VstKnob
                         label="Fade In"
                         value={settings.fadeIn}

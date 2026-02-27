@@ -1,0 +1,80 @@
+name: Check Updates
+
+on:
+  workflow_dispatch:
+    inputs:
+      fail_if_unreleased:
+        description: Fail the workflow if unreleased commits are found
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: "0 9 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  check-unreleased-changes:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --force --tags
+
+      - name: Compute update status
+        id: status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1 || true)"
+
+          if [[ -z "$latest_tag" ]]; then
+            commit_count="$(git rev-list --count HEAD)"
+            compare_range="(no release tags yet)"
+            has_updates="true"
+          else
+            commit_count="$(git rev-list --count "${latest_tag}..HEAD")"
+            compare_range="${latest_tag}..HEAD"
+            if [[ "$commit_count" -gt 0 ]]; then
+              has_updates="true"
+            else
+              has_updates="false"
+            fi
+          fi
+
+          head_sha="$(git rev-parse --short HEAD)"
+
+          echo "latest_tag=$latest_tag" >> "$GITHUB_OUTPUT"
+          echo "commit_count=$commit_count" >> "$GITHUB_OUTPUT"
+          echo "has_updates=$has_updates" >> "$GITHUB_OUTPUT"
+          echo "compare_range=$compare_range" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write summary
+        shell: bash
+        run: |
+          {
+            echo "## Repository Update Status"
+            echo ""
+            echo "- Latest release tag: \`${{ steps.status.outputs.latest_tag || 'none' }}\`"
+            echo "- Current HEAD: \`${{ steps.status.outputs.head_sha }}\`"
+            echo "- Commits since latest release: \`${{ steps.status.outputs.commit_count }}\`"
+            echo "- Compare range: \`${{ steps.status.outputs.compare_range }}\`"
+            echo "- Updates pending release: \`${{ steps.status.outputs.has_updates }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Optionally fail when updates exist
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.fail_if_unreleased == 'true' }}
+        shell: bash
+        run: |
+          if [[ "${{ steps.status.outputs.has_updates }}" == "true" ]]; then
+            echo "Unreleased commits found." >&2
+            exit 1
+          fi

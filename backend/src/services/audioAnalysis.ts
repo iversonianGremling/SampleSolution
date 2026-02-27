@@ -447,6 +447,7 @@ export const AUDIO_ANALYSIS_CANCELLED_ERROR = 'Audio analysis canceled'
 
 export interface AnalyzeAudioOptions {
   signal?: AbortSignal
+  filename?: string
 }
 
 type AnalysisAttemptMode = 'standard' | 'safe'
@@ -727,7 +728,10 @@ async function runWorkerAnalysisAttempt(
   audioAnalysisAttemptCounter += 1
   const attemptId = audioAnalysisAttemptCounter
   const attemptStartedAt = Date.now()
-  const basename = path.basename(audioPath)
+  const basename =
+    typeof options.filename === 'string' && options.filename.trim().length > 0
+      ? options.filename.trim()
+      : path.basename(audioPath)
 
   writeAudioAnalysisDebugLog(
     `[attempt:${attemptId}] worker-start mode=${mode} audioPath=${audioPath}`
@@ -979,6 +983,127 @@ async function probeAudioDurationSeconds(audioPath: string): Promise<number | nu
   })
 }
 
+const LOOP_HINT_TAGS = [
+  'loop',
+  'beat',
+  'groove',
+  'pattern',
+  'fill',
+  'break',
+  'top',
+] as const
+
+const LOOP_HINT_TAG_SET = new Set<string>(LOOP_HINT_TAGS)
+
+const ONESHOT_HINT_TAGS = [
+  'one-shot',
+  'oneshot',
+  'one_shot',
+  'shot',
+  'hit',
+  'single',
+] as const
+
+const ONESHOT_HINT_TAG_SET = new Set<string>(ONESHOT_HINT_TAGS)
+
+function getSampleTypeFromFilenameTags(filenameTags: string[]): {
+  hasLoopHint: boolean
+  hasOneShotHint: boolean
+  isLoop: boolean
+  isOneShot: boolean
+} {
+  const hasLoopHint = filenameTags.some((tag) => LOOP_HINT_TAG_SET.has(tag))
+  const hasOneShotHint = filenameTags.some((tag) => ONESHOT_HINT_TAG_SET.has(tag))
+  const isLoop = hasLoopHint && !hasOneShotHint
+  const isOneShot = !isLoop
+
+  return { hasLoopHint, hasOneShotHint, isLoop, isOneShot }
+}
+
+function isMp3MetadataBpmBypassEligible(metadata: {
+  format?: string | null
+  tagBpm?: number | null
+} | null): metadata is { format: string; tagBpm: number } {
+  if (!metadata?.format || metadata.tagBpm === null || metadata.tagBpm === undefined) return false
+  if (!Number.isFinite(metadata.tagBpm) || metadata.tagBpm <= 0) return false
+
+  const normalizedFormat = metadata.format.trim().toLowerCase()
+  return normalizedFormat === 'mp3' || normalizedFormat.split(',').includes('mp3')
+}
+
+async function buildMetadataBpmBypassFeatures(
+  audioPath: string,
+  analysisLevel: AnalysisLevel,
+  metadata: {
+    sampleRate: number | null
+    channels: number | null
+    format: string | null
+    modifiedAt: string | null
+    createdAt: string | null
+    tagBpm: number | null
+  },
+  filenameHint?: string
+): Promise<AudioFeatures> {
+  const startedAt = Date.now()
+  const duration = await probeAudioDurationSeconds(audioPath)
+  const basename = typeof filenameHint === 'string' && filenameHint.trim().length > 0
+    ? filenameHint.trim()
+    : path.basename(audioPath)
+  const filenameTags = parseFilenameTags(basename, null).map((entry) => entry.tag)
+  const sampleType = getSampleTypeFromFilenameTags(filenameTags)
+  const suggestedTags = Array.from(new Set<string>([
+    sampleType.isLoop ? 'loop' : 'one-shot',
+    ...filenameTags,
+  ]))
+
+  const durationValue = typeof duration === 'number' ? duration : 0
+  const sampleRate = metadata.sampleRate ?? 44100
+  const safeSampleRate = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : 44100
+  const bpm = metadata.tagBpm ?? undefined
+  const analysisDurationMs = Math.max(1, Date.now() - startedAt)
+
+  writeAudioAnalysisDebugLog(
+    `[metadata-bypass] audioPath=${audioPath} bpm=${String(bpm)} format=${metadata.format || 'unknown'} filename=${clipLogValue(basename)}`
+  )
+  console.log(
+    `[audio-analysis] Metadata BPM bypass used for ${audioPath} (format=${metadata.format || 'unknown'}, bpm=${String(bpm)})`
+  )
+
+  return {
+    duration: durationValue,
+    sampleRate: safeSampleRate,
+    channels: metadata.channels ?? undefined,
+    fileFormat: metadata.format ?? undefined,
+    sourceMtime: metadata.modifiedAt ?? undefined,
+    sourceCtime: metadata.createdAt ?? undefined,
+    isOneShot: sampleType.isOneShot,
+    isLoop: sampleType.isLoop,
+    bpm,
+    beatsCount: undefined,
+    onsetCount: 0,
+    spectralCentroid: 0,
+    spectralRolloff: 0,
+    spectralBandwidth: 0,
+    spectralContrast: 0,
+    spectralFlux: undefined,
+    spectralFlatness: undefined,
+    zeroCrossingRate: 0,
+    mfccMean: [],
+    kurtosis: undefined,
+    rmsEnergy: 0,
+    loudness: 0,
+    dynamicRange: 0,
+    keyEstimate: undefined,
+    scale: undefined,
+    keyStrength: undefined,
+    instrumentPredictions: [],
+    sampleTypeConfidence: sampleType.hasLoopHint || sampleType.hasOneShotHint ? 0.9 : 0.6,
+    analysisLevel,
+    analysisDurationMs,
+    suggestedTags,
+  }
+}
+
 async function buildEmergencyFallbackFeatures(
   audioPath: string,
   analysisLevel: AnalysisLevel,
@@ -991,29 +1116,10 @@ async function buildEmergencyFallbackFeatures(
   const basename = path.basename(audioPath)
   const filenameTags = parseFilenameTags(basename, null).map((entry) => entry.tag)
 
-  const hasLoopHint = filenameTags.some((tag) => [
-    'loop',
-    'beat',
-    'groove',
-    'pattern',
-    'fill',
-    'break',
-    'top',
-  ].includes(tag))
-  const hasOneShotHint = filenameTags.some((tag) => [
-    'one-shot',
-    'oneshot',
-    'one_shot',
-    'shot',
-    'hit',
-    'single',
-  ].includes(tag))
-
-  const isLoop = hasLoopHint && !hasOneShotHint
-  const isOneShot = !isLoop
+  const sampleType = getSampleTypeFromFilenameTags(filenameTags)
   const suggestedTags = Array.from(
     new Set<string>([
-      isLoop ? 'loop' : 'one-shot',
+      sampleType.isLoop ? 'loop' : 'one-shot',
       ...filenameTags,
     ])
   )
@@ -1038,8 +1144,8 @@ async function buildEmergencyFallbackFeatures(
     fileFormat: metadata?.format ?? undefined,
     sourceMtime: metadata?.modifiedAt ?? undefined,
     sourceCtime: metadata?.createdAt ?? undefined,
-    isOneShot,
-    isLoop,
+    isOneShot: sampleType.isOneShot,
+    isLoop: sampleType.isLoop,
     bpm: undefined,
     beatsCount: undefined,
     onsetCount: 0,
@@ -1059,7 +1165,7 @@ async function buildEmergencyFallbackFeatures(
     scale: undefined,
     keyStrength: undefined,
     instrumentPredictions: [],
-    sampleTypeConfidence: hasLoopHint || hasOneShotHint ? 0.75 : 0.5,
+    sampleTypeConfidence: sampleType.hasLoopHint || sampleType.hasOneShotHint ? 0.75 : 0.5,
     analysisLevel,
     analysisDurationMs,
     suggestedTags,
@@ -1184,8 +1290,11 @@ function runPythonAnalysisAttempt(
     const args = [PYTHON_SCRIPT, audioPath]
     args.push('--level', analysisLevel)
 
-    // Pass original filename for filename-based detection
-    const basename = path.basename(audioPath)
+    // Pass original filename for filename-based detection when available.
+    const basename =
+      typeof options.filename === 'string' && options.filename.trim().length > 0
+        ? options.filename.trim()
+        : path.basename(audioPath)
     args.push('--filename', basename)
 
     const env = buildPythonEnv(mode)
@@ -1431,6 +1540,27 @@ export async function analyzeAudioFeatures(
   analysisLevel: AnalysisLevel = 'advanced',
   options: AnalyzeAudioOptions = {}
 ): Promise<AudioFeatures> {
+  if (options.signal?.aborted) {
+    throw new Error(AUDIO_ANALYSIS_CANCELLED_ERROR)
+  }
+
+  const filenameForHints =
+    typeof options.filename === 'string' && options.filename.trim().length > 0
+      ? options.filename.trim()
+      : path.basename(audioPath)
+  const extForBypass = path.extname(filenameForHints || audioPath).toLowerCase()
+  if (extForBypass === '.mp3') {
+    const metadata = await getAudioFileMetadata(audioPath).catch(() => null)
+    if (isMp3MetadataBpmBypassEligible(metadata)) {
+      return await buildMetadataBpmBypassFeatures(
+        audioPath,
+        analysisLevel,
+        metadata,
+        filenameForHints
+      )
+    }
+  }
+
   await acquireAudioAnalysisSlot(options)
   try {
     if (shouldUseEmergencyFallback()) {

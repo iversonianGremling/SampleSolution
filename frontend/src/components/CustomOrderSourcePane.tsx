@@ -351,7 +351,7 @@ export function CustomOrderSourcePane({
   }
 
   return (
-    <div className="flex flex-col h-full relative overflow-hidden">
+    <div className="flex flex-col h-full relative overflow-hidden" data-tour="custom-order-source-pane">
       {/* Header */}
       <div className="px-4 py-3 border-b border-surface-border">
         <h3 className="text-sm font-medium text-slate-200 mb-0.5">Sources</h3>
@@ -391,6 +391,7 @@ export function CustomOrderSourcePane({
                 <button
                   className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm font-medium text-slate-200 bg-surface-base border border-surface-border rounded-lg hover:bg-surface-border/60 hover:text-white transition-colors"
                   onClick={() => openSampleSelect({ type: 'all' })}
+                  data-tour="custom-order-show-all-samples"
                 >
                   <List size={14} />
                   Show All Samples

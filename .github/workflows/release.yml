@@ -1,0 +1,313 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+      custom_version:
+        description: Custom version (required when bump=custom)
+        required: false
+        type: string
+      release_name:
+        description: Optional custom release name
+        required: false
+        type: string
+      draft:
+        description: Create as draft
+        required: true
+        default: false
+        type: boolean
+      prerelease:
+        description: Mark as prerelease
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.next }}
+      release_name: ${{ steps.title.outputs.name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f VERSION ]]; then
+            echo "Missing VERSION file at repository root." >&2
+            exit 1
+          fi
+
+          current_version="$(tr -d '[:space:]' < VERSION)"
+          backend_version="$(node -p "require('./backend/package.json').version")"
+          frontend_version="$(node -p "require('./frontend/package.json').version")"
+
+          if ! [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semver in VERSION file: $current_version" >&2
+            exit 1
+          fi
+          if [[ "$backend_version" != "$frontend_version" ]]; then
+            echo "backend/package.json and frontend/package.json versions do not match." >&2
+            exit 1
+          fi
+          if [[ "$backend_version" != "$current_version" ]]; then
+            echo "VERSION file ($current_version) does not match package versions ($backend_version)." >&2
+            exit 1
+          fi
+
+          bump_type="${{ github.event.inputs.bump }}"
+          custom_version="${{ github.event.inputs.custom_version }}"
+
+          if [[ "$bump_type" == "custom" ]]; then
+            if [[ -z "$custom_version" ]]; then
+              echo "custom_version is required when bump=custom" >&2
+              exit 1
+            fi
+            next_version="$custom_version"
+          else
+            IFS='.' read -r major minor patch <<<"$current_version"
+            case "$bump_type" in
+              patch)
+                patch=$((patch + 1))
+                ;;
+              minor)
+                minor=$((minor + 1))
+                patch=0
+                ;;
+              major)
+                major=$((major + 1))
+                minor=0
+                patch=0
+                ;;
+              *)
+                echo "Unsupported bump type: $bump_type" >&2
+                exit 1
+                ;;
+            esac
+            next_version="${major}.${minor}.${patch}"
+          fi
+
+          if ! [[ "$next_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semver version: $next_version" >&2
+            exit 1
+          fi
+
+          tag_name="v${next_version}"
+
+          echo "current=${current_version}" >> "$GITHUB_OUTPUT"
+          echo "next=${next_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve release title
+        id: title
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          custom_name="${{ github.event.inputs.release_name }}"
+          tag_name="${{ steps.version.outputs.tag }}"
+          codename=""
+
+          if [[ -f CODENAME ]]; then
+            codename="$(tr -d '\r' < CODENAME | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+          fi
+
+          if [[ -n "$custom_name" ]]; then
+            title="$custom_name"
+          elif [[ -n "$codename" ]]; then
+            title="Release ${tag_name} - ${codename}"
+          else
+            title="Release ${tag_name}"
+          fi
+
+          echo "name=$title" >> "$GITHUB_OUTPUT"
+
+      - name: Bump project versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.next }}"
+          printf '%s\n' "$version" > VERSION
+          npm --prefix backend version "$version" --no-git-tag-version
+          npm --prefix frontend version "$version" --no-git-tag-version
+
+      - name: Commit, tag, and push
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag_name="${{ steps.version.outputs.tag }}"
+
+          if git rev-parse "$tag_name" >/dev/null 2>&1; then
+            echo "Tag already exists locally: $tag_name" >&2
+            exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/$tag_name" | grep -q "$tag_name"; then
+            echo "Tag already exists on origin: $tag_name" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add VERSION backend/package.json backend/package-lock.json frontend/package.json frontend/package-lock.json
+
+          if git diff --cached --quiet; then
+            echo "No version changes detected; refusing to create empty release commit." >&2
+            exit 1
+          fi
+
+          git commit -m "chore(release): $tag_name"
+          git tag -a "$tag_name" -m "Release $tag_name"
+          git push origin "${GITHUB_REF_NAME}"
+          git push origin "$tag_name"
+
+  build-desktop:
+    name: Build Desktop (${{ matrix.platform }})
+    needs: prepare-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix backend
+          npm ci --prefix frontend
+
+      - name: Build standalone desktop package
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x frontend/scripts/setup-python.sh frontend/scripts/bundle-backend.sh frontend/scripts/rebuild-native.sh || true
+          ./frontend/scripts/setup-python.sh
+          ./frontend/scripts/bundle-backend.sh
+          ./frontend/scripts/rebuild-native.sh
+          cd frontend
+          npm run build:electron -- --publish never
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          shopt -s nullglob
+
+          patterns=(
+            "frontend/release/*.AppImage"
+            "frontend/release/*.deb"
+            "frontend/release/*.exe"
+            "frontend/release/*.dmg"
+            "frontend/release/*.zip"
+            "frontend/release/*.blockmap"
+            "frontend/release/*.yml"
+          )
+
+          for pattern in "${patterns[@]}"; do
+            for file in $pattern; do
+              filename="$(basename "$file")"
+              cp "$file" "release-assets/${{ matrix.platform }}-${filename}"
+            done
+          done
+
+          if [[ -z "$(ls -A release-assets)" ]]; then
+            echo "No release artifacts found in frontend/release" >&2
+            ls -la frontend/release || true
+            exit 1
+          fi
+
+          echo "Collected artifacts:"
+          ls -lh release-assets
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - prepare-release
+      - build-desktop
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Verify packaged artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$(ls -A release-assets)" ]]; then
+            echo "No artifacts downloaded." >&2
+            exit 1
+          fi
+          ls -lh release-assets
+
+      - name: Create GitHub release with binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          name: ${{ needs.prepare-release.outputs.release_name }}
+          files: |
+            release-assets/*
+          overwrite_files: true
+          generate_release_notes: true
+          draft: ${{ github.event.inputs.draft == 'true' }}
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}

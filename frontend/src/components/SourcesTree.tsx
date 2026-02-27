@@ -1331,7 +1331,7 @@ export function SourcesTree({
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Search bar */}
-      <div className="p-2 border-b border-surface-border">
+      <div className="p-2 border-b border-surface-border" data-tour="sources-tree-topbar">
         <div className="flex items-center gap-1.5">
           <div className="relative flex-1 min-w-0">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
@@ -1355,6 +1355,7 @@ export function SourcesTree({
               }`}
               title={showFavoritesOnly ? 'Showing favorites' : 'Show favorites only'}
               aria-label={showFavoritesOnly ? 'Showing favorites' : 'Show favorites only'}
+              data-tour="sources-tree-favorites-toggle"
             >
               <Heart size={14} className={showFavoritesOnly ? 'fill-current' : ''} />
             </button>
@@ -1381,7 +1382,10 @@ export function SourcesTree({
             </div>
 
             {expandedSections.has('sources') && (
-              <div className="space-y-px rounded-md border-surface-border/70 bg-surface-base/20 p-0.5">
+              <div
+                className="space-y-px rounded-md border-surface-border/70 bg-surface-base/20 p-0.5"
+                data-tour="sources-section"
+              >
               <AddSourceMenu onOpenLibraryImport={onOpenLibraryImport} />
 
               {(() => {
@@ -1394,6 +1398,7 @@ export function SourcesTree({
                         ? 'bg-accent-warm/12 text-accent-warm'
                         : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
                     }`}
+                    data-tour="sources-show-all"
                   >
                     <SelectionMarker state={showAllActive ? 'active' : 'none'} />
                     <span className="text-left">Show all</span>
@@ -1712,18 +1717,20 @@ export function SourcesTree({
           </div>
         </div>
 
-        <ResizableDivider
-          direction="vertical"
-          isDragging={sourcesCollectionsPanel.isDragging}
-          isCollapsed={sourcesCollectionsPanel.isCollapsed}
-          onMouseDown={sourcesCollectionsPanel.dividerProps.onMouseDown}
-          onDoubleClick={sourcesCollectionsPanel.dividerProps.onDoubleClick}
-          onExpand={sourcesCollectionsPanel.restore}
-        />
+        <div data-tour="sources-collections-divider">
+          <ResizableDivider
+            direction="vertical"
+            isDragging={sourcesCollectionsPanel.isDragging}
+            isCollapsed={sourcesCollectionsPanel.isCollapsed}
+            onMouseDown={sourcesCollectionsPanel.dividerProps.onMouseDown}
+            onDoubleClick={sourcesCollectionsPanel.dividerProps.onDoubleClick}
+            onExpand={sourcesCollectionsPanel.restore}
+          />
+        </div>
 
         {/* COLLECTIONS Section */}
         <div className="min-h-0 flex-1">
-          <div className="h-full overflow-y-auto px-2 py-2">
+          <div className="h-full overflow-y-auto px-2 py-2" data-tour="sources-collections-section">
             <div className="flex items-center gap-2 px-2 py-1.5">
               <button
                 onClick={() => toggleSection('myfolders')}
@@ -1738,6 +1745,7 @@ export function SourcesTree({
                   className="p-1 rounded text-slate-400 hover:text-white hover:bg-surface-base transition-colors"
                   title="advanced category management"
                   aria-label="advanced category management"
+                  data-tour="advanced-category-management"
                 >
                   <Settings2 size={14} />
                 </button>
@@ -1751,6 +1759,7 @@ export function SourcesTree({
                   className="p-1 rounded text-slate-400 hover:text-white hover:bg-surface-base transition-colors"
                   title="new collection"
                   aria-label="new collection"
+                  data-tour="collections-new-button"
                 >
                   <Plus size={14} />
                 </button>
@@ -1829,6 +1838,7 @@ export function SourcesTree({
                             }`}
                             title="Collection options"
                             aria-label="Collection options"
+                            data-tour="sources-collection-options-button"
                           >
                             <MoreVertical size={14} className="text-slate-400" />
                           </button>

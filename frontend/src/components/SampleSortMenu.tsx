@@ -40,6 +40,7 @@ interface SampleSortMenuProps {
   onSortByChange: (sortBy: AudioFilterState['sortBy']) => void
   onSortOrderChange: (sortOrder: AudioFilterState['sortOrder']) => void
   similarityEnabled?: boolean
+  triggerTourId?: string
 }
 
 export function SampleSortMenu({
@@ -48,6 +49,7 @@ export function SampleSortMenu({
   onSortByChange,
   onSortOrderChange,
   similarityEnabled = true,
+  triggerTourId,
 }: SampleSortMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -164,6 +166,7 @@ export function SampleSortMenu({
       <button
         type="button"
         onClick={() => setIsOpen((current) => !current)}
+        data-tour={triggerTourId}
         className="inline-flex h-7 max-w-[180px] items-center gap-1 rounded-md border border-surface-border bg-surface-base px-2 text-[11px] font-medium text-text-secondary transition-colors hover:text-text-primary"
         aria-haspopup="menu"
         aria-expanded={isOpen}

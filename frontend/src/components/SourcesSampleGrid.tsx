@@ -361,6 +361,7 @@ export function SourcesSampleGrid({
   const dragPreviewRef = useRef<HTMLElement | null>(null)
   const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [infoOverlaySampleId, setInfoOverlaySampleId] = useState<number | null>(null)
+  const hasGridContent = !isLoading && samples.length > 0
   const isDuplicatePairMode =
     Boolean(onToggleDuplicateDeleteTarget || onKeepDuplicateSample) && duplicatePairMetaBySampleId.size > 0
 
@@ -442,7 +443,7 @@ export function SourcesSampleGrid({
         resizeObserver.disconnect()
       }
     }
-  }, [])
+  }, [hasGridContent])
 
   useEffect(() => {
     const root = rootRef.current
@@ -469,7 +470,7 @@ export function SourcesSampleGrid({
     return () => {
       observer.disconnect()
     }
-  }, [])
+  }, [hasGridContent])
 
   useEffect(() => {
     let frameId: number | null = null
@@ -541,39 +542,57 @@ export function SourcesSampleGrid({
     return 1 - roughness
   }
 
+  const isLightTheme = () =>
+    typeof document !== 'undefined' && document.documentElement.dataset.theme === 'light'
+
   const getMetricGradient = (sample: SliceWithTrackExtended) => {
     const brightness = clamp01(sample.brightness ?? 0.5, 0.5)
     const loudness = normalizeLoudness(sample.loudness)
     const harmonicity = normalizeHarmonicity(sample)
     const noisiness = 1 - harmonicity
 
-    // Balanced dark base: keep contrast without crushing the lower half.
-    const baseHue = 220 - brightness * 32
-    const baseSaturation = 30 + loudness * 26
-    const baseLightTop = 15 + loudness * 12 + brightness * 6
-    const baseLightBottom = 9 + loudness * 8 + brightness * 4
+    const lightTheme = isLightTheme()
 
-    // Semantic accents:
-    // - harmonic (teal)
-    // - noisy (amber)
-    // Keep alpha controlled so detail remains visible across the whole card.
-    const brightnessColor = `hsla(${204 - brightness * 20}, ${52 + brightness * 14}%, ${54 + brightness * 8}%, ${0.16 + brightness * 0.24})`
-    const loudnessColor = `hsla(${246 - loudness * 14}, ${40 + loudness * 16}%, ${46 + loudness * 10}%, ${0.16 + loudness * 0.24})`
-    const harmonicColor = `hsla(166, 64%, 50%, ${0.14 + harmonicity * 0.24})`
-    const noisyColor = `hsla(30, 72%, 54%, ${0.12 + noisiness * 0.24})`
+    // Shiny triad palette for card view: magenta, cyan, and yellow.
+    // Keep luminosity theme-aware so icon/text contrast remains strong.
+    const baseHue = 236 - brightness * 18 + loudness * 10
+    const baseSaturation = (lightTheme ? 64 : 40) + loudness * (lightTheme ? 20 : 16)
+    const baseLightTop = (lightTheme ? 72 : 18) + brightness * (lightTheme ? 9 : 8) + loudness * (lightTheme ? 4 : 6)
+    const baseLightBottom = (lightTheme ? 58 : 11) + harmonicity * (lightTheme ? 10 : 8)
+
+    const magentaColor = `hsla(${312 + brightness * 10}, ${lightTheme ? 88 : 88}%, ${lightTheme ? 56 : 58}%, ${lightTheme ? 0.24 + brightness * 0.14 : 0.16 + brightness * 0.2})`
+    const cyanColor = `hsla(${188 + loudness * 8}, ${lightTheme ? 90 : 90}%, ${lightTheme ? 50 : 54}%, ${lightTheme ? 0.22 + loudness * 0.14 : 0.14 + loudness * 0.2})`
+    const yellowColor = `hsla(${50 + noisiness * 10}, ${lightTheme ? 94 : 94}%, ${lightTheme ? 54 : 58}%, ${lightTheme ? 0.2 + noisiness * 0.14 : 0.12 + noisiness * 0.2})`
+    const sheenColor = lightTheme ? 'rgba(255,255,255,0.26)' : 'rgba(255,255,255,0.14)'
+    const vignetteColor = lightTheme ? 'rgba(15,23,42,0.16)' : 'rgba(2,6,23,0.32)'
     const baseTopColor = `hsl(${baseHue}, ${baseSaturation}%, ${baseLightTop}%)`
-    const baseBottomColor = `hsl(${baseHue - 10}, ${baseSaturation - 6}%, ${baseLightBottom}%)`
+    const baseBottomColor = `hsl(${baseHue - 8}, ${Math.max(18, baseSaturation - 8)}%, ${baseLightBottom}%)`
 
     return {
       backgroundColor: baseTopColor,
       backgroundImage: `
-        radial-gradient(105% 95% at 18% 20%, ${brightnessColor} 0%, transparent 54%),
-        radial-gradient(105% 95% at 84% 18%, ${loudnessColor} 0%, transparent 54%),
-        radial-gradient(115% 105% at 18% 90%, ${harmonicColor} 0%, transparent 56%),
-        radial-gradient(115% 105% at 86% 92%, ${noisyColor} 0%, transparent 56%),
+        radial-gradient(120% 105% at 16% 16%, ${magentaColor} 0%, transparent 56%),
+        radial-gradient(110% 100% at 86% 18%, ${cyanColor} 0%, transparent 55%),
+        radial-gradient(125% 112% at 52% 96%, ${yellowColor} 0%, transparent 58%),
+        linear-gradient(165deg, ${sheenColor} 0%, transparent 42%),
+        linear-gradient(180deg, transparent 54%, ${vignetteColor} 100%),
         linear-gradient(145deg, ${baseTopColor} 0%, ${baseBottomColor} 100%)
       `,
-      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)',
+      boxShadow: lightTheme
+        ? 'inset 0 0 0 1px rgba(71,85,105,0.42)'
+        : 'inset 0 0 0 1px rgba(255,255,255,0.08)',
+    }
+  }
+
+  const getInstrumentBadgeStyle = (sample: SliceWithTrackExtended) => {
+    const lightTheme = isLightTheme()
+    return {
+      ...getMetricGradient(sample),
+      backgroundSize: '220% 220%',
+      border: lightTheme ? '1px solid rgba(30,41,59,0.28)' : '1px solid rgba(255,255,255,0.12)',
+      boxShadow: lightTheme
+        ? '0 2px 8px rgba(15,23,42,0.28), inset 0 0 0 1px rgba(51,65,85,0.45)'
+        : '0 2px 8px rgba(2,6,23,0.45), inset 0 0 0 1px rgba(255,255,255,0.14)',
     }
   }
 
@@ -1117,7 +1136,11 @@ export function SourcesSampleGrid({
           <FadeInOnMount key={sample.id}>
             <div
               data-sources-sample-card="true"
-              onClick={() => onSelect(sample.id)}
+              data-tour="sample-card"
+              onClick={() => {
+                setInfoOverlaySampleId(null)
+                onSelect(sample.id)
+              }}
               draggable
               onDragStart={(e) => handleDragStart(e, sample)}
               onDragEnd={handleDragEnd}
@@ -1139,11 +1162,24 @@ export function SourcesSampleGrid({
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
+                    if (isInfoOverlayOpen) {
+                      setInfoOverlaySampleId(null)
+                      return
+                    }
                     if (playMode !== 'reproduce-while-clicking') {
                       handlePlay(sample.id, e)
                     }
                   }}
-                  onMouseDown={playMode === 'reproduce-while-clicking' ? (e) => handleMouseDown(sample.id, e) : undefined}
+                  onMouseDown={playMode === 'reproduce-while-clicking'
+                    ? (e) => {
+                        if (isInfoOverlayOpen) {
+                          e.stopPropagation()
+                          setInfoOverlaySampleId(null)
+                          return
+                        }
+                        handleMouseDown(sample.id, e)
+                      }
+                    : undefined}
                   onMouseUp={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
                   onMouseLeave={playMode === 'reproduce-while-clicking' ? handleMouseUp : undefined}
                   className={`absolute inset-0 flex items-center justify-center transition-opacity ${
@@ -1183,9 +1219,16 @@ export function SourcesSampleGrid({
                   </div>
                 )}
 
+                <div
+                  data-tour="sample-card-hover-actions"
+                  className="absolute top-1 right-1 h-7 w-[72px] pointer-events-none"
+                  aria-hidden
+                />
+
                 {/* Favorite button */}
                 {onToggleFavorite && (
                   <button
+                    data-tour="sample-card-favorite"
                     onClick={(e) => {
                       e.stopPropagation()
                       onToggleFavorite(sample.id)
@@ -1202,6 +1245,7 @@ export function SourcesSampleGrid({
 
                 {/* Send to Drum Rack button */}
                 <button
+                  data-tour="sample-card-drumrack"
                   onClick={(e) => {
                     e.stopPropagation()
                     setPadPickerSample(sample)
@@ -1214,6 +1258,7 @@ export function SourcesSampleGrid({
 
                 {/* Details button */}
                 <button
+                  data-tour="sample-card-details"
                   onClick={(e) => {
                     e.stopPropagation()
                     setInfoOverlaySampleId((current) => (current === sample.id ? null : sample.id))
@@ -1243,11 +1288,15 @@ export function SourcesSampleGrid({
 
                 {/* Instrument type badge */}
                 <div
-                  className="absolute bottom-1.5 left-1.5 p-1 rounded text-white/90"
+                  className="absolute bottom-1.5 left-1.5 p-1 rounded text-white"
                   title={`${resolvedInstrumentType} • brightness + loudness + harmonic/noisy`}
-                  style={{ ...getMetricGradient(sample), backgroundSize: '220% 220%' }}
+                  style={getInstrumentBadgeStyle(sample)}
                 >
-                  <InstrumentIcon type={resolvedInstrumentType} size={12} />
+                  <InstrumentIcon
+                    type={resolvedInstrumentType}
+                    size={12}
+                    className="drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]"
+                  />
                 </div>
 
                 <div
@@ -1421,7 +1470,7 @@ export function SourcesSampleGrid({
     : 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-[10px]'
 
   return (
-    <div ref={rootRef} className="relative isolate flex min-h-0 flex-col">
+    <div ref={rootRef} data-tour="samples-card-view" className="relative isolate flex min-h-0 flex-col">
       {showSortControls && (
         <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 border-b border-surface-border bg-surface-base/95 px-4 py-2 backdrop-blur-sm">
           {showSelectAllControl && onToggleSelect && onToggleSelectAll && (

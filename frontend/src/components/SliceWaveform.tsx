@@ -113,6 +113,8 @@ export const SliceWaveform = forwardRef<SliceWaveformRef, SliceWaveformProps>(
     useEffect(() => {
       const ws = wavesurferRef.current
       if (!ws) return
+      // Always reset transport when switching slices/sources.
+      ws.stop()
       onPauseRef.current?.()
       ws.load(sourceUrl || getSliceDownloadUrl(sliceId))
     }, [sliceId, sourceUrl])

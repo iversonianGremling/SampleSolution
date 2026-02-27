@@ -28,29 +28,33 @@ export function FxModule({
   return (
     <div
       onDragOver={onDragOver}
-      className={`min-w-[170px] flex-1 rounded-lg p-2.5 flex flex-col gap-2 transition-all ${isDragOver ? 'ring-1 ring-white/20' : ''}`}
+      className={`basis-[170px] flex-1 rounded-lg p-2.5 flex flex-col gap-2 transition-all ${isDragOver ? 'ring-1 ring-white/20' : ''}`}
       style={{
-        background: isDragOver ? '#13151c' : '#0d0f14',
+        minWidth: 'min(170px, 100%)',
+        background: isDragOver
+          ? 'rgb(var(--color-surface-overlay-rgb) / 0.95)'
+          : 'rgb(var(--color-surface-base-rgb) / 0.9)',
         borderWidth: 1,
         borderStyle: 'solid',
-        borderColor: enabled ? `${color}44` : '#1e2028',
+        borderColor: enabled ? `${color}55` : 'rgb(var(--color-surface-border-rgb) / 0.9)',
       }}
     >
       <div className="flex items-center justify-between gap-1">
         <div className="flex items-center gap-1.5">
           {isDraggable && (
             <div
+              data-tour="lab-fx-drag-handle"
               draggable
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
-              className="cursor-grab active:cursor-grabbing flex-shrink-0 p-0.5 -ml-1 rounded hover:bg-white/5"
+              className="cursor-grab active:cursor-grabbing flex-shrink-0 p-0.5 -ml-1 rounded hover:bg-surface-overlay"
             >
-              <GripVertical size={14} className="text-slate-600" />
+              <GripVertical size={14} className="text-text-muted" />
             </div>
           )}
           <span
             className="font-vst text-[11px] tracking-[0.2em] uppercase font-semibold"
-            style={{ color: enabled ? color : '#4a4e58' }}
+            style={{ color: enabled ? color : 'rgb(var(--color-text-muted-rgb) / 1)' }}
           >
             {title}
           </span>
@@ -61,15 +65,15 @@ export function FxModule({
             onClick={onToggle}
             className="flex items-center gap-1.5 px-2 py-1 rounded transition-all text-[10px] uppercase tracking-wider font-vst"
             style={{
-              background: enabled ? `${color}22` : '#1a1c22',
-              border: `1px solid ${enabled ? `${color}66` : '#2a2d35'}`,
-              color: enabled ? color : '#4a4e58',
+              background: enabled ? `${color}22` : 'rgb(var(--color-surface-overlay-rgb) / 0.75)',
+              border: `1px solid ${enabled ? `${color}66` : 'rgb(var(--color-surface-border-rgb) / 0.9)'}`,
+              color: enabled ? color : 'rgb(var(--color-text-muted-rgb) / 1)',
             }}
           >
             <span
               className="block w-2 h-2 rounded-full transition-all flex-shrink-0"
               style={{
-                backgroundColor: enabled ? color : '#1e2028',
+                backgroundColor: enabled ? color : 'rgb(var(--color-surface-border-rgb) / 1)',
                 boxShadow: enabled ? `0 0 6px ${color}` : 'none',
               }}
             />

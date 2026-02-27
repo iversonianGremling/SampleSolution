@@ -331,7 +331,9 @@ export function WebGLScatter({
           preference: 'webgl', // Force WebGL (WebGPU fallback is broken in some Electron/Linux setups)
           width: containerWidth,
           height: containerHeight,
-          backgroundColor: 0x0a0b0e, // Match surface-base
+          // Transparent canvas lets the parent theme background show through:
+          // dark mode stays dark, light mode becomes white.
+          backgroundAlpha: 0,
           antialias: true,
           resolution: dpr, // Set ONCE, never change
           autoDensity: true,
@@ -553,8 +555,11 @@ export function WebGLScatter({
       if (spriteData.selectionRing) {
         spriteData.selectionRing.clear()
         if (isSelected) {
+          // Dual-stroke ring keeps selection visible on both dark and light backgrounds.
           spriteData.selectionRing.circle(0, 0, spriteData.currentRadius + 3)
-          spriteData.selectionRing.stroke({ color: 0xffffff, width: 2, alpha: 0.9 })
+          spriteData.selectionRing.stroke({ color: 0x0f172a, width: 3, alpha: 0.8 })
+          spriteData.selectionRing.circle(0, 0, spriteData.currentRadius + 3)
+          spriteData.selectionRing.stroke({ color: 0xffffff, width: 1.5, alpha: 0.9 })
         }
       }
     },
@@ -959,7 +964,7 @@ export function WebGLScatter({
     >
       <button
         onClick={handleRefresh}
-        className="absolute top-2 left-2 p-1 text-white/60 hover:text-white transition-colors z-10"
+        className="sample-space-refresh-btn absolute top-2 left-2 z-10 inline-flex items-center justify-center rounded-md border border-surface-border bg-surface-raised/85 p-1 text-slate-400 hover:text-slate-200 hover:bg-surface-overlay transition-colors"
         title="Refresh"
       >
         <RefreshCw size={16} />

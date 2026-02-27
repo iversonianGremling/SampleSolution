@@ -417,7 +417,7 @@ export function SampleSpaceView({
   }
 
   return (
-    <div className="relative w-full h-full overflow-hidden">
+    <div className="relative w-full h-full overflow-hidden" data-tour="samples-space-view">
       {/* Main Canvas Container */}
       <div className="relative h-full overflow-hidden min-h-0">
         <div
@@ -451,6 +451,7 @@ export function SampleSpaceView({
           {!isPanelOpen && (
             <button
               type="button"
+              data-tour="samples-space-gear"
               aria-controls="sample-space-controls-panel"
               aria-expanded={isPanelOpen}
               aria-label="Open controls panel"
@@ -459,7 +460,7 @@ export function SampleSpaceView({
               onPointerMove={(event) => event.stopPropagation()}
               onMouseDown={(event) => event.stopPropagation()}
               onPointerDown={(event) => event.stopPropagation()}
-              className="panel-surface absolute top-3 right-3 z-40 rounded-md border border-surface-border bg-surface-raised/90 p-2 text-slate-200 hover:text-white hover:bg-surface-overlay transition-colors"
+              className="sample-space-control-btn panel-surface absolute top-3 right-3 z-40 rounded-md border border-surface-border bg-surface-raised/90 p-2 text-slate-200 hover:text-white hover:bg-surface-overlay transition-colors"
               title="Open controls"
             >
               <Settings size={16} />
@@ -468,7 +469,7 @@ export function SampleSpaceView({
 
 
           {/* Bottom Information Row - On top of canvas with minimal opacity */}
-          <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-surface-base/40 via-surface-base/20 to-transparent p-2.5 pl-4 pr-2">
+          <div className="sample-space-info-overlay absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-surface-base/40 via-surface-base/20 to-transparent p-2.5 pl-4 pr-2">
             <div className="flex items-center gap-4 text-xs text-slate-400">
               <span className="font-mono">
                 <span className="text-slate-500">Samples</span>{' '}
@@ -482,7 +483,7 @@ export function SampleSpaceView({
                 {Array.from({ length: Math.min(actualClusterCount, 8) }, (_, i) => (
                   <div key={i} className="flex items-center gap-1 flex-shrink-0">
                     <span
-                      className="w-2 h-2 rounded-full"
+                      className="sample-space-cluster-dot w-2 h-2 rounded-full"
                       style={{ backgroundColor: getClusterColor(i) }}
                     />
                     <span className="text-slate-400 text-xs whitespace-nowrap">C{i + 1}</span>
@@ -494,7 +495,7 @@ export function SampleSpaceView({
                 {(clusterMethod === 'dbscan' || clusterMethod === 'hdbscan') && samplePoints.some((p) => p.cluster < 0) && (
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <span
-                      className="w-2 h-2 rounded-full"
+                      className="sample-space-cluster-dot w-2 h-2 rounded-full"
                       style={{ backgroundColor: getClusterColor(-1) }}
                     />
                     <span className="text-slate-400 text-xs">Noise</span>
@@ -528,6 +529,7 @@ export function SampleSpaceView({
 
       {/* Right Sidebar - Controls Panel */}
       <div
+        data-tour="samples-space-controls-panel"
         className={`panel-surface absolute right-0 top-0 bottom-0 z-30 w-80 border-l border-surface-border bg-surface-raised shadow-2xl transition-transform duration-300 ${
           isPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
         }`}
@@ -539,7 +541,7 @@ export function SampleSpaceView({
           <button
             type="button"
             onClick={() => setIsPanelOpen(false)}
-            className="inline-flex items-center justify-center rounded-md border border-surface-border bg-surface-overlay p-1 text-slate-300 hover:text-white hover:bg-surface-border/70 transition-colors"
+            className="sample-space-control-btn inline-flex items-center justify-center rounded-md border border-surface-border bg-surface-overlay p-1 text-slate-300 hover:text-white hover:bg-surface-border/70 transition-colors"
             aria-label="Close controls panel"
             title="Close controls"
           >

@@ -4,35 +4,74 @@
 
 import { isElectron } from './platform';
 
+const DEFAULT_WEB_API_BASE = '/api';
+const DEFAULT_ELECTRON_API_BASE = 'http://localhost:4000/api';
+const ELECTRON_API_STORAGE_KEY = 'electron.apiBaseUrl';
+
+function ensureApiBasePath(rawValue: string | null | undefined): string | null {
+  if (!rawValue) return null;
+
+  const trimmed = rawValue.trim();
+  if (!trimmed) return null;
+
+  // Preserve relative API roots such as /api.
+  if (trimmed.startsWith('/')) {
+    const normalized = trimmed.replace(/\/+$/, '');
+    if (!normalized) return DEFAULT_WEB_API_BASE;
+    return normalized.endsWith('/api') ? normalized : `${normalized}/api`;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    const normalizedPath = url.pathname.replace(/\/+$/, '');
+    url.pathname = normalizedPath.endsWith('/api')
+      ? normalizedPath || '/api'
+      : `${normalizedPath || ''}/api`;
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+function getElectronConfiguredApiBase(): string | null {
+  return ensureApiBasePath(localStorage.getItem(ELECTRON_API_STORAGE_KEY));
+}
+
+function getWebConfiguredApiBase(): string | null {
+  return ensureApiBasePath(
+    import.meta.env.VITE_WEB_API_BASE_URL || import.meta.env.VITE_API_URL,
+  );
+}
+
+function getDevConfiguredApiBase(): string | null {
+  return ensureApiBasePath(import.meta.env.VITE_DEV_API_BASE_URL);
+}
+
 /**
  * Get the API base URL based on environment
  */
 export function getApiBaseUrl(): string {
-  // In development (Vite dev server), use proxy
-  if (import.meta.env.DEV) {
-    return '/api';
-  }
-
-  // In Electron production, connect to backend
+  // Electron keeps its own backend configuration independent of web.
   if (isElectron()) {
-    // Option 1: Embedded backend (localhost)
-    const embeddedBackend = 'http://localhost:4000/api';
-
-    // Option 2: Remote backend (can be configured by user)
-    const remoteBackend = localStorage.getItem('apiBaseUrl');
-
-    return remoteBackend || embeddedBackend;
+    return getElectronConfiguredApiBase() || DEFAULT_ELECTRON_API_BASE;
   }
 
-  // Web production: Use relative path (same origin)
-  return '/api';
+  // Web dev can use direct API URL when configured; otherwise use Vite proxy.
+  if (import.meta.env.DEV) {
+    return getDevConfiguredApiBase() || DEFAULT_WEB_API_BASE;
+  }
+
+  // Web production can target a separate backend service via env configuration.
+  return getWebConfiguredApiBase() || DEFAULT_WEB_API_BASE;
 }
 
 /**
  * Set a custom API base URL (for Electron settings)
  */
 export function setApiBaseUrl(url: string): void {
-  localStorage.setItem('apiBaseUrl', url);
+  const normalized = ensureApiBasePath(url);
+  if (!normalized) return;
+  localStorage.setItem(ELECTRON_API_STORAGE_KEY, normalized);
   window.location.reload(); // Reload to apply new URL
 }
 
@@ -40,13 +79,13 @@ export function setApiBaseUrl(url: string): void {
  * Get the configured API base URL (for settings display)
  */
 export function getConfiguredApiUrl(): string | null {
-  return localStorage.getItem('apiBaseUrl');
+  return getElectronConfiguredApiBase();
 }
 
 /**
  * Reset to default API URL
  */
 export function resetApiBaseUrl(): void {
-  localStorage.removeItem('apiBaseUrl');
+  localStorage.removeItem(ELECTRON_API_STORAGE_KEY);
   window.location.reload();
 }

@@ -529,12 +529,15 @@ export function BulkRenamePanel({
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col" data-tour="filters-bulk-actions-panel">
       <div className="flex-1 overflow-y-auto p-2.5 space-y-2.5">
         {activeTab === 'names' && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="space-y-2 rounded-lg border border-surface-border bg-surface-base/30 p-3">
+              <div
+                className="space-y-2 rounded-lg border border-surface-border bg-surface-base/30 p-3"
+                data-tour="filters-bulk-find-text"
+              >
                 <label className="text-xs font-medium text-slate-400">Find Text</label>
                 <div className="flex flex-wrap items-center gap-2">
                   <div
@@ -584,7 +587,10 @@ export function BulkRenamePanel({
                 )}
               </div>
 
-              <div className="space-y-2 rounded-lg border border-surface-border bg-surface-base/30 p-3">
+              <div
+                className="space-y-2 rounded-lg border border-surface-border bg-surface-base/30 p-3"
+                data-tour="filters-bulk-replace"
+              >
                 <label className="text-xs font-medium text-slate-400">Replace With</label>
                 <div
                   role="checkbox"
@@ -631,7 +637,7 @@ export function BulkRenamePanel({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3" data-tour="filters-bulk-prefix-suffix">
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-slate-400">Prefix</label>
                 <input
@@ -658,7 +664,10 @@ export function BulkRenamePanel({
         )}
 
         {activeTab === 'extension' && (
-          <div className="rounded-lg border border-surface-border bg-surface-base/40 p-3 space-y-2">
+          <div
+            className="rounded-lg border border-surface-border bg-surface-base/40 p-3 space-y-2"
+            data-tour="filters-bulk-format-panel"
+          >
             <div className="flex flex-wrap items-center gap-3">
               <div
                 role="checkbox"
@@ -872,12 +881,13 @@ export function BulkRenamePanel({
 
           <div className="inline-flex items-center gap-0.5 rounded-lg border border-surface-border bg-surface-base p-0.5">
             {[
-              { id: 'names' as const, label: 'Names' },
-              { id: 'extension' as const, label: 'Format / quality' },
+              { id: 'names' as const, label: 'Names', tourId: 'filters-bulk-tab-names' },
+              { id: 'extension' as const, label: 'Format / quality', tourId: 'filters-bulk-tab-format' },
             ].map((tab) => (
               <button
                 key={tab.id}
                 type="button"
+                data-tour={tab.tourId}
                 onClick={() => setActiveTab(tab.id)}
                 className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
                   activeTab === tab.id

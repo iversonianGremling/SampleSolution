@@ -111,6 +111,11 @@ export function VstKnob({
   const indStartY = cy + 6 * Math.sin(indRad)
 
   const displayValue = format ? format(value) : value.toFixed(step >= 1 ? 0 : step >= 0.1 ? 1 : 2)
+  const bodyGradTop = 'rgb(var(--color-surface-overlay-rgb) / 0.96)'
+  const bodyGradMiddle = 'rgb(var(--color-surface-border-rgb) / 0.95)'
+  const bodyGradBottom = 'rgb(var(--color-surface-base-rgb) / 1)'
+  const bodyStroke = 'rgb(var(--color-surface-border-rgb) / 0.95)'
+  const arcTrack = 'rgb(var(--color-surface-border-rgb) / 0.9)'
 
   return (
     <div
@@ -131,9 +136,9 @@ export function VstKnob({
       >
         <defs>
           <radialGradient id={`${uid}-body`} cx="40%" cy="35%">
-            <stop offset="0%" stopColor="#4a4e58" />
-            <stop offset="60%" stopColor="#2a2d35" />
-            <stop offset="100%" stopColor="#1a1c22" />
+            <stop offset="0%" stopColor={bodyGradTop} />
+            <stop offset="60%" stopColor={bodyGradMiddle} />
+            <stop offset="100%" stopColor={bodyGradBottom} />
           </radialGradient>
           <filter id={`${uid}-glow`}>
             <feGaussianBlur stdDeviation="2" result="blur" />
@@ -145,10 +150,10 @@ export function VstKnob({
         </defs>
 
         {/* Body */}
-        <circle cx={cx} cy={cy} r={arcR + 1} fill={`url(#${uid}-body)`} stroke="#1a1c22" strokeWidth="1" />
+        <circle cx={cx} cy={cy} r={arcR + 1} fill={`url(#${uid}-body)`} stroke={bodyStroke} strokeWidth="1" />
 
         {/* Track arc (background) */}
-        <path d={describeArc(startAngle, startAngle + KNOB_ARC_RANGE)} fill="none" stroke="#1e2028" strokeWidth={strokeWidth} strokeLinecap="round" />
+        <path d={describeArc(startAngle, startAngle + KNOB_ARC_RANGE)} fill="none" stroke={arcTrack} strokeWidth={strokeWidth} strokeLinecap="round" />
 
         {/* Active arc */}
         {normalized > 0.003 && (
@@ -175,7 +180,7 @@ export function VstKnob({
         />
       </svg>
 
-      <span className="font-vst text-[10px] tracking-widest uppercase text-slate-400 leading-none mt-0.5">
+      <span className="font-vst text-[10px] tracking-widest uppercase text-text-muted leading-none mt-0.5">
         {label}
       </span>
       <span className="font-vst-mono text-[10px] leading-none" style={{ color }}>

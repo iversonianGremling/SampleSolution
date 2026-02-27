@@ -46,7 +46,10 @@ export function SourcesRuleFilterBuilder({
   }
 
   return (
-    <div className="rounded-lg border border-surface-border bg-surface-raised p-3 space-y-3">
+    <div
+      className="rounded-lg border border-surface-border bg-surface-raised p-3 space-y-3"
+      data-tour="filters-advanced-rule-builder"
+    >
       <div className="flex items-center justify-between gap-2">
         <div>
           <div className="text-xs uppercase tracking-wide text-slate-500">Query Conditions</div>
@@ -56,6 +59,7 @@ export function SourcesRuleFilterBuilder({
         </div>
         <button
           onClick={handleAddRule}
+          data-tour="filters-advanced-add-condition"
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium bg-accent-primary text-white hover:bg-accent-primary/90 transition-colors"
         >
           <Plus size={12} />

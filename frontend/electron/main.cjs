@@ -445,8 +445,8 @@ app.whenReady().then(async () => {
           "default-src 'self'; " +
           scriptSrc +
           "worker-src 'self' blob:; " +
-          "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-          "font-src 'self' data: https://fonts.gstatic.com; " +
+          "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; " +
+          "font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; " +
           "img-src 'self' data: blob: https://i.ytimg.com; " +
           "connect-src 'self' http://localhost:4000 ws://localhost:4000; " +
           "media-src 'self' blob: http://localhost:4000;"

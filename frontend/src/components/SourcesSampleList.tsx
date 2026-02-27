@@ -1264,7 +1264,7 @@ export function SourcesSampleList({
     }))
   }
 
-  const renderResizeHandle = (key: SourcesListColumnWidthKey, className?: string) => (
+  const renderResizeHandle = (key: SourcesListColumnWidthKey, className?: string, tourId?: string) => (
     <button
       type="button"
       onMouseDown={(event) => startResize(key, event)}
@@ -1273,6 +1273,7 @@ export function SourcesSampleList({
         event.stopPropagation()
         resetColumnWidth(key)
       }}
+      data-tour={tourId}
       className={`group absolute right-[-7px] top-0 z-10 flex h-full w-4 cursor-col-resize touch-none items-center justify-center rounded-sm border-l border-surface-border/60 bg-surface-base/25 hover:bg-accent-primary/20 transition-colors ${className ?? ''}`}
       title="Drag to resize (double-click to reset)"
       tabIndex={-1}
@@ -1286,6 +1287,7 @@ export function SourcesSampleList({
     <button
       ref={columnsMenuButtonRef}
       onClick={toggleColumnsMenu}
+      data-tour="samples-list-columns-button"
       className="flex items-center gap-1 rounded-md border border-surface-border bg-surface-base px-2 py-1 text-slate-300 hover:text-white hover:bg-surface-overlay transition-colors flex-shrink-0"
       title="Show or hide list columns"
       aria-label="Show or hide list columns"
@@ -1296,7 +1298,10 @@ export function SourcesSampleList({
   )
 
   return (
-    <div className={`sources-list-compact flex min-h-0 flex-col h-full overflow-hidden ${isDuplicatePairMode ? 'bg-surface-base/30' : ''}`}>
+    <div
+      className={`sources-list-compact flex min-h-0 flex-col h-full overflow-hidden ${isDuplicatePairMode ? 'bg-surface-base/30' : ''}`}
+      data-tour="samples-list-view"
+    >
       <div ref={listContainerRef} className="flex-1 min-h-0 overflow-auto">
         <div
           ref={headerRef}
@@ -1327,6 +1332,7 @@ export function SourcesSampleList({
             {similarityMode?.enabled && (
               <div className="relative flex flex-shrink-0 justify-end pr-1" style={{ width: columnWidths.similarity }}>
                 <button
+                  data-tour="samples-list-similarity-sort"
                   onClick={() => handleSortClick('similarity')}
                   className={`w-full flex items-center justify-end text-right section-label transition-colors hover:text-text-secondary ${
                     sortField === 'similarity' ? 'text-accent-primary' : ''
@@ -1341,6 +1347,7 @@ export function SourcesSampleList({
 
             <div className="relative flex-shrink-0 min-w-0 pl-1" style={{ width: columnWidths.name }}>
               <button
+                data-tour="samples-list-name-sort"
                 onClick={() => handleSortClick('name')}
                 className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
                   sortField === 'name' ? 'text-accent-primary' : ''
@@ -1349,7 +1356,7 @@ export function SourcesSampleList({
                 Name
                 {getSortIcon('name')}
               </button>
-              {renderResizeHandle('name')}
+              {renderResizeHandle('name', undefined, 'samples-list-name-resize')}
             </div>
 
             {columnVisibility.tags && (
@@ -1854,6 +1861,7 @@ export function SourcesSampleList({
       {showColumnsMenu && typeof document !== 'undefined' && createPortal(
         <div
           ref={columnsMenuPopoverRef}
+          data-tour="samples-list-columns-menu"
           className="fixed w-64 bg-surface-raised border border-surface-border rounded-lg shadow-xl z-[120] p-2"
           style={{ top: columnsMenuPosition.top, left: columnsMenuPosition.left }}
         >
@@ -1902,6 +1910,7 @@ export function SourcesSampleList({
                 onClick={() => {
                   void saveCurrentAsPreset()
                 }}
+                data-tour="samples-list-save-current"
                 className="rounded border border-surface-border bg-surface-base px-2 py-1 text-[10px] text-slate-300 hover:bg-surface-overlay transition-colors"
                 title="Save current list view as preset"
               >

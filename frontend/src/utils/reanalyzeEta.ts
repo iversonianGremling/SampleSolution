@@ -1,6 +1,7 @@
 export interface ReanalyzeEtaInput {
   isStopping: boolean
   startedAt: string | null | undefined
+  updatedAt?: string | null | undefined
   processed: number
   total: number
   nowMs?: number
@@ -30,15 +31,22 @@ export function computeReanalyzeEtaMs(input: ReanalyzeEtaInput): number | null {
   if (!Number.isFinite(startedAtMs)) return null
 
   const nowMs = Number.isFinite(input.nowMs) ? input.nowMs! : Date.now()
-  const elapsedMs = Math.max(0, nowMs - startedAtMs)
-  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return null
+  const updatedAtMs = input.updatedAt ? new Date(input.updatedAt).getTime() : Number.NaN
+  const anchorMs = Number.isFinite(updatedAtMs)
+    ? Math.min(Math.max(startedAtMs, updatedAtMs), nowMs)
+    : nowMs
+  const elapsedAtAnchorMs = Math.max(0, anchorMs - startedAtMs)
+  if (!Number.isFinite(elapsedAtAnchorMs) || elapsedAtAnchorMs <= 0) return null
 
-  const averageMsPerSample = elapsedMs / input.processed
+  const averageMsPerSample = elapsedAtAnchorMs / input.processed
   if (!Number.isFinite(averageMsPerSample) || averageMsPerSample <= 0) return null
 
   const remainingSamples = input.total - input.processed
-  const etaMs = averageMsPerSample * remainingSamples
-  if (!Number.isFinite(etaMs) || etaMs < 0) return null
+  const etaAtAnchorMs = averageMsPerSample * remainingSamples
+  if (!Number.isFinite(etaAtAnchorMs) || etaAtAnchorMs < 0) return null
+
+  const elapsedSinceAnchorMs = Math.max(0, nowMs - anchorMs)
+  const etaMs = Math.max(0, etaAtAnchorMs - elapsedSinceAnchorMs)
 
   return etaMs
 }

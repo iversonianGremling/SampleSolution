@@ -663,7 +663,11 @@ export function CustomOrderDestinationPane({ state, dispatch, collections, side 
   }
 
   return (
-    <div className="flex flex-col h-full" data-side={side}>
+    <div
+      className="flex flex-col h-full"
+      data-side={side}
+      data-tour={side === 'right' ? 'custom-order-destination-pane' : undefined}
+    >
       <div className="px-4 py-3 border-b border-surface-border">
         <h3 className="text-sm font-medium text-slate-200">Destinations</h3>
         <p className="text-xs text-slate-500 mt-1">Click a folder to use it as destination, or hover to create new ones</p>

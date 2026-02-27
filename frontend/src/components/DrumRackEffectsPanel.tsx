@@ -35,16 +35,16 @@ export function DrumRackEffectsPanel() {
   }, [globalFxSettings, setGlobalFxSettings])
 
   return (
-    <div className="mx-auto w-full max-w-[960px] min-w-0 space-y-3 sm:space-y-4">
-      <div className="rounded-xl border border-surface-border bg-[#0a0c10] overflow-hidden">
+    <div className="mx-auto w-full max-w-[960px] min-w-0 space-y-3 sm:space-y-4" data-tour="drum-rack-global-effects">
+      <div className="rounded-xl border border-surface-border bg-surface-raised overflow-hidden">
         <div className="flex items-center justify-between px-3 sm:px-4 py-2.5 border-b border-surface-border/60">
           <div>
-            <div className="text-[11px] font-medium uppercase tracking-wider text-cyan-200">Global FX Chain</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">Applies to all Drum Rack playback. Pitch/fades are global for every sample.</div>
+            <div className="text-[11px] font-medium uppercase tracking-wider text-accent-secondary">Global FX Chain</div>
+            <div className="text-[10px] text-text-muted mt-0.5">Applies to all Drum Rack playback. Pitch/fades are global for every sample.</div>
           </div>
           <button
             onClick={clearGlobalFx}
-            className="text-[10px] text-slate-400 hover:text-slate-200 uppercase tracking-wider transition-colors"
+            className="text-[10px] text-text-muted hover:text-text-secondary uppercase tracking-wider transition-colors"
           >
             Reset Global
           </button>
@@ -52,13 +52,13 @@ export function DrumRackEffectsPanel() {
 
         <div className="px-3 sm:px-4 py-3 border-b border-surface-border/40">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-            <div className="rounded-md border border-cyan-500/25 bg-cyan-500/5 p-2">
+            <div className="rounded-md border border-accent-secondary/35 bg-accent-secondary/10 p-2">
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[10px] text-cyan-300/80 uppercase tracking-wider">Core</span>
+                <span className="text-[10px] text-accent-secondary uppercase tracking-wider">Core</span>
                 <select
                   value={globalFxSettings.pitchMode}
                   onChange={(e) => updateGlobal('pitchMode', e.target.value as LabPitchMode)}
-                  className="bg-surface-base border border-surface-border rounded text-[9px] px-1 py-0.5 text-cyan-300 focus:outline-none focus:border-cyan-400"
+                  className="bg-surface-base border border-surface-border rounded text-[9px] px-1 py-0.5 text-text-primary focus:outline-none focus:border-accent-secondary"
                   title="Pitch mode"
                 >
                   {PITCH_MODES.map((mode) => (
@@ -112,8 +112,8 @@ export function DrumRackEffectsPanel() {
                 disabled={globalFxSettings.pitchMode === 'tape'}
                 className={`mt-1.5 w-full rounded border px-1.5 py-1 text-[9px] uppercase tracking-wider transition-colors ${
                   globalFxSettings.preserveFormants
-                    ? 'border-emerald-400/70 bg-emerald-500/15 text-emerald-200'
-                    : 'border-surface-border bg-surface-base text-cyan-300/80'
+                    ? 'border-emerald-500/70 bg-emerald-500/18 text-emerald-100'
+                    : 'border-surface-border bg-surface-base text-text-primary'
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
                 title="Preserve vocal formants when using Granular/HQ pitch modes"
               >
@@ -252,7 +252,7 @@ export function DrumRackEffectsPanel() {
 
         <button
           onClick={() => setShowAdvanced((prev) => !prev)}
-          className="w-full flex items-center justify-between px-3 sm:px-4 py-2 text-[11px] text-slate-400 hover:text-slate-200 transition-colors"
+          className="w-full flex items-center justify-between px-3 sm:px-4 py-2 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
         >
           <span className="inline-flex items-center gap-1.5 uppercase tracking-wider">
             <SlidersHorizontal size={12} />

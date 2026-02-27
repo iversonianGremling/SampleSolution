@@ -22,6 +22,7 @@ interface SampleSearchScopeMenuProps {
   onScopeChange: (scope: SampleSearchScope) => void
   onToggleCustomField: (field: SampleSearchCustomField) => void
   onResetCustomFields: () => void
+  triggerTourId?: string
 }
 
 export function SampleSearchScopeMenu({
@@ -31,6 +32,7 @@ export function SampleSearchScopeMenu({
   onScopeChange,
   onToggleCustomField,
   onResetCustomFields,
+  triggerTourId,
 }: SampleSearchScopeMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -88,6 +90,7 @@ export function SampleSearchScopeMenu({
         <button
           type="button"
           onClick={() => setIsOpen((current) => !current)}
+          data-tour={triggerTourId}
           className="inline-flex h-7 max-w-[170px] items-center gap-1 rounded-md border border-surface-border bg-surface-base px-2 text-[11px] font-medium text-text-secondary transition-colors hover:text-text-primary"
           title={searchScopeHint}
           aria-haspopup="menu"

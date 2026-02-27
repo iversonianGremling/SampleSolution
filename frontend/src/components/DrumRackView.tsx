@@ -1103,11 +1103,12 @@ export function DrumRackView() {
   const selectedPadHasSlice = selectedPadIndex !== null && isSliceLike(pads[selectedPadIndex]?.slice)
 
   return (
-    <div className="h-full flex flex-col bg-surface-base">
+    <div className="h-full flex flex-col bg-surface-base" data-tour="drum-rack-view">
       {/* Top Tabs */}
-      <div className="flex items-center gap-1 px-3 sm:px-4 py-2 bg-surface-raised border-b border-surface-border">
+      <div className="flex items-center gap-1 px-3 sm:px-4 py-2 bg-surface-raised border-b border-surface-border" data-tour="drum-rack-tabs">
         <button
           onClick={() => setActiveTab('drumrack')}
+          data-tour="drum-rack-tab-drumrack"
           className={`inline-flex items-center rounded-md border px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
             activeTab === 'drumrack'
               ? 'border-accent-primary/50 bg-accent-primary/15 text-accent-primary'
@@ -1118,9 +1119,10 @@ export function DrumRackView() {
         </button>
         <button
           onClick={() => setActiveTab('sequencer')}
+          data-tour="drum-rack-tab-sequencer"
           className={`inline-flex items-center rounded-md border px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
             activeTab === 'sequencer'
-              ? 'border-cyan-400/50 bg-cyan-400/10 text-cyan-300'
+              ? 'border-accent-secondary/55 bg-accent-secondary/15 text-accent-secondary'
               : 'border-surface-border bg-surface-base text-slate-400 hover:text-slate-200'
           }`}
         >
@@ -1128,6 +1130,7 @@ export function DrumRackView() {
         </button>
         <button
           onClick={() => setActiveTab('effects')}
+          data-tour="drum-rack-tab-effects"
           className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider transition-colors ${
             activeTab === 'effects'
               ? 'border-violet-400/50 bg-violet-400/10 text-violet-300'
@@ -1141,10 +1144,11 @@ export function DrumRackView() {
 
       {/* Drum Rack Controls */}
       {activeTab === 'drumrack' && (
-        <div className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2.5 bg-surface-raised border-b border-surface-border flex-wrap">
+        <div className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2.5 bg-surface-raised border-b border-surface-border flex-wrap" data-tour="drum-rack-controls">
           <div className="flex items-center bg-surface-base border border-surface-border rounded-lg overflow-hidden">
             <button
               onClick={() => setPadPlayMode('one-shot')}
+              data-tour="drum-rack-pad-mode-one-shot"
               className={`flex items-center gap-1 px-2 py-1.5 text-xs transition-colors ${
                 padPlayMode === 'one-shot'
                   ? 'bg-accent-primary/20 text-accent-primary'
@@ -1158,6 +1162,7 @@ export function DrumRackView() {
             <div className="w-px h-5 bg-surface-border" />
             <button
               onClick={() => setPadPlayMode('hold')}
+              data-tour="drum-rack-pad-mode-hold"
               className={`flex items-center gap-1 px-2 py-1.5 text-xs transition-colors ${
                 padPlayMode === 'hold'
                   ? 'bg-accent-primary/20 text-accent-primary'
@@ -1278,35 +1283,6 @@ export function DrumRackView() {
 
         <div className="w-px h-6 bg-surface-border mx-0.5" />
 
-        {/* Pad play mode toggle */}
-        <div className="flex items-center bg-surface-base border border-surface-border rounded-lg overflow-hidden">
-          <button
-            onClick={() => setPadPlayMode('one-shot')}
-            className={`flex items-center gap-1 px-2 py-1.5 text-xs transition-colors ${
-              padPlayMode === 'one-shot'
-                ? 'bg-accent-primary/20 text-accent-primary'
-                : 'text-slate-500 hover:text-slate-300'
-            }`}
-            title="One-shot: click to play full sample"
-          >
-            <MousePointerClick size={12} />
-            <span className="hidden lg:inline">One-shot</span>
-          </button>
-          <div className="w-px h-5 bg-surface-border" />
-          <button
-            onClick={() => setPadPlayMode('hold')}
-            className={`flex items-center gap-1 px-2 py-1.5 text-xs transition-colors ${
-              padPlayMode === 'hold'
-                ? 'bg-accent-primary/20 text-accent-primary'
-                : 'text-slate-500 hover:text-slate-300'
-            }`}
-            title="Hold: plays while you hold, stops on release"
-          >
-            <Hand size={12} />
-            <span className="hidden lg:inline">Hold</span>
-          </button>
-        </div>
-
         {/* Edit Mode Toggle */}
         <div className="flex items-center bg-surface-base border border-surface-border rounded-lg overflow-hidden">
           <button
@@ -1423,10 +1399,10 @@ export function DrumRackView() {
 
       {/* Main Content */}
       {activeTab === 'drumrack' ? (
-        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6" data-tour="drum-rack-main-pane">
           <div className="flex flex-col gap-4 max-w-[1200px] mx-auto lg:mx-0 min-w-0">
             <div className="flex justify-center lg:justify-start">
-              <div className="grid w-full max-w-[26rem] grid-cols-4 gap-1.5 sm:gap-2">
+              <div className="grid w-full max-w-[26rem] grid-cols-4 gap-1.5 sm:gap-2" data-tour="drum-rack-pad-grid">
                 {PAD_KEYS.map((row, rowIdx) =>
                   row.map((key, colIdx) => {
                     const padIndex = getPadIndex(rowIdx, colIdx)
@@ -1532,7 +1508,7 @@ export function DrumRackView() {
 
             {selectedPadIndex !== null ? (
               selectedPadHasSlice ? (
-                <div className="w-full max-w-[960px] mx-auto lg:mx-0">
+                <div className="w-full max-w-[960px] mx-auto lg:mx-0" data-tour="drum-rack-pad-fx-chain">
                   <PadFxChain padIndex={selectedPadIndex} onClose={() => setSelectedPadIndex(null)} />
                 </div>
               ) : (
@@ -1544,7 +1520,7 @@ export function DrumRackView() {
           </div>
         </div>
       ) : activeTab === 'sequencer' ? (
-        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6" data-tour="drum-rack-sequencer-pane">
           <div className="mx-auto w-full max-w-[960px] min-w-0">
             {/* Step numbers */}
             <div className="mb-2 grid grid-cols-[72px_minmax(0,1fr)] items-center gap-1 sm:grid-cols-[96px_minmax(0,1fr)_4rem]">
@@ -1709,7 +1685,7 @@ export function DrumRackView() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6" data-tour="drum-rack-effects-pane">
           <DrumRackEffectsPanel />
         </div>
       )}

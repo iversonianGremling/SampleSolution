@@ -18,6 +18,9 @@ type ConfirmDialogOptions = {
   confirmText?: string
   cancelText?: string
   isDestructive?: boolean
+  checkboxLabel?: string
+  checkboxDefaultChecked?: boolean
+  onCheckboxChange?: (checked: boolean) => void
 }
 
 type AlertDialogOptions = {
@@ -154,6 +157,9 @@ function useAppDialogController() {
           confirmText={options.confirmText || 'Confirm'}
           cancelText={options.cancelText || 'Cancel'}
           isDestructive={Boolean(options.isDestructive)}
+          checkboxLabel={options.checkboxLabel}
+          checkboxDefaultChecked={options.checkboxDefaultChecked}
+          onCheckboxChange={options.onCheckboxChange}
           onConfirm={() => {
             pendingDialog.resolve(true)
             setPendingDialog(null)

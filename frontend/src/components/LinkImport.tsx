@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import {
   useBatchAddSlicesToFolder,
+  useCreateCollection,
   useCreateFolder,
   useImportLinks,
   useImportLocalFiles,
@@ -41,6 +42,10 @@ import {
   SPOTDL_INTEGRATION_STORAGE_KEY,
 } from '../utils/spotdlIntegration'
 import { assignImportsPreservingStructure, type ImportStructureMode } from '../utils/importStructure'
+import {
+  buildCollectionSubdivisionGroups,
+  getDefaultCollectionNameForFolderImport,
+} from '../utils/importCollectionStrategy'
 
 type ImportMode = 'youtube' | 'spotify' | 'soundcloud' | 'local' | 'folder'
 type LocalImportSourceKind = 'files' | 'folder'
@@ -565,6 +570,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
   const importLinks = useImportLinks()
   const importLocalFiles = useImportLocalFiles()
   const batchAddSlicesToFolder = useBatchAddSlicesToFolder()
+  const createCollection = useCreateCollection()
   const createFolder = useCreateFolder()
   const importSpotify = useImportSpotify()
   const importSoundCloud = useImportSoundCloud()
@@ -673,6 +679,8 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
     destinationFolder,
     structureMode,
     bypassParentFolder,
+    collectionMode,
+    newCollectionName,
   }: {
     files: File[]
     sourceKind: LocalImportSourceKind
@@ -682,6 +690,8 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
     destinationFolder: ImportDestinationChoice['destinationFolder']
     structureMode: ImportStructureMode
     bypassParentFolder: boolean
+    collectionMode: ImportDestinationChoice['collectionMode']
+    newCollectionName: string | null
   }) => {
     if (files.length === 0) return
 
@@ -693,65 +703,128 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
       setLocalResult(res)
     }
 
-    const shouldAssignToCollectionRoot =
-      destinationFolderId === null &&
-      destinationCollectionId !== null &&
-      sourceKind === 'folder' &&
-      structureMode === 'preserve'
+    const successfulImports = res.results
+      .map((entry, index) =>
+        entry.success && typeof entry.sliceId === 'number'
+          ? { sliceId: entry.sliceId, file: files[index] }
+          : null)
+      .filter((entry): entry is { sliceId: number; file: File } => entry !== null)
+    const importedSliceIds = successfulImports.map((entry) => entry.sliceId)
+    if (importedSliceIds.length > 0) {
+      const shouldPreserveStructure = sourceKind === 'folder' && structureMode === 'preserve'
+      const effectiveBypassParentFolder =
+        sourceKind === 'folder' && collectionMode === 'split-by-folder'
+          ? true
+          : bypassParentFolder
+      const workingFolders = [...(destinationFolders as Folder[])]
+      let effectiveDestinationFolderId = destinationFolderId
+      let effectiveDestinationCollectionId = destinationCollectionId
+      let effectiveDestinationFolder = destinationFolder
 
-    if (destinationFolderId !== null || shouldAssignToCollectionRoot) {
-      const successfulImports = res.results
-        .map((entry, index) =>
-          entry.success && typeof entry.sliceId === 'number'
-            ? { sliceId: entry.sliceId, file: files[index] }
-            : null)
-        .filter((entry): entry is { sliceId: number; file: File } => entry !== null)
-      const importedSliceIds = successfulImports.map((entry) => entry.sliceId)
+      if (sourceKind === 'folder' && collectionMode === 'new-collection') {
+        const fallbackName = getDefaultCollectionNameForFolderImport(files) || `Imported ${new Date().toISOString().slice(0, 10)}`
+        const collectionName = (newCollectionName?.trim() || fallbackName).trim()
+        const createdCollection = await createCollection.mutateAsync({ name: collectionName })
+        effectiveDestinationFolderId = null
+        effectiveDestinationCollectionId = createdCollection.id
+        effectiveDestinationFolder = null
+      }
 
-      if (importedSliceIds.length > 0) {
-        const shouldPreserveStructure = sourceKind === 'folder' && structureMode === 'preserve'
+      if (sourceKind === 'folder' && collectionMode === 'split-by-folder') {
+        const groups = buildCollectionSubdivisionGroups(successfulImports)
 
-        if (shouldPreserveStructure) {
-          const resolvedDestinationFolder = destinationFolder ||
-            (destinationFolderId !== null ? destinationFolderMap.get(destinationFolderId) || null : null)
+        for (const group of groups) {
+          const createdCollection = await createCollection.mutateAsync({ name: group.collectionName })
 
-          if (resolvedDestinationFolder) {
+          if (shouldPreserveStructure) {
             await assignImportsPreservingStructure({
-              destinationFolder: {
-                id: resolvedDestinationFolder.id,
-                name: resolvedDestinationFolder.name,
-                parentId: resolvedDestinationFolder.parentId ?? null,
-                collectionId: resolvedDestinationFolder.collectionId ?? null,
+              destinationCollectionId: createdCollection.id,
+              successfulImports: group.preserveReadyImports,
+              existingFolders: workingFolders,
+              createFolder: async (data) => {
+                const createdFolder = await createFolder.mutateAsync(data)
+                workingFolders.push(createdFolder)
+                return createdFolder
               },
-              successfulImports,
-              existingFolders: destinationFolders as Folder[],
-              createFolder: (data) => createFolder.mutateAsync(data),
               assignSlicesToFolder: (folderId, sliceIds) =>
                 batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
-              bypassParentFolder,
+              bypassParentFolder: true,
             })
-          } else if (destinationCollectionId !== null) {
-            await assignImportsPreservingStructure({
-              destinationCollectionId,
-              successfulImports,
-              existingFolders: destinationFolders as Folder[],
-              createFolder: (data) => createFolder.mutateAsync(data),
-              assignSlicesToFolder: (folderId, sliceIds) =>
-                batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
-              bypassParentFolder,
-            })
-          } else {
-            if (destinationFolderId !== null) {
-              await batchAddSlicesToFolder.mutateAsync({
-                folderId: destinationFolderId,
-                sliceIds: importedSliceIds,
+            continue
+          }
+
+          const createdFolder = await createFolder.mutateAsync({
+            name: `Imported ${new Date().toISOString().slice(0, 10)}`,
+            collectionId: createdCollection.id,
+          })
+          workingFolders.push(createdFolder)
+
+          const groupSliceIds = group.originalImports.map((entry) => entry.sliceId)
+          if (groupSliceIds.length === 0) continue
+
+          await batchAddSlicesToFolder.mutateAsync({
+            folderId: createdFolder.id,
+            sliceIds: groupSliceIds,
+          })
+        }
+      } else {
+        const shouldAssignToCollectionRoot =
+          effectiveDestinationFolderId === null &&
+          effectiveDestinationCollectionId !== null &&
+          shouldPreserveStructure
+
+        if (!shouldPreserveStructure && effectiveDestinationFolderId === null && effectiveDestinationCollectionId !== null) {
+          const createdFolder = await createFolder.mutateAsync({
+            name: `Imported ${new Date().toISOString().slice(0, 10)}`,
+            collectionId: effectiveDestinationCollectionId,
+          })
+          workingFolders.push(createdFolder)
+          effectiveDestinationFolderId = createdFolder.id
+          effectiveDestinationFolder = createdFolder
+        }
+
+        if (effectiveDestinationFolderId !== null || shouldAssignToCollectionRoot) {
+          if (shouldPreserveStructure) {
+            const resolvedDestinationFolder = effectiveDestinationFolder ||
+              (effectiveDestinationFolderId !== null ? destinationFolderMap.get(effectiveDestinationFolderId) || null : null)
+
+            if (resolvedDestinationFolder) {
+              await assignImportsPreservingStructure({
+                destinationFolder: {
+                  id: resolvedDestinationFolder.id,
+                  name: resolvedDestinationFolder.name,
+                  parentId: resolvedDestinationFolder.parentId ?? null,
+                  collectionId: resolvedDestinationFolder.collectionId ?? null,
+                },
+                successfulImports,
+                existingFolders: workingFolders,
+                createFolder: async (data) => {
+                  const createdFolder = await createFolder.mutateAsync(data)
+                  workingFolders.push(createdFolder)
+                  return createdFolder
+                },
+                assignSlicesToFolder: (folderId, sliceIds) =>
+                  batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
+                bypassParentFolder: effectiveBypassParentFolder,
+              })
+            } else if (effectiveDestinationCollectionId !== null) {
+              await assignImportsPreservingStructure({
+                destinationCollectionId: effectiveDestinationCollectionId,
+                successfulImports,
+                existingFolders: workingFolders,
+                createFolder: async (data) => {
+                  const createdFolder = await createFolder.mutateAsync(data)
+                  workingFolders.push(createdFolder)
+                  return createdFolder
+                },
+                assignSlicesToFolder: (folderId, sliceIds) =>
+                  batchAddSlicesToFolder.mutateAsync({ folderId, sliceIds }),
+                bypassParentFolder: effectiveBypassParentFolder,
               })
             }
-          }
-        } else {
-          if (destinationFolderId !== null) {
+          } else if (effectiveDestinationFolderId !== null) {
             await batchAddSlicesToFolder.mutateAsync({
-              folderId: destinationFolderId,
+              folderId: effectiveDestinationFolderId,
               sliceIds: importedSliceIds,
             })
           }
@@ -807,6 +880,8 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
       destinationFolder: null,
       structureMode: 'flatten',
       bypassParentFolder: false,
+      collectionMode: 'existing',
+      newCollectionName: null,
     })
   }
 
@@ -889,6 +964,8 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
       destinationFolder: choice.destinationFolder,
       structureMode: choice.structureMode,
       bypassParentFolder: choice.bypassParentFolder,
+      collectionMode: choice.collectionMode,
+      newCollectionName: choice.newCollectionName,
     })
   }
 
@@ -922,6 +999,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
     importSoundCloud.isPending ||
     importLocalFiles.isPending ||
     batchAddSlicesToFolder.isPending ||
+    createCollection.isPending ||
     createFolder.isPending
 
   return (
@@ -937,7 +1015,12 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
           folders={destinationFolders as Folder[]}
           collections={destinationCollections as Collection[]}
           isLoading={isDestinationFoldersLoading || isDestinationCollectionsLoading}
-          isSubmitting={importLocalFiles.isPending || batchAddSlicesToFolder.isPending || createFolder.isPending}
+          isSubmitting={
+            importLocalFiles.isPending ||
+            batchAddSlicesToFolder.isPending ||
+            createCollection.isPending ||
+            createFolder.isPending
+          }
           onCancel={handleDestinationPromptCancel}
           onConfirm={handleDestinationPromptConfirm}
         />

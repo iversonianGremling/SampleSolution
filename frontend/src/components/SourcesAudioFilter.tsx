@@ -451,7 +451,7 @@ export function SourcesAudioFilter({
       )}
 
       {showBpmSection && (
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1.5" data-tour="filters-features-bpm">
         <span className="text-xs text-slate-400 whitespace-nowrap">BPM:</span>
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           {/* Number inputs */}
@@ -537,13 +537,14 @@ export function SourcesAudioFilter({
       )}
 
       {showPitchSection && (
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3" data-tour="filters-features-pitch">
         <div className="flex items-center gap-1.5 pt-1 flex-shrink-0">
           <select
             value={filterState.pitchFilterMode || 'fundamental'}
             onChange={(e) => handlePitchModeChange(e.target.value as 'fundamental' | 'scale')}
+            data-tour="filters-features-pitch-mode"
             className="text-xs text-slate-300 bg-surface-base border border-surface-border rounded px-1 py-0.5 cursor-pointer hover:text-white hover:border-slate-500 transition-colors focus:outline-none focus:border-accent-primary appearance-none"
-            style={{ backgroundImage: 'none', colorScheme: 'dark' }}
+            style={{ backgroundImage: 'none', colorScheme: 'inherit' }}
           >
             <option value="fundamental" className="bg-surface-base text-slate-200">Note</option>
             <option value="scale" className="bg-surface-base text-slate-200">Scale</option>
@@ -554,7 +555,7 @@ export function SourcesAudioFilter({
           {/* Fundamental frequency mode */}
           {(filterState.pitchFilterMode || 'fundamental') === 'fundamental' && (
             <>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-1.5" data-tour="filters-features-note-grid">
                 {KEY_DATA.map(({ note, hue }) => {
                   const isSelected = (filterState.selectedNotes || []).includes(note)
                   return (
@@ -596,6 +597,7 @@ export function SourcesAudioFilter({
                 <div className="mt-2">
                   <button
                     onClick={() => setShowRelatedNotes(!showRelatedNotes)}
+                    data-tour="filters-features-related-notes"
                     className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
                   >
                     {showRelatedNotes ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -652,7 +654,7 @@ export function SourcesAudioFilter({
           {/* Scale mode (existing key filter) */}
           {filterState.pitchFilterMode === 'scale' && (
             <>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-1.5" data-tour="filters-features-scale-grid">
                 {KEY_DATA.map(({ note, hue }) => {
                   const majorKey = `${note} major`
                   const minorKey = `${note} minor`
@@ -732,6 +734,7 @@ export function SourcesAudioFilter({
                 <div className="mt-2">
                   <button
                     onClick={() => setShowRelatedKeys(!showRelatedKeys)}
+                    data-tour="filters-features-related-keys"
                     className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
                   >
                     {showRelatedKeys ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -792,7 +795,7 @@ export function SourcesAudioFilter({
 
       {/* Envelope Type filter */}
       {showEnvelopeSection && availableEnvelopeTypes.length > 0 && (
-        <div className="flex items-start gap-3">
+        <div className="flex items-start gap-3" data-tour="filters-features-envelope">
           <span className="text-xs text-slate-400 whitespace-nowrap pt-1">Envelope:</span>
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap gap-1">
@@ -824,13 +827,14 @@ export function SourcesAudioFilter({
 
       {/* Date filters */}
       {showDatesSection && (
-      <div className="border-t border-surface-border pt-2">
+      <div className="border-t border-surface-border pt-2" data-tour="filters-features-date">
         <div className="flex items-center gap-2">
           <select
             value={selectedDateField}
             onChange={(e) => setSelectedDateField(e.target.value as DateFilterField)}
+            data-tour="filters-features-date-field"
             className="text-xs text-slate-300 bg-surface-base border border-surface-border rounded px-2 py-0.5 cursor-pointer hover:text-white hover:border-slate-500 transition-colors focus:outline-none focus:border-accent-primary appearance-none"
-            style={{ backgroundImage: 'none', colorScheme: 'dark' }}
+            style={{ backgroundImage: 'none', colorScheme: 'inherit' }}
           >
             <option value="added" className="bg-surface-base text-slate-200">Date added</option>
             <option value="created" className="bg-surface-base text-slate-200">File created</option>
@@ -877,7 +881,7 @@ export function SourcesAudioFilter({
           </label>
         </div>
 
-        <div className="mt-1.5 flex flex-wrap gap-1">
+        <div className="mt-1.5 flex flex-wrap gap-1" data-tour="filters-features-date-presets">
           {DATE_PRESETS.map((preset) => (
             <button
               key={preset.key}

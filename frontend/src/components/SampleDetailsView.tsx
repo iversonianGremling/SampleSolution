@@ -178,6 +178,7 @@ function SimilarSamplesSection({
   })
 
   const currentSampleId = Number(sampleId)
+  const hasSimilarityListAction = Boolean(onFilterBySimilarity)
   const visibleSimilarSamples = (similarSamples ?? []).filter((sample) => {
     const candidateId = Number(sample.id)
     return Number.isFinite(candidateId) && candidateId !== currentSampleId
@@ -213,7 +214,7 @@ function SimilarSamplesSection({
   if (isLoading) {
     return (
       <div>
-        <label className="section-label flex items-center gap-1.5 mb-2">
+        <label className="section-label flex items-center gap-1.5 mb-2" data-tour="sample-details-similar-label">
           <Sparkles size={10} />
           Similar Samples
         </label>
@@ -226,9 +227,12 @@ function SimilarSamplesSection({
     return null
   }
 
+  const similarSectionTourTarget = hasSimilarityListAction ? undefined : 'sample-details-similar-section'
+  const similarLabelTourTarget = hasSimilarityListAction ? undefined : 'sample-details-similar-label'
+
   return (
-    <div>
-      <label className="section-label flex items-center gap-1.5 mb-2">
+    <div data-tour={similarSectionTourTarget}>
+      <label className="section-label flex items-center gap-1.5 mb-2" data-tour={similarLabelTourTarget}>
         <Sparkles size={10} />
         Similar Samples
       </label>
@@ -241,6 +245,7 @@ function SimilarSamplesSection({
             <button
               type="button"
               key={sampleIdNum}
+              data-tour="sample-details-similar-card"
               onMouseEnter={() => handleMouseEnter(sampleIdNum)}
               onMouseLeave={handleMouseLeave}
               onClick={() => onSelectSample?.(sampleIdNum)}
@@ -264,14 +269,17 @@ function SimilarSamplesSection({
         })}
       </div>
       {onFilterBySimilarity && (
-        <button
-          type="button"
-          onClick={() => onFilterBySimilarity(sampleId, sampleName)}
-          className="mt-1.5 w-full px-2.5 py-1.5 bg-accent-warm/10 hover:bg-accent-warm/15 text-accent-warm rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5"
-        >
-          <Sparkles size={12} />
-          Show All Similar Samples
-        </button>
+        <div className="mt-1.5" data-tour="sample-details-show-all-similar-container">
+          <button
+            type="button"
+            onClick={() => onFilterBySimilarity(sampleId, sampleName)}
+            data-tour="sample-details-show-all-similar"
+            className="w-full px-2.5 py-1.5 bg-accent-warm/10 hover:bg-accent-warm/15 text-accent-warm rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5"
+          >
+            <Sparkles size={12} />
+            Show All Similar Samples
+          </button>
+        </div>
       )}
     </div>
   )
@@ -382,7 +390,7 @@ export function SampleDetailsView({
     }
 
     setIsPreparingWaveform(true)
-    const mode: TunePlaybackMode = hasManualPitchOverride ? pitchAlgorithm : 'tape'
+    const mode: TunePlaybackMode = pitchAlgorithm
 
     void (async () => {
       try {
@@ -392,7 +400,9 @@ export function SampleDetailsView({
           mode,
           getSliceDownloadUrl(sample.id),
           {
+            allowHqPreview: true,
             immediateFallbackToTape: false,
+            renderFullSample: true,
             preserveFormants: mode !== 'tape' && preserveFormants,
           }
         )
@@ -416,7 +426,7 @@ export function SampleDetailsView({
     return () => {
       cancelled = true
     }
-  }, [sample?.id, manualPitch, hasManualPitchOverride, pitchAlgorithm, preserveFormants, setPreparedWaveform])
+  }, [sample?.id, manualPitch, pitchAlgorithm, preserveFormants, setPreparedWaveform])
 
   useEffect(() => {
     return () => {
@@ -527,6 +537,7 @@ export function SampleDetailsView({
   const duration = sample.endTime - sample.startTime
   const fundamentalNote = sample.fundamentalFrequency != null ? freqToNoteName(sample.fundamentalFrequency) : null
   const fundamentalPitch = sample.fundamentalFrequency != null ? freqToPitchDisplay(sample.fundamentalFrequency) : null
+  const hasTuneAllAction = !isEditingNote && Boolean(onTuneToNote && fundamentalNote)
   const isAutoPitch = externalPitch !== 0 && Math.abs(manualPitch - externalPitch) < 0.01
   const sampleTypeLabel = sample.sampleType === 'oneshot' ? 'One-shot' : sample.sampleType === 'loop' ? 'Loop' : 'Unspecified'
   const allInstrumentTags = allTags.filter((tag) => normalizeTagCategory(tag.category) === 'instrument' && !isSampleTypeTag(tag))
@@ -647,7 +658,7 @@ export function SampleDetailsView({
   }
 
   return (
-    <div className="h-full flex flex-col bg-surface-base overflow-hidden">
+    <div className="h-full flex flex-col bg-surface-base overflow-hidden" data-tour="sample-details-panel">
       {/* Header */}
       <div className="px-3 py-2.5 border-b border-surface-border bg-surface-raised flex-shrink-0">
         <div className="flex items-start justify-between gap-2 mb-2">
@@ -699,7 +710,7 @@ export function SampleDetailsView({
               <span>{sampleTypeLabel}</span>
             </div>
           </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className="flex items-center gap-1 flex-shrink-0" data-tour="sample-details-top-actions">
             <button
               onClick={() => onToggleFavorite(sample.id)}
               className={`p-1 rounded-md transition-colors ${
@@ -713,6 +724,7 @@ export function SampleDetailsView({
             </button>
             <button
               onClick={handleDownload}
+              data-tour="sample-details-download"
               className="p-1 rounded-md bg-surface-overlay text-text-muted hover:text-text-primary transition-colors"
               title="Download"
             >
@@ -728,6 +740,7 @@ export function SampleDetailsView({
             <button
               onClick={handleAnalyze}
               disabled={isAnalyzing}
+              data-tour="sample-details-reanalyze"
               className="p-1 rounded-md bg-surface-overlay text-text-muted hover:text-accent-primary transition-colors disabled:opacity-50"
               title="Re-analyze sample"
             >
@@ -793,7 +806,7 @@ export function SampleDetailsView({
                   disabled={!isWaveformReady || isPreparingWaveform}
                   className="w-8 h-8 rounded-full bg-accent-primary flex items-center justify-center text-white hover:bg-accent-primary/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {isPlaying ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
+                  {isPlaying ? <Pause size={14} style={{ color: '#ffffff' }} /> : <Play size={14} className="ml-0.5" style={{ color: '#ffffff' }} />}
                 </button>
                 <div className="text-xs text-slate-400">
                   {isPreparingWaveform ? 'Preparing...' : `${duration.toFixed(2)}s`}
@@ -862,8 +875,8 @@ export function SampleDetailsView({
                     disabled={pitchAlgorithm === 'tape'}
                     className={`h-6 px-2 rounded border text-[10px] uppercase tracking-wide transition-colors ${
                       preserveFormants
-                        ? 'border-emerald-400/70 bg-emerald-500/20 text-emerald-200'
-                        : 'border-surface-border bg-surface-raised text-text-muted'
+                        ? 'border-emerald-500/70 bg-emerald-500/20 text-emerald-100'
+                        : 'border-surface-border bg-surface-raised text-text-secondary'
                     } disabled:opacity-50 disabled:cursor-not-allowed`}
                     title="Preserve vocal formants when using Granular/HQ pitch modes"
                   >
@@ -873,19 +886,19 @@ export function SampleDetailsView({
               </div>
               {!hasManualPitchOverride && isAutoPitch && (
                 <div className="mt-1 text-[10px] text-text-muted">
-                  Auto tuning keeps Tape for quick preview; edit pitch to use the selected algorithm.
+                  Auto tuning in this panel uses the selected algorithm. Hover/list previews still use Tape for performance.
                 </div>
               )}
             </div>
 
             {/* Basic Info */}
-            <div>
+            <div data-tour="sample-details-edit-fields">
               <h3 className="section-label mb-2">Basic Info</h3>
               <div className="grid grid-cols-2 gap-2">
                 <FeatureItem label="Duration" value={duration} unit="s" />
                 {sample.bpm != null && <FeatureItem label="BPM" value={Math.round(sample.bpm)} decimals={0} />}
                 {sample.keyEstimate != null && <FeatureItem label="Key" value={sample.keyEstimate} isText />}
-                <div>
+                <div data-tour={hasTuneAllAction ? undefined : 'sample-details-note-section'}>
                   <div className="text-[11px] text-slate-500">Note</div>
                   {isEditingNote ? (
                     <div className="flex items-center gap-1.5">
@@ -937,6 +950,7 @@ export function SampleDetailsView({
                       {onTuneToNote && fundamentalNote && (
                         <button
                           onClick={() => onTuneToNote(tuneTargetNote === fundamentalNote ? null : fundamentalNote)}
+                          data-tour="sample-details-tune-all"
                           className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border transition-colors ${
                             tuneTargetNote === fundamentalNote
                               ? 'bg-accent-primary/20 border-accent-primary text-accent-primary'

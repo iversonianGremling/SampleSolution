@@ -4,6 +4,7 @@ import { Play, Pause, Heart, Trash2, Pencil, Disc3, MoreHorizontal } from 'lucid
 import { CustomCheckbox } from './CustomCheckbox'
 import { InstrumentIcon } from './InstrumentIcon'
 import { DrumRackPadPicker } from './DrumRackPadPicker'
+import { useAccessibility } from '../contexts/AccessibilityContext'
 import type { SliceWithTrackExtended } from '../types'
 import { freqToNoteName, freqToPitchDisplay } from '../utils/musicTheory'
 import type { BulkRenameHighlightRange } from '../utils/bulkRename'
@@ -309,14 +310,17 @@ function getVisibleTagCount(tags: Array<{ name: string }>, availableWidth: numbe
 }
 
 function SubjectiveBar({ value }: { value: number | null | undefined }) {
+  const { theme } = useAccessibility()
+
   if (value === null || value === undefined) {
     return <span className="text-xs text-text-muted">-</span>
   }
 
   const percent = Math.round(Math.max(0, Math.min(1, value)) * 100)
+  const fillClassName = theme === 'light' ? 'h-full bg-accent-warm' : 'h-full bg-accent-warm/70'
   return (
     <div className="w-14 h-1.5 rounded-full bg-surface-base border border-surface-border overflow-hidden" title={`${percent}%`}>
-      <div className="h-full bg-accent-warm/70" style={{ width: `${percent}%` }} />
+      <div className={fillClassName} style={{ width: `${percent}%` }} />
     </div>
   )
 }
@@ -637,6 +641,7 @@ export function SourcesSampleListRow({
 
           <button
             ref={actionsMenuButtonRef}
+            data-tour="samples-list-row-actions-button"
             onClick={(e) => {
               e.stopPropagation()
               setShowActionsMenu((prev) => !prev)
@@ -653,6 +658,7 @@ export function SourcesSampleListRow({
           {showActionsMenu && (
             <div
               ref={actionsMenuRef}
+              data-tour="samples-list-row-actions-menu"
               role="menu"
               onClick={(e) => e.stopPropagation()}
               className="absolute left-0 top-[calc(100%+3px)] z-40 min-w-44 rounded-lg border border-surface-border bg-surface-raised shadow-xl p-1"
@@ -660,6 +666,7 @@ export function SourcesSampleListRow({
               <button
                 type="button"
                 role="menuitem"
+                data-tour="samples-list-row-drumrack"
                 onClick={(event) => {
                   event.stopPropagation()
                   setShowActionsMenu(false)

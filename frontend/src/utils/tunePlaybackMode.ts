@@ -12,10 +12,10 @@ const isTunePlaybackMode = (value: unknown): value is TunePlaybackMode => {
 }
 
 export const getTunePlaybackMode = (): TunePlaybackMode => {
-  if (typeof window === 'undefined') return 'tape'
+  if (typeof window === 'undefined') return 'hq'
 
   const stored = window.localStorage.getItem(TUNE_PLAYBACK_MODE_STORAGE_KEY)
-  return isTunePlaybackMode(stored) ? stored : 'tape'
+  return isTunePlaybackMode(stored) ? stored : 'hq'
 }
 
 export const setTunePlaybackMode = (mode: TunePlaybackMode) => {

@@ -699,7 +699,9 @@ router.post('/slices/:sliceId/ai-tags', async (req, res) => {
     })
 
     // Analyze audio with Python (Essentia + Librosa)
-    const features = await analyzeAudioFeatures(slice[0].filePath)
+    const features = await analyzeAudioFeatures(slice[0].filePath, 'advanced', {
+      filename: slice[0].name ?? undefined,
+    })
     const fileMetadata = await getAudioFileMetadata(slice[0].filePath).catch(() => null)
     const enrichedFeatures = {
       ...features,

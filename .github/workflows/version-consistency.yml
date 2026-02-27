@@ -1,0 +1,68 @@
+name: Version Consistency
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify VERSION and package versions
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f VERSION ]]; then
+            echo "VERSION file is missing." >&2
+            exit 1
+          fi
+
+          root_version="$(tr -d '[:space:]' < VERSION)"
+          backend_version="$(node -p "require('./backend/package.json').version")"
+          frontend_version="$(node -p "require('./frontend/package.json').version")"
+
+          for value in "$root_version" "$backend_version" "$frontend_version"; do
+            if ! [[ "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Invalid semver value: $value" >&2
+              exit 1
+            fi
+          done
+
+          if [[ "$root_version" != "$backend_version" || "$root_version" != "$frontend_version" ]]; then
+            echo "Version mismatch detected." >&2
+            echo "VERSION=$root_version"
+            echo "backend=$backend_version"
+            echo "frontend=$frontend_version"
+            exit 1
+          fi
+
+          echo "version=$root_version" >> "$GITHUB_OUTPUT"
+
+      - name: Write summary
+        shell: bash
+        run: |
+          {
+            echo "## Version Consistency"
+            echo ""
+            echo "- VERSION: \`${{ steps.verify.outputs.version }}\`"
+            echo "- backend/package.json: \`${{ steps.verify.outputs.version }}\`"
+            echo "- frontend/package.json: \`${{ steps.verify.outputs.version }}\`"
+            echo ""
+            echo "All version values match and are valid semver."
+          } >> "$GITHUB_STEP_SUMMARY"

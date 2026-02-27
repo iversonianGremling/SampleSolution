@@ -246,15 +246,17 @@ export function CustomOrderModal({ onClose, activeCollectionId }: Props) {
           className={`bg-surface-raised rounded-xl overflow-hidden flex flex-col w-[92vw] h-[92vh] max-w-7xl pointer-events-auto shadow-2xl border border-surface-border transition-all duration-300 ease-out ${
             isClosing || isEntering ? 'opacity-0 scale-95' : 'opacity-100 scale-100'
           }`}
+          data-tour="advanced-category-modal"
         >
           <div className="flex items-center gap-3 px-4 py-4 border-b border-surface-border flex-shrink-0 bg-surface-raised">
             <div className="flex items-center gap-3 flex-1">
-              <h2 className="text-lg font-semibold text-white">Advanced Order</h2>
+              <h2 className="text-lg font-semibold text-white" data-tour="advanced-category-title">Advanced Order</h2>
               <span className="text-xs text-slate-500">Select samples from your sources and organize them into folders or instruments</span>
             </div>
             <button
               onClick={requestClose}
               className="p-2 text-slate-400 hover:text-white rounded-lg transition-colors hover:bg-surface-base"
+              data-tour="advanced-category-close"
             >
               <X size={18} />
             </button>
@@ -331,6 +333,7 @@ export function CustomOrderModal({ onClose, activeCollectionId }: Props) {
                 className="px-4 py-2 text-sm rounded-lg bg-accent-primary text-white hover:bg-accent-primary/80 disabled:opacity-50"
                 onClick={() => dispatch({ type: 'GO_TO_CONFIRM' })}
                 disabled={!canReview || isSlicesLoading}
+                data-tour="custom-order-review-confirm"
               >
                 Review &amp; Confirm
               </button>

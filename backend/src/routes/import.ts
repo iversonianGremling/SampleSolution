@@ -180,6 +180,29 @@ function parseAbsolutePathHint(rawValue: unknown): string | null {
   return path.resolve(trimmed)
 }
 
+function parseBodyStringArray(rawValue: unknown): string[] {
+  if (Array.isArray(rawValue)) {
+    return rawValue.map((value) => String(value ?? ''))
+  }
+  if (typeof rawValue === 'string') {
+    return [rawValue]
+  }
+  return []
+}
+
+async function resolveReferenceFilePath(absolutePathHint: unknown): Promise<string | null> {
+  const resolvedHint = parseAbsolutePathHint(absolutePathHint)
+  if (!resolvedHint) return null
+
+  try {
+    const stat = await fs.stat(resolvedHint)
+    if (!stat.isFile()) return null
+    return resolvedHint
+  } catch {
+    return null
+  }
+}
+
 function resolveImportType(rawValue: unknown): 'sample' | 'track' {
   if (typeof rawValue !== 'string') return 'sample'
   const normalized = rawValue.trim().toLowerCase()
@@ -203,25 +226,16 @@ async function resolveImportSourcePath(
     return { sourcePath: uploadedPath, usingReferencePath: false, shouldDeleteUploadedCopy: false }
   }
 
-  const resolvedHint = parseAbsolutePathHint(absolutePathHint)
+  const resolvedHint = await resolveReferenceFilePath(absolutePathHint)
   if (!resolvedHint) {
     return { sourcePath: uploadedPath, usingReferencePath: false, shouldDeleteUploadedCopy: false }
   }
 
-  try {
-    const stat = await fs.stat(resolvedHint)
-    if (!stat.isFile()) {
-      return { sourcePath: uploadedPath, usingReferencePath: false, shouldDeleteUploadedCopy: false }
-    }
-
-    const uploadedResolved = path.resolve(uploadedPath)
-    return {
-      sourcePath: resolvedHint,
-      usingReferencePath: true,
-      shouldDeleteUploadedCopy: uploadedResolved !== resolvedHint,
-    }
-  } catch {
-    return { sourcePath: uploadedPath, usingReferencePath: false, shouldDeleteUploadedCopy: false }
+  const uploadedResolved = path.resolve(uploadedPath)
+  return {
+    sourcePath: resolvedHint,
+    usingReferencePath: true,
+    shouldDeleteUploadedCopy: uploadedResolved !== resolvedHint,
   }
 }
 
@@ -482,7 +496,9 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
     }
 
     // Analyze audio with Python (Essentia + Librosa)
-    const features = await analyzeAudioFeatures(audioPath, level)
+    const features = await analyzeAudioFeatures(audioPath, level, {
+      filename: sliceContext[0]?.name ?? undefined,
+    })
     const fileMetadata = await getAudioFileMetadata(audioPath).catch(() => null)
 
     const enrichedFeatures = {
@@ -535,21 +551,44 @@ async function autoTagSlice(sliceId: number, audioPath: string): Promise<void> {
 
 // Import single audio file
 router.post('/import/file', upload.single('file'), async (req, res) => {
-  if (!req.file) {
+  const uploadedFile = req.file
+  const directReferencePath = !uploadedFile
+    ? await resolveReferenceFilePath(req.body?.absolutePath)
+    : null
+
+  if (!uploadedFile && req.body?.absolutePath !== undefined && !directReferencePath) {
+    return res.status(400).json({ error: 'absolutePath must be an existing absolute file path' })
+  }
+
+  if (!uploadedFile && !directReferencePath) {
     return res.status(400).json({ error: 'No file uploaded' })
   }
 
   try {
-    const originalName = req.file.originalname
-    const baseName = path.basename(originalName, path.extname(originalName))
-    const uploadedPath = req.file.path
     const importType = resolveImportType(req.query?.importType)
     logIgnoredAllowAiTagging(req.query?.allowAiTagging, '/import/file')
-    const {
-      sourcePath,
-      usingReferencePath,
-      shouldDeleteUploadedCopy,
-    } = await resolveImportSourcePath(uploadedPath, req.body?.absolutePath)
+    let originalName = ''
+    let baseName = ''
+    let sourcePath = ''
+    let usingReferencePath = false
+    let shouldDeleteUploadedCopy = false
+    let uploadedPath: string | null = null
+
+    if (uploadedFile) {
+      originalName = uploadedFile.originalname
+      baseName = path.basename(originalName, path.extname(originalName))
+      uploadedPath = uploadedFile.path
+      const resolvedSourcePath = await resolveImportSourcePath(uploadedPath, req.body?.absolutePath)
+      sourcePath = resolvedSourcePath.sourcePath
+      usingReferencePath = resolvedSourcePath.usingReferencePath
+      shouldDeleteUploadedCopy = resolvedSourcePath.shouldDeleteUploadedCopy
+    } else {
+      sourcePath = directReferencePath as string
+      originalName = path.basename(sourcePath)
+      baseName = path.basename(originalName, path.extname(originalName))
+      usingReferencePath = true
+    }
+
     const { folderPath: browserFolderPath, relativePath: browserRelativePath } =
       resolveImportPathMetadata(req.body?.relativePath, sourcePath, usingReferencePath)
 
@@ -662,7 +701,7 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
       })
     }
 
-    if (shouldDeleteUploadedCopy) {
+    if (shouldDeleteUploadedCopy && uploadedPath) {
       await fs.unlink(uploadedPath).catch(() => {})
     }
 
@@ -683,8 +722,8 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
   } catch (error) {
     console.error('Error importing file:', error)
     // Clean up uploaded file on error
-    if (req.file?.path) {
-      await fs.unlink(req.file.path).catch(() => {})
+    if (uploadedFile?.path) {
+      await fs.unlink(uploadedFile.path).catch(() => {})
     }
     res.status(500).json({ error: 'Failed to import file' })
   }
@@ -700,42 +739,62 @@ router.get('/import/files', (_req, res) => {
 router.post('/import/files', upload.array('files'), async (req, res) => {
   console.log('[import/files] Request query:', req.query)
   console.log('[import/files] Request files:', req.files)
-  const files = req.files as Express.Multer.File[]
-  const rawRelativePaths = req.body?.relativePaths
-  const relativePaths = Array.isArray(rawRelativePaths)
-    ? rawRelativePaths.map((value) => String(value ?? ''))
-    : typeof rawRelativePaths === 'string'
-      ? [rawRelativePaths]
-      : []
-  const rawAbsolutePaths = req.body?.absolutePaths
-  const absolutePaths = Array.isArray(rawAbsolutePaths)
-    ? rawAbsolutePaths.map((value) => String(value ?? ''))
-    : typeof rawAbsolutePaths === 'string'
-      ? [rawAbsolutePaths]
-      : []
+  const files = Array.isArray(req.files) ? req.files as Express.Multer.File[] : []
+  const relativePaths = parseBodyStringArray(req.body?.relativePaths)
+  const absolutePaths = parseBodyStringArray(req.body?.absolutePaths)
+  const referencePaths = parseBodyStringArray(req.body?.referencePaths)
   const importType = resolveImportType(req.query?.importType)
   logIgnoredAllowAiTagging(req.query?.allowAiTagging, '/import/files')
 
   console.log('[import/files] importType from query:', importType)
 
-  if (!files || files.length === 0) {
+  const useUploadedFiles = files.length > 0
+  const useReferencePaths = !useUploadedFiles && referencePaths.length > 0
+
+  if (!useUploadedFiles && !useReferencePaths) {
     return res.status(400).json({ error: 'No files uploaded' })
   }
 
+  type ImportFileEntry =
+    | { kind: 'uploaded'; file: Express.Multer.File; index: number }
+    | { kind: 'reference'; absolutePath: string; index: number }
+
+  const importEntries: ImportFileEntry[] = useUploadedFiles
+    ? files.map((file, index) => ({ kind: 'uploaded', file, index }))
+    : referencePaths.map((absolutePath, index) => ({ kind: 'reference', absolutePath, index }))
+
   const results: { filename: string; success: boolean; sliceId?: number; error?: string }[] = []
 
-  for (const [index, file] of files.entries()) {
+  for (const entry of importEntries) {
     try {
-      const originalName = file.originalname
-      const baseName = path.basename(originalName, path.extname(originalName))
-      const uploadedPath = file.path
-      const {
-        sourcePath,
-        usingReferencePath,
-        shouldDeleteUploadedCopy,
-      } = await resolveImportSourcePath(uploadedPath, absolutePaths[index])
+      let originalName = ''
+      let baseName = ''
+      let sourcePath = ''
+      let usingReferencePath = false
+      let shouldDeleteUploadedCopy = false
+      let uploadedPath: string | null = null
+
+      if (entry.kind === 'uploaded') {
+        originalName = entry.file.originalname
+        baseName = path.basename(originalName, path.extname(originalName))
+        uploadedPath = entry.file.path
+        const resolvedSourcePath = await resolveImportSourcePath(uploadedPath, absolutePaths[entry.index])
+        sourcePath = resolvedSourcePath.sourcePath
+        usingReferencePath = resolvedSourcePath.usingReferencePath
+        shouldDeleteUploadedCopy = resolvedSourcePath.shouldDeleteUploadedCopy
+      } else {
+        const resolvedReferencePath = await resolveReferenceFilePath(entry.absolutePath)
+        if (!resolvedReferencePath) {
+          throw new Error('absolutePath must be an existing absolute file path')
+        }
+        sourcePath = resolvedReferencePath
+        originalName = path.basename(sourcePath)
+        baseName = path.basename(originalName, path.extname(originalName))
+        usingReferencePath = true
+      }
+
       const { folderPath: browserFolderPath, relativePath: browserRelativePath } =
-        resolveImportPathMetadata(relativePaths[index], sourcePath, usingReferencePath)
+        resolveImportPathMetadata(relativePaths[entry.index], sourcePath, usingReferencePath)
 
       // Get audio duration
       let duration = 0
@@ -843,25 +902,30 @@ router.post('/import/files', upload.array('files'), async (req, res) => {
         })
       }
 
-      if (shouldDeleteUploadedCopy) {
+      if (shouldDeleteUploadedCopy && uploadedPath) {
         await fs.unlink(uploadedPath).catch(() => {})
       }
 
       results.push({ filename: originalName, success: true, sliceId: slice.id })
     } catch (error) {
-      console.error(`Error importing ${file.originalname}:`, error)
+      const failedFilename = entry.kind === 'uploaded'
+        ? entry.file.originalname
+        : path.basename(entry.absolutePath || `reference-${entry.index + 1}`)
+      console.error(`Error importing ${failedFilename}:`, error)
       results.push({
-        filename: file.originalname,
+        filename: failedFilename,
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
       })
       // Clean up on error
-      await fs.unlink(file.path).catch(() => {})
+      if (entry.kind === 'uploaded') {
+        await fs.unlink(entry.file.path).catch(() => {})
+      }
     }
   }
 
   res.json({
-    total: files.length,
+    total: importEntries.length,
     successful: results.filter((r) => r.success).length,
     failed: results.filter((r) => !r.success).length,
     results,
