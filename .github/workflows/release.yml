@@ -103,6 +103,9 @@ jobs:
           set -euo pipefail
           tag_name="${{ steps.version.outputs.tag }}"
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           if git rev-parse "$tag_name" >/dev/null 2>&1; then
             echo "Tag already exists locally: $tag_name" >&2
             exit 1
