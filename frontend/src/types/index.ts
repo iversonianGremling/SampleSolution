@@ -68,6 +68,8 @@ export interface Slice {
   dateCreated?: string | null
   dateModified?: string | null
   pathDisplay?: string | null
+  absolutePath?: string | null
+  uri?: string | null
   similarity?: number  // 0-1 range, only present in similarity mode
   subjectiveNormalized?: {
     brightness?: number | null
@@ -460,6 +462,7 @@ export interface SliceWithTrackExtended extends Slice {
     originalPath?: string | null
     relativePath?: string | null
     fullPathHint?: string | null
+    uri?: string | null
     artist?: string | null
     album?: string | null
     year?: number | null

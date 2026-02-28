@@ -76,6 +76,17 @@ echo "📦 Installing production dependencies..."
 cd "$BUNDLE_DIR"
 npm install --production --legacy-peer-deps
 
+# Rebuild native modules (better-sqlite3) against Electron's Node ABI.
+# The embedded backend runs via ELECTRON_RUN_AS_NODE=1 which uses Electron's
+# bundled Node.js, not the system Node.  Native addons must match that ABI.
+echo ""
+echo "🔧 Rebuilding native modules for Electron..."
+ELECTRON_VERSION=$(node -e "console.log(require('$FRONTEND_DIR/node_modules/electron/package.json').version)")
+npx --prefix "$FRONTEND_DIR" @electron/rebuild \
+  --module-dir "$BUNDLE_DIR" \
+  --electron-version "$ELECTRON_VERSION" \
+  --only better-sqlite3
+
 # Create environment file
 echo ""
 echo "📝 Creating .env file..."

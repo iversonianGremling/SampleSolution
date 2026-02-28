@@ -2051,6 +2051,7 @@ router.get('/sources/samples', async (req, res) => {
         trackOriginalPath: schema.tracks.originalPath,
         trackRelativePath: schema.tracks.relativePath,
         trackFullPathHint: schema.tracks.fullPathHint,
+        trackUri: schema.tracks.uri,
         trackArtist: schema.tracks.artist,
         trackAlbum: schema.tracks.album,
         trackYear: schema.tracks.year,
@@ -2466,6 +2467,10 @@ router.get('/sources/samples', async (req, res) => {
               ''
             ).toLowerCase()
             break
+          case 'uri':
+            aVal = (a.trackUri || '').toLowerCase()
+            bVal = (b.trackUri || '').toLowerCase()
+            break
           case 'name':
             aVal = a.name.toLowerCase()
             bVal = b.name.toLowerCase()
@@ -2669,6 +2674,7 @@ router.get('/sources/samples', async (req, res) => {
           slice.trackRelativePath
         )
         const pathDisplay = relativePath || slice.trackOriginalPath || slice.trackFullPathHint || null
+        const absolutePath = slice.trackFullPathHint || slice.trackOriginalPath || null
 
         const subjectiveNormalized = {
           brightness: normalizeValue(slice.brightness, perceptualRanges.brightness),
@@ -2693,6 +2699,8 @@ router.get('/sources/samples', async (req, res) => {
           noisiness,
           polyphony: slice.polyphony,
           pathDisplay,
+          absolutePath,
+          uri: slice.trackUri || null,
           subjectiveNormalized,
           dimensionNormalized,
         }
@@ -2731,6 +2739,7 @@ router.get('/sources/samples', async (req, res) => {
         originalPath: slice.trackOriginalPath,
         relativePath: slice.trackRelativePath,
         fullPathHint: slice.trackFullPathHint,
+        uri: slice.trackUri,
         artist: slice.trackArtist,
         album: slice.trackAlbum,
         year: slice.trackYear,

@@ -13,6 +13,7 @@ export interface Track {
   folderPath?: string | null
   relativePath?: string | null
   fullPathHint?: string | null
+  uri?: string | null
   artist?: string | null
   album?: string | null
   year?: number | null

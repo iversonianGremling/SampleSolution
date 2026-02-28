@@ -18,6 +18,7 @@ import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
 import { freqToNoteName } from '../utils/musicTheory'
 import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
 import type { BulkRenameHighlightRange } from '../utils/bulkRename'
+import { isElectron } from '../utils/platform'
 import {
   hydratePersistedSettingFromElectron,
   readPersistedSetting,
@@ -55,6 +56,7 @@ type SortField =
   | 'dateCreated'
   | 'dateModified'
   | 'path'
+  | 'uri'
   | 'duration'
   | 'similarity'
 type SortOrder = 'asc' | 'desc'
@@ -134,6 +136,7 @@ const MIN_COLUMN_WIDTHS: SourcesListColumnWidths = {
   dateCreated: 92,
   dateModified: 92,
   path: 140,
+  uri: 140,
   duration: 68,
   similarity: 72,
   actions: 70,
@@ -171,6 +174,7 @@ const COLUMN_OPTIONS: Array<{ key: ColumnKey; label: string }> = [
   { key: 'dateCreated', label: 'Date Created' },
   { key: 'dateModified', label: 'Date Modified' },
   { key: 'path', label: 'Path' },
+  { key: 'uri', label: 'URI' },
 ]
 
 const DEFAULT_LIST_ROW_HEIGHT_PX = 40
@@ -211,6 +215,7 @@ const OPTIONAL_COLUMNS: ColumnKey[] = [
   'dateCreated',
   'dateModified',
   'path',
+  'uri',
 ]
 
 function parseDate(value: string | null | undefined): number | null {
@@ -220,6 +225,9 @@ function parseDate(value: string | null | undefined): number | null {
 }
 
 function getPathDisplay(sample: SliceWithTrackExtended): string | null {
+  if (isElectron()) {
+    return sample.absolutePath || sample.pathDisplay || null
+  }
   return sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || null
 }
 
@@ -303,6 +311,8 @@ function getSortValue(sample: SliceWithTrackExtended, field: SortField): string 
       return parseDate(sample.dateModified)
     case 'path':
       return getPathDisplay(sample)?.toLowerCase() ?? null
+    case 'uri':
+      return sample.uri?.toLowerCase() ?? null
     case 'duration':
       return sample.endTime - sample.startTime
     case 'similarity':
@@ -1774,6 +1784,20 @@ export function SourcesSampleList({
                   {getSortIcon('path')}
                 </button>
                 {renderResizeHandle('path')}
+              </div>
+            )}
+            {columnVisibility.uri && (
+              <div className="relative flex flex-shrink-0 text-left min-w-0" style={{ width: columnWidths.uri }}>
+                <button
+                  onClick={() => handleSortClick('uri')}
+                  className={`w-full min-w-0 flex items-center text-left section-label transition-colors hover:text-text-secondary ${
+                    sortField === 'uri' ? 'text-accent-primary' : ''
+                  }`}
+                >
+                  <span className="truncate">URI</span>
+                  {getSortIcon('uri')}
+                </button>
+                {renderResizeHandle('uri')}
               </div>
             )}
 

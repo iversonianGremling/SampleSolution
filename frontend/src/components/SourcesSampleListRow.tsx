@@ -8,6 +8,7 @@ import { useAccessibility } from '../contexts/AccessibilityContext'
 import type { SliceWithTrackExtended } from '../types'
 import { freqToNoteName, freqToPitchDisplay } from '../utils/musicTheory'
 import type { BulkRenameHighlightRange } from '../utils/bulkRename'
+import { isElectron } from '../utils/platform'
 
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
@@ -57,6 +58,7 @@ export type SourcesListColumnWidthKey =
   | 'dateCreated'
   | 'dateModified'
   | 'path'
+  | 'uri'
   | 'duration'
   | 'similarity'
   | 'actions'
@@ -94,6 +96,7 @@ export const DEFAULT_SOURCES_LIST_COLUMN_WIDTHS: SourcesListColumnWidths = {
   dateCreated: 120,
   dateModified: 120,
   path: 280,
+  uri: 280,
   duration: 88,
   similarity: 96,
   actions: 76,
@@ -129,6 +132,7 @@ export interface SourcesListColumnVisibility {
   dateCreated: boolean
   dateModified: boolean
   path: boolean
+  uri: boolean
   similarity: boolean
 }
 
@@ -163,6 +167,7 @@ export const DEFAULT_SOURCES_LIST_COLUMN_VISIBILITY: SourcesListColumnVisibility
   dateCreated: false,
   dateModified: false,
   path: false,
+  uri: false,
   similarity: false,  // Only shown in similarity mode
 }
 
@@ -1071,8 +1076,22 @@ export function SourcesSampleListRow({
 
         {columnVisibility.path && (
           <div className="flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.path }}>
-            <span className="text-xs text-slate-400 truncate" title={sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || '-'}>
-              {sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || '-'}
+            <span className="text-xs text-slate-400 truncate" title={
+              isElectron()
+                ? (sample.absolutePath || sample.pathDisplay || '-')
+                : (sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || '-')
+            }>
+              {isElectron()
+                ? (sample.absolutePath || sample.pathDisplay || '-')
+                : (sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || '-')}
+            </span>
+          </div>
+        )}
+
+        {columnVisibility.uri && (
+          <div className="flex flex-shrink-0 justify-start min-w-0" style={{ width: columnWidths.uri }}>
+            <span className="text-xs text-slate-400 truncate" title={sample.uri || '-'}>
+              {sample.uri || '-'}
             </span>
           </div>
         )}

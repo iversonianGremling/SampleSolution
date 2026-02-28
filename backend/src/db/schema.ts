@@ -32,6 +32,7 @@ export const tracks = sqliteTable('tracks', {
   folderPath: text('folder_path'),      // Folder used for import (null for individual files/YouTube)
   relativePath: text('relative_path'),  // Relative path from imported folder root
   fullPathHint: text('full_path_hint'), // Reserved for desktop import full-path capture
+  uri: text('uri'),                    // External URI (docker volume path, online URL, etc.)
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

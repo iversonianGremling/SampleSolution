@@ -10,6 +10,7 @@ import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
 import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
 import { freqToNoteName, freqToPitchDisplay } from '../utils/musicTheory'
 import type { BulkRenameHighlightRange } from '../utils/bulkRename'
+import { isElectron } from '../utils/platform'
 
 type SortField =
   | 'name'
@@ -44,6 +45,7 @@ type SortField =
   | 'dateCreated'
   | 'dateModified'
   | 'path'
+  | 'uri'
 type SortOrder = 'asc' | 'desc'
 export type PlayMode = 'normal' | 'one-shot' | 'reproduce-while-clicking'
 
@@ -130,6 +132,7 @@ const MORE_SORT_OPTIONS: Array<{ field: SortField; label: string }> = [
   { field: 'dateCreated', label: 'Date Created' },
   { field: 'dateModified', label: 'Date Modified' },
   { field: 'path', label: 'Path' },
+  { field: 'uri', label: 'URI' },
 ]
 
 const QUICK_SORT_FIELD_SET = new Set(QUICK_SORT_OPTIONS.map((option) => option.field))
@@ -178,6 +181,9 @@ function parseDate(value: string | null | undefined): number | null {
 }
 
 function getPathDisplay(sample: SliceWithTrackExtended): string | null {
+  if (isElectron()) {
+    return sample.absolutePath || sample.pathDisplay || null
+  }
   return sample.pathDisplay || sample.track.relativePath || sample.track.originalPath || null
 }
 
@@ -261,6 +267,8 @@ function getSortValue(sample: SliceWithTrackExtended, field: SortField): string 
       return parseDate(sample.dateModified)
     case 'path':
       return getPathDisplay(sample)?.toLowerCase() ?? null
+    case 'uri':
+      return sample.uri?.toLowerCase() ?? null
     default:
       return null
   }

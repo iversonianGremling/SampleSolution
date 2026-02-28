@@ -680,6 +680,14 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_backup_logs_created_at ON backup_logs(created_at);
   `)
 
+  // Migration: Add uri column to tracks
+  const tracksUriCols = sqlite.pragma('table_info(tracks)') as Array<{ name: string }>
+  const hasUri = tracksUriCols.some(col => col.name === 'uri')
+  if (!hasUri) {
+    console.log('[DB] Migrating: Adding uri column to tracks table')
+    sqlite.exec(`ALTER TABLE tracks ADD COLUMN uri TEXT;`)
+  }
+
   return drizzleDb
 }
 
