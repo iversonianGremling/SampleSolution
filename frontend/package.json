@@ -113,7 +113,7 @@
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
     "electron": "^28.2.0",
-    "electron-builder": "^24.9.1",
+    "electron-builder": "^26.8.1",
     "jsdom": "^23.2.0",
     "msw": "^2.1.4",
     "postcss": "^8.4.33",
