@@ -239,7 +239,7 @@ jobs:
           node-version: 20
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: desktop-${{ matrix.platform }}
           path: release-assets
@@ -520,7 +520,7 @@ jobs:
 
     steps:
       - name: Download packaged artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: desktop-*
           merge-multiple: true
