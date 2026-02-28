@@ -7,6 +7,14 @@ on:
         description: Optional custom release name
         required: false
         type: string
+      new_features:
+        description: Optional changelog new features (one item per line)
+        required: false
+        type: string
+      bugfixes:
+        description: Optional changelog bugfixes (one item per line)
+        required: false
+        type: string
       draft:
         description: Create as draft
         required: true
@@ -177,14 +185,12 @@ jobs:
             "frontend/release/*.exe"
             "frontend/release/*.dmg"
             "frontend/release/*.zip"
-            "frontend/release/*.blockmap"
-            "frontend/release/*.yml"
           )
 
           for pattern in "${patterns[@]}"; do
             for file in $pattern; do
               filename="$(basename "$file")"
-              cp "$file" "release-assets/${{ matrix.platform }}-${filename}"
+              cp "$file" "release-assets/${filename}"
             done
           done
 
@@ -204,11 +210,312 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
+  smoke-test:
+    name: Smoke Test (${{ matrix.platform }})
+    needs:
+      - prepare-release
+      - build-desktop
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: release-assets
+
+      - name: Resolve desktop runtime ports
+        id: runtime-ports
+        shell: bash
+        run: |
+          set -euo pipefail
+          prod_backend_port="$(node -p "const cfg=require('./frontend/electron/runtime-config.json'); cfg.ports.prodBackend")"
+          if ! [[ "$prod_backend_port" =~ ^[0-9]+$ ]]; then
+            echo "Invalid prod backend port: $prod_backend_port" >&2
+            exit 1
+          fi
+          echo "prod_backend_port=$prod_backend_port" >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux display dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgtk-3-0 libxss1 libasound2t64 libgbm1 \
+            libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+            libdrm2 libxkbcommon0
+
+      - name: Smoke test Windows app
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $backendPort = "${{ steps.runtime-ports.outputs.prod_backend_port }}"
+
+          $portable = Get-ChildItem -Path "release-assets" -Filter "*portable*.exe" -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if ($portable) {
+            $exe = $portable
+          } else {
+            $exe = Get-ChildItem -Path "release-assets" -Filter "*.exe" -File -Recurse |
+              Where-Object { $_.Name -notmatch "elevate|uninstall" } |
+              Sort-Object Length -Descending |
+              Select-Object -First 1
+          }
+
+          if (-not $exe) {
+            throw "No runnable executable found in release-assets"
+          }
+
+          $log = Join-Path $env:RUNNER_TEMP "smoke-test-windows.log"
+          $appProcName = [System.IO.Path]::GetFileNameWithoutExtension($exe.Name)
+          $proc = Start-Process -FilePath $exe.FullName -PassThru -RedirectStandardOutput $log -RedirectStandardError $log
+          $healthy = $false
+
+          try {
+            for ($i = 0; $i -lt 90; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$backendPort/api/auth/status" -UseBasicParsing -TimeoutSec 2
+                if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
+                  Write-Host "Backend health check passed (status $($resp.StatusCode))"
+
+                  try {
+                    $null = $resp.Content | ConvertFrom-Json
+                    Write-Host "Response is valid JSON"
+                  } catch {
+                    throw "Backend returned non-JSON response body: $($resp.Content)"
+                  }
+
+                  $healthy = $true
+                  break
+                }
+              } catch [System.Net.WebException] {
+                # Keep polling until timeout.
+              }
+            }
+
+            if (-not $healthy) {
+              if (Test-Path $log) {
+                Write-Host "=== App log tail ==="
+                Get-Content $log -Tail 200
+              }
+              throw "Backend health endpoint did not respond in time."
+            }
+
+            # Verify the Electron process is still alive after health checks
+            $stillRunning = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+            if (-not $stillRunning -or $proc.HasExited) {
+              throw "Electron process exited unexpectedly after health checks (exit code: $($proc.ExitCode))."
+            }
+            Write-Host "Electron process is still running after health checks (PID $($proc.Id))"
+          } finally {
+            Get-Process -Name $appProcName -ErrorAction SilentlyContinue | Stop-Process -Force
+            if ($proc -and -not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force
+            }
+          }
+
+      - name: Smoke test macOS app
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          backend_port="${{ steps.runtime-ports.outputs.prod_backend_port }}"
+
+          # Extract the .app from the .dmg or .zip
+          DMG_FILE="$(find release-assets -maxdepth 1 -name '*.dmg' -type f | head -n 1)"
+          ZIP_FILE="$(find release-assets -maxdepth 1 -name '*.zip' -type f | head -n 1)"
+
+          if [[ -n "${DMG_FILE}" ]]; then
+            hdiutil attach "$DMG_FILE" -nobrowse -mountpoint /tmp/smoke-dmg
+            APP_PATH="$(find /tmp/smoke-dmg -maxdepth 1 -type d -name '*.app' | head -n 1)"
+            if [[ -z "${APP_PATH}" ]]; then
+              echo "No .app bundle found in DMG" >&2
+              hdiutil detach /tmp/smoke-dmg || true
+              exit 1
+            fi
+            # Copy to a writable location
+            cp -R "$APP_PATH" "$RUNNER_TEMP/SmokeTest.app"
+            hdiutil detach /tmp/smoke-dmg || true
+            APP_PATH="$RUNNER_TEMP/SmokeTest.app"
+          elif [[ -n "${ZIP_FILE}" ]]; then
+            unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/smoke-zip"
+            APP_PATH="$(find "$RUNNER_TEMP/smoke-zip" -maxdepth 2 -type d -name '*.app' | head -n 1)"
+            if [[ -z "${APP_PATH}" ]]; then
+              echo "No .app bundle found in ZIP" >&2
+              exit 1
+            fi
+          else
+            echo "No .dmg or .zip found in release-assets for macOS" >&2
+            ls -la release-assets || true
+            exit 1
+          fi
+
+          BIN_PATH="$(find "$APP_PATH/Contents/MacOS" -mindepth 1 -maxdepth 1 -type f | head -n 1)"
+          if [[ -z "${BIN_PATH}" ]]; then
+            echo "No executable found in $APP_PATH/Contents/MacOS" >&2
+            exit 1
+          fi
+
+          LOG_FILE="$RUNNER_TEMP/smoke-test-macos.log"
+          "$BIN_PATH" >"$LOG_FILE" 2>&1 &
+          APP_PID=$!
+          healthy=0
+
+          for _ in $(seq 1 90); do
+            sleep 1
+
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "App process exited prematurely during startup." >&2
+              break
+            fi
+
+            response="$(curl -sS --max-time 2 "http://127.0.0.1:${backend_port}/api/auth/status" 2>/dev/null)" || continue
+            http_code="$(curl -so /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:${backend_port}/api/auth/status" 2>/dev/null)" || continue
+
+            if [[ "$http_code" -ge 200 && "$http_code" -lt 500 ]]; then
+              echo "Backend health check passed (HTTP ${http_code})"
+
+              if ! echo "$response" | python3 -m json.tool >/dev/null 2>&1; then
+                echo "Backend returned non-JSON response body: $response" >&2
+                kill "$APP_PID" 2>/dev/null || true
+                wait "$APP_PID" 2>/dev/null || true
+                exit 1
+              fi
+              echo "Response is valid JSON"
+
+              healthy=1
+              break
+            fi
+          done
+
+          if [[ "$healthy" -ne 1 ]]; then
+            echo "Backend health endpoint did not respond in time." >&2
+            echo "=== App log tail ===" >&2
+            tail -n 200 "$LOG_FILE" >&2 || true
+            kill "$APP_PID" 2>/dev/null || true
+            wait "$APP_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            echo "Electron process exited unexpectedly after health checks." >&2
+            wait "$APP_PID"
+            exit 1
+          fi
+          echo "Electron process is still running after health checks (PID $APP_PID)"
+
+          kill "$APP_PID" 2>/dev/null || true
+          wait "$APP_PID" 2>/dev/null || true
+
+      - name: Smoke test Linux app
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          backend_port="${{ steps.runtime-ports.outputs.prod_backend_port }}"
+
+          # Start Xvfb for headless display
+          Xvfb :99 -screen 0 1024x768x24 &
+          XVFB_PID=$!
+          export DISPLAY=:99
+          sleep 1
+
+          # Find the AppImage
+          APP_IMAGE="$(find release-assets -maxdepth 1 -name '*.AppImage' -type f | head -n 1)"
+          if [[ -z "${APP_IMAGE}" ]]; then
+            echo "No AppImage found in release-assets" >&2
+            ls -la release-assets || true
+            kill "$XVFB_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          chmod +x "$APP_IMAGE"
+
+          LOG_FILE="$RUNNER_TEMP/smoke-test-linux.log"
+          "$APP_IMAGE" --no-sandbox --disable-gpu >"$LOG_FILE" 2>&1 &
+          APP_PID=$!
+          healthy=0
+
+          for _ in $(seq 1 90); do
+            sleep 1
+
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "App process exited prematurely during startup." >&2
+              break
+            fi
+
+            response="$(curl -sS --max-time 2 "http://127.0.0.1:${backend_port}/api/auth/status" 2>/dev/null)" || continue
+            http_code="$(curl -so /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:${backend_port}/api/auth/status" 2>/dev/null)" || continue
+
+            if [[ "$http_code" -ge 200 && "$http_code" -lt 500 ]]; then
+              echo "Backend health check passed (HTTP ${http_code})"
+
+              if ! echo "$response" | python3 -m json.tool >/dev/null 2>&1; then
+                echo "Backend returned non-JSON response body: $response" >&2
+                kill "$APP_PID" 2>/dev/null || true
+                wait "$APP_PID" 2>/dev/null || true
+                kill "$XVFB_PID" 2>/dev/null || true
+                exit 1
+              fi
+              echo "Response is valid JSON"
+
+              healthy=1
+              break
+            fi
+          done
+
+          if [[ "$healthy" -ne 1 ]]; then
+            echo "Backend health endpoint did not respond in time." >&2
+            echo "=== App log tail ===" >&2
+            tail -n 200 "$LOG_FILE" >&2 || true
+            kill "$APP_PID" 2>/dev/null || true
+            wait "$APP_PID" 2>/dev/null || true
+            kill "$XVFB_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            echo "Electron process exited unexpectedly after health checks." >&2
+            wait "$APP_PID"
+            kill "$XVFB_PID" 2>/dev/null || true
+            exit 1
+          fi
+          echo "Electron process is still running after health checks (PID $APP_PID)"
+
+          kill "$APP_PID" 2>/dev/null || true
+          wait "$APP_PID" 2>/dev/null || true
+          kill "$XVFB_PID" 2>/dev/null || true
+
   publish-release:
     name: Publish GitHub Release
     needs:
       - prepare-release
       - build-desktop
+      - smoke-test
     runs-on: ubuntu-latest
 
     steps:
@@ -229,14 +536,107 @@ jobs:
           fi
           ls -lh release-assets
 
+      - name: Build release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          NEW_FEATURES: ${{ github.event.inputs.new_features }}
+          BUGFIXES: ${{ github.event.inputs.bugfixes }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          repo="${GITHUB_REPOSITORY}"
+          tag="${RELEASE_TAG}"
+          notes_file="release-notes.md"
+
+          append_links_for_patterns() {
+            local has_items=0
+            for pattern in "$@"; do
+              for file in $pattern; do
+                if [[ -f "$file" ]]; then
+                  has_items=1
+                  filename="$(basename "$file")"
+                  printf -- "- [%s](https://github.com/%s/releases/download/%s/%s)\n" "$filename" "$repo" "$tag" "$filename" >> "$notes_file"
+                fi
+              done
+            done
+            if [[ "$has_items" -eq 0 ]]; then
+              echo "- Not available in this release." >> "$notes_file"
+            fi
+          }
+
+          append_bullets_from_text() {
+            local raw="$1"
+            local tmp_file
+            tmp_file="$(mktemp)"
+
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              line="${line%$'\r'}"
+              line="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+              [[ -z "$line" ]] && continue
+
+              if [[ "$line" =~ ^[-*][[:space:]]+ ]]; then
+                printf '%s\n' "$line" >> "$tmp_file"
+              else
+                printf -- '- %s\n' "$line" >> "$tmp_file"
+              fi
+            done <<< "$raw"
+
+            if [[ -s "$tmp_file" ]]; then
+              cat "$tmp_file" >> "$notes_file"
+            else
+              echo "- None listed." >> "$notes_file"
+            fi
+            rm -f "$tmp_file"
+          }
+
+          {
+            echo "## Download Links"
+            echo ""
+            echo "### Windows"
+          } > "$notes_file"
+          append_links_for_patterns "release-assets/*setup*.exe" "release-assets/*portable*.exe"
+          echo "" >> "$notes_file"
+
+          {
+            echo "### macOS"
+          } >> "$notes_file"
+          append_links_for_patterns "release-assets/*-mac.dmg" "release-assets/*-mac.zip"
+          echo "" >> "$notes_file"
+
+          {
+            echo "### Linux"
+          } >> "$notes_file"
+          append_links_for_patterns "release-assets/*.AppImage" "release-assets/*.deb"
+          echo "" >> "$notes_file"
+
+          {
+            echo "## Changelog"
+            echo ""
+            echo "### New Features"
+          } >> "$notes_file"
+          append_bullets_from_text "$NEW_FEATURES"
+          echo "" >> "$notes_file"
+
+          {
+            echo "### Bugfixes"
+          } >> "$notes_file"
+          append_bullets_from_text "$BUGFIXES"
+
+          echo ""
+          echo "Generated release notes:"
+          cat "$notes_file"
+
       - name: Create GitHub release with binaries
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare-release.outputs.tag }}
           name: ${{ needs.prepare-release.outputs.release_name }}
+          body_path: release-notes.md
           files: |
             release-assets/*
           overwrite_files: true
-          generate_release_notes: true
+          generate_release_notes: false
           draft: ${{ github.event.inputs.draft == 'true' }}
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}

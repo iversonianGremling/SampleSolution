@@ -1,0 +1,7 @@
+{
+  "ports": {
+    "devFrontend": 3000,
+    "devBackend": 4000,
+    "prodBackend": 45783
+  }
+}

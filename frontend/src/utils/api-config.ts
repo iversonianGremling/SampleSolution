@@ -3,10 +3,12 @@
  */
 
 import { isElectron } from './platform';
+import runtimeConfig from '../../electron/runtime-config.json';
 
 const DEFAULT_WEB_API_BASE = '/api';
-const DEFAULT_ELECTRON_API_BASE = 'http://localhost:4000/api';
 const ELECTRON_API_STORAGE_KEY = 'electron.apiBaseUrl';
+const DEFAULT_ELECTRON_DEV_API_BASE = `http://localhost:${runtimeConfig.ports.devBackend}/api`;
+const DEFAULT_ELECTRON_PROD_API_BASE = `http://127.0.0.1:${runtimeConfig.ports.prodBackend}/api`;
 
 function ensureApiBasePath(rawValue: string | null | undefined): string | null {
   if (!rawValue) return null;
@@ -47,13 +49,22 @@ function getDevConfiguredApiBase(): string | null {
   return ensureApiBasePath(import.meta.env.VITE_DEV_API_BASE_URL);
 }
 
+export function getDefaultElectronApiBaseUrl(): string {
+  const envValue = import.meta.env.DEV
+    ? import.meta.env.VITE_ELECTRON_DEV_API_BASE_URL
+    : import.meta.env.VITE_ELECTRON_PROD_API_BASE_URL;
+
+  return ensureApiBasePath(envValue)
+    || (import.meta.env.DEV ? DEFAULT_ELECTRON_DEV_API_BASE : DEFAULT_ELECTRON_PROD_API_BASE);
+}
+
 /**
  * Get the API base URL based on environment
  */
 export function getApiBaseUrl(): string {
   // Electron keeps its own backend configuration independent of web.
   if (isElectron()) {
-    return getElectronConfiguredApiBase() || DEFAULT_ELECTRON_API_BASE;
+    return getElectronConfiguredApiBase() || getDefaultElectronApiBaseUrl();
   }
 
   // Web dev can use direct API URL when configured; otherwise use Vite proxy.

@@ -3,9 +3,13 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const runtimeConfig = require('./runtime-config.json');
 
 let mainWindow;
 let backendProcess = null;
+const DEFAULT_DEV_FRONTEND_PORT = runtimeConfig.ports.devFrontend;
+const DEFAULT_DEV_BACKEND_PORT = runtimeConfig.ports.devBackend;
+const DEFAULT_PROD_BACKEND_PORT = runtimeConfig.ports.prodBackend;
 
 function getRendererSettingsPath() {
   return path.join(app.getPath('userData'), 'renderer-settings.json');
@@ -62,6 +66,59 @@ function getResourcePath(relativePath) {
   }
 }
 
+function isDevelopmentRuntime() {
+  // Packaged apps should always use embedded resources even if NODE_ENV is unset.
+  return !app.isPackaged && process.env.NODE_ENV !== 'production';
+}
+
+function parsePortValue(rawValue, fallbackPort) {
+  if (typeof rawValue === 'number' && Number.isInteger(rawValue)) {
+    return rawValue >= 1 && rawValue <= 65535 ? rawValue : fallbackPort;
+  }
+
+  if (typeof rawValue !== 'string') return fallbackPort;
+  const trimmed = rawValue.trim();
+  if (!trimmed) return fallbackPort;
+
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    return fallbackPort;
+  }
+
+  return parsed;
+}
+
+function getDevFrontendPort() {
+  return parsePortValue(process.env.ELECTRON_DEV_FRONTEND_PORT, DEFAULT_DEV_FRONTEND_PORT);
+}
+
+function getBackendPort() {
+  if (isDevelopmentRuntime()) {
+    return parsePortValue(
+      process.env.ELECTRON_DEV_BACKEND_PORT || process.env.PORT,
+      DEFAULT_DEV_BACKEND_PORT
+    );
+  }
+
+  return parsePortValue(
+    process.env.ELECTRON_PROD_BACKEND_PORT || process.env.PORT,
+    DEFAULT_PROD_BACKEND_PORT
+  );
+}
+
+function getBackendOrigin() {
+  const host = isDevelopmentRuntime() ? 'localhost' : '127.0.0.1';
+  return `http://${host}:${getBackendPort()}`;
+}
+
+function getBackendWsOrigin() {
+  return getBackendOrigin().replace('http://', 'ws://');
+}
+
+function getDevFrontendOrigin() {
+  return `http://localhost:${getDevFrontendPort()}`;
+}
+
 // Get Python executable path
 function getPythonPath() {
   const pythonDir = getResourcePath('embedded-python');
@@ -87,14 +144,15 @@ function getPythonPath() {
 }
 
 // Test if backend server is responding
-function testBackendConnection(maxAttempts = 10, delayMs = 1000) {
+function testBackendConnection(backendOrigin, maxAttempts = 10, delayMs = 1000) {
   return new Promise((resolve) => {
     let attempts = 0;
+    const statusUrl = `${backendOrigin}/api/auth/status`;
 
     const tryConnect = () => {
       attempts++;
 
-      const req = http.get('http://localhost:4000/api/auth/status', (res) => {
+      const req = http.get(statusUrl, (res) => {
         console.log(`✓ Backend responding (attempt ${attempts})`);
         resolve(true);
       });
@@ -148,7 +206,7 @@ function attachBackendProcessHandlers(label = 'Backend') {
   });
 }
 
-async function startWorkspaceBackendDev() {
+async function startWorkspaceBackendDev(backendPort, backendOrigin, frontendOrigin) {
   const backendPath = path.join(__dirname, '..', '..', 'backend');
   const backendPackageJson = path.join(backendPath, 'package.json');
 
@@ -169,16 +227,16 @@ async function startWorkspaceBackendDev() {
   // In dev fallback mode, run backend from workspace and keep data in Electron userData.
   const backendEnv = {
     ...process.env,
-    PORT: '4000',
+    PORT: String(backendPort),
     DATA_DIR: backendDataPath,
-    FRONTEND_URL: 'http://localhost:3000',
-    BACKEND_URL: 'http://localhost:4000',
+    FRONTEND_URL: frontendOrigin,
+    BACKEND_URL: backendOrigin,
     LOCAL_IMPORT_MODE: 'reference',
-    CORS_EXTRA_ORIGINS: 'http://localhost:3000',
+    CORS_EXTRA_ORIGINS: frontendOrigin,
     CORS_ALLOW_NO_ORIGIN: 'true',
   };
 
-  console.log('Starting workspace backend process...');
+  console.log('Starting workspace backend process on', backendOrigin);
   backendProcess = spawn(npmCommand, ['run', 'dev'], {
     cwd: backendPath,
     env: backendEnv,
@@ -187,7 +245,7 @@ async function startWorkspaceBackendDev() {
   attachBackendProcessHandlers('Backend Dev');
 
   console.log('⏳ Waiting for workspace backend to start...');
-  const isReady = await testBackendConnection(30, 1000);
+  const isReady = await testBackendConnection(backendOrigin, 30, 1000);
 
   if (!isReady) {
     return {
@@ -200,6 +258,8 @@ async function startWorkspaceBackendDev() {
   return {
     success: true,
     mode: 'dev-embedded',
+    backendPort,
+    backendOrigin,
     backendPath,
     dataPath: backendDataPath
   };
@@ -207,18 +267,21 @@ async function startWorkspaceBackendDev() {
 
 // Start backend (external in dev if available, embedded in production)
 async function startBackend() {
-  const isDev = process.env.NODE_ENV !== 'production';
+  const isDev = isDevelopmentRuntime();
+  const backendPort = getBackendPort();
+  const backendOrigin = getBackendOrigin();
+  const frontendOrigin = isDev ? getDevFrontendOrigin() : backendOrigin;
 
   if (isDev) {
-    console.log('🔧 Dev mode: Checking backend at http://localhost:4000');
-    const isRunning = await testBackendConnection(3, 1000);
+    console.log(`🔧 Dev mode: Checking backend at ${backendOrigin}`);
+    const isRunning = await testBackendConnection(backendOrigin, 3, 1000);
 
     if (isRunning) {
-      return { success: true, mode: 'dev-external' };
+      return { success: true, mode: 'dev-external', backendPort, backendOrigin };
     }
 
-    console.warn('⚠️  Backend not detected on :4000. Starting workspace backend...');
-    return startWorkspaceBackendDev();
+    console.warn(`⚠️  Backend not detected on ${backendOrigin}. Starting workspace backend...`);
+    return startWorkspaceBackendDev(backendPort, backendOrigin, frontendOrigin);
   }
 
   // Production mode - start embedded backend
@@ -256,34 +319,45 @@ async function startBackend() {
   // Environment variables for backend
   const backendEnv = {
     ...process.env,
-    PORT: '4000',
+    PORT: String(backendPort),
     NODE_ENV: 'production',
     DATA_DIR: backendDataPath,
     LOCAL_IMPORT_MODE: 'reference',
     PYTHON_PATH: pythonPath || 'python3',
     PYTHON_AVAILABLE: pythonPath ? 'true' : 'false',
-    FRONTEND_URL: 'http://localhost:3000',
-    BACKEND_URL: 'http://localhost:4000',
-    CORS_EXTRA_ORIGINS: 'http://localhost:3000',
+    FRONTEND_URL: frontendOrigin,
+    BACKEND_URL: backendOrigin,
+    CORS_EXTRA_ORIGINS: frontendOrigin,
     CORS_ALLOW_NULL_ORIGIN: 'true',
     CORS_ALLOW_NO_ORIGIN: 'true',
     // Disable GPU for TensorFlow (CPU only)
     CUDA_VISIBLE_DEVICES: '-1'
   };
 
+  const backendArgs = ['dist/index.js'];
+  let backendCommand = 'node';
+
+  if (app.isPackaged) {
+    // Use the bundled Electron runtime as Node so portable builds don't require a system Node install.
+    backendCommand = process.execPath;
+    backendEnv.ELECTRON_RUN_AS_NODE = '1';
+  }
+
   // Start Node.js backend as child process
   console.log('Starting backend process...');
+  console.log('Backend command:', backendCommand);
 
-  backendProcess = spawn('node', ['dist/index.js'], {
+  backendProcess = spawn(backendCommand, backendArgs, {
     cwd: backendPath,
     env: backendEnv,
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true
   });
   attachBackendProcessHandlers('Backend');
 
   // Wait for backend to start and respond
   console.log('⏳ Waiting for backend to start...');
-  const isReady = await testBackendConnection(15, 1000);
+  const isReady = await testBackendConnection(backendOrigin, 15, 1000);
 
   if (!isReady) {
     return {
@@ -297,6 +371,8 @@ async function startBackend() {
   return {
     success: true,
     mode: 'embedded',
+    backendPort,
+    backendOrigin,
     pythonAvailable: !!pythonPath,
     backendPath,
     dataPath: backendDataPath
@@ -320,10 +396,10 @@ async function createWindow() {
     icon: path.join(__dirname, '../public/icon.png')
   });
 
-  const isDev = process.env.NODE_ENV !== 'production';
+  const isDev = isDevelopmentRuntime();
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:3000');
+    mainWindow.loadURL(getDevFrontendOrigin());
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
@@ -432,7 +508,9 @@ app.whenReady().then(async () => {
 
   // Set Content Security Policy to allow WebGL, fonts, images, and backend connections.
   // In development, Vite injects an inline React preamble script that requires 'unsafe-inline'.
-  const isDevMode = process.env.NODE_ENV !== 'production';
+  const isDevMode = isDevelopmentRuntime();
+  const backendOrigin = getBackendOrigin();
+  const backendWsOrigin = getBackendWsOrigin();
   const scriptSrc = isDevMode
     ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; "
     : "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; ";
@@ -448,8 +526,8 @@ app.whenReady().then(async () => {
           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; " +
           "font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; " +
           "img-src 'self' data: blob: https://i.ytimg.com; " +
-          "connect-src 'self' http://localhost:4000 ws://localhost:4000; " +
-          "media-src 'self' blob: http://localhost:4000;"
+          `connect-src 'self' ${backendOrigin} ${backendWsOrigin}; ` +
+          `media-src 'self' blob: ${backendOrigin};`
         ]
       }
     });

@@ -1,12 +1,19 @@
 import { useState } from 'react';
 import { Server, RefreshCw, CheckCircle, XCircle } from 'lucide-react';
 import { isElectron } from '../utils/platform';
-import { getConfiguredApiUrl, setApiBaseUrl, resetApiBaseUrl, getApiBaseUrl } from '../utils/api-config';
+import {
+  getConfiguredApiUrl,
+  setApiBaseUrl,
+  resetApiBaseUrl,
+  getApiBaseUrl,
+  getDefaultElectronApiBaseUrl,
+} from '../utils/api-config';
 
 export function ApiSettings() {
   const [customUrl, setCustomUrl] = useState(getConfiguredApiUrl() || '');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const defaultApiUrl = getDefaultElectronApiBaseUrl();
 
   // Only show in Electron
   if (!isElectron()) {
@@ -19,7 +26,7 @@ export function ApiSettings() {
     setTesting(true);
     setTestResult(null);
 
-    const testUrl = customUrl || 'http://localhost:4000/api';
+    const testUrl = customUrl || defaultApiUrl;
 
     try {
       const response = await fetch(`${testUrl}/auth/status`, {
@@ -79,11 +86,11 @@ export function ApiSettings() {
             type="text"
             value={customUrl}
             onChange={(e) => setCustomUrl(e.target.value)}
-            placeholder="http://localhost:4000/api"
+            placeholder={defaultApiUrl}
             className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
           />
           <p className="mt-1 text-xs text-gray-400">
-            Leave empty to use embedded backend (localhost:4000)
+            Leave empty to use embedded backend ({defaultApiUrl})
           </p>
         </div>
 
@@ -134,7 +141,7 @@ export function ApiSettings() {
         {/* Help Text */}
         <div className="bg-gray-900/50 border border-gray-700 rounded p-3">
           <p className="text-xs text-gray-400 leading-relaxed">
-            <strong className="text-gray-300">Embedded Backend:</strong> Start the backend separately on your machine (localhost:4000)
+            <strong className="text-gray-300">Embedded Backend:</strong> Default URL is {defaultApiUrl}
             <br />
             <strong className="text-gray-300">Remote Backend:</strong> Enter the full URL including <code className="bg-gray-800 px-1 rounded">/api</code> (e.g., http://192.168.1.100:4000/api)
           </p>

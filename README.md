@@ -59,6 +59,8 @@ This repository includes GitHub Actions workflows for update monitoring and rele
 - Trigger: Manual (`workflow_dispatch`)
 - Inputs:
   - `release_name`: optional custom name shown in GitHub Releases
+  - `new_features`: optional changelog list (one item per line)
+  - `bugfixes`: optional changelog list (one item per line)
   - `draft` / `prerelease`
 - Default release naming:
   - Uses `Release vX.Y.Z - <CODENAME>` when a root `CODENAME` file is present
@@ -70,11 +72,24 @@ This repository includes GitHub Actions workflows for update monitoring and rele
      - Linux (`AppImage`, `.deb`)
      - Windows (`.exe` installer + portable)
      - macOS (`.dmg`, `.zip`) when runner/platform supports
-  4. Creates the GitHub Release with generated release notes and uploads binaries
+  4. Creates the GitHub Release with:
+     - `Download Links` grouped by Windows/macOS/Linux
+     - `Changelog` with `New Features` and `Bugfixes` from workflow inputs
+     - Uploaded binaries
 
 Version bumps should be committed via normal PR flow before running the release workflow.
 
 If branch protection blocks pushes from `github-actions[bot]`, allow workflow pushes or use a release branch flow.
+
+### End-user downloads (non-technical)
+- Go to the GitHub Releases page and download:
+  - Windows: `sample-solution-setup-...exe` (recommended)
+  - macOS: `sample-solution-...-mac.dmg`
+  - Linux: `sample-solution-...AppImage` (or `.deb` for Debian/Ubuntu)
+- Ignore developer/update metadata files if you see them elsewhere:
+  - `*.blockmap`
+  - `*-builder-debug.yml`
+  - `Source code (zip/tar.gz)` unless you are building from source
 
 ---
 
