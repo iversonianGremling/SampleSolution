@@ -89,6 +89,20 @@ npx @electron/rebuild \
   --only better-sqlite3
 cd "$BUNDLE_DIR"
 
+# Remove native module build artifacts (only the .node binary is needed at runtime).
+# These intermediate files add ~16 MB and create deeply nested paths that break
+# Windows NSIS installer builds (260-char path limit).
+echo ""
+echo "🧹 Cleaning native module build artifacts..."
+SQLITE_BUILD="$BUNDLE_DIR/node_modules/better-sqlite3/build"
+if [ -d "$SQLITE_BUILD" ]; then
+    find "$SQLITE_BUILD" -name "*.o" -o -name "*.a" -o -name "*.Makefile" -o -name "*.target.mk" -o -name "*.mk" | xargs rm -f 2>/dev/null
+    rm -rf "$SQLITE_BUILD/Release/.deps" "$SQLITE_BUILD/Release/obj" "$SQLITE_BUILD/Release/obj.target" \
+           "$SQLITE_BUILD/Release/test_extension.node" "$SQLITE_BUILD/Release/.forge-meta" \
+           "$SQLITE_BUILD/config.gypi" "$SQLITE_BUILD/gyp-mac-tool" 2>/dev/null
+    echo "✓ Cleaned build artifacts"
+fi
+
 # Create environment file
 echo ""
 echo "📝 Creating .env file..."

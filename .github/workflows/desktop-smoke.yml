@@ -43,9 +43,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x frontend/scripts/bundle-backend.sh frontend/scripts/rebuild-native.sh || true
+          chmod +x frontend/scripts/bundle-backend.sh || true
           ./frontend/scripts/bundle-backend.sh
-          ./frontend/scripts/rebuild-native.sh
 
       - name: Set up embedded Python
         shell: bash
