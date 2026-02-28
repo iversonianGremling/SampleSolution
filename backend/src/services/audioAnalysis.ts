@@ -3,7 +3,7 @@
  * Uses Python (Essentia + Librosa) for feature extraction and tag generation
  */
 
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, execSync, type ChildProcess } from 'child_process'
 import { appendFileSync, mkdirSync } from 'fs'
 import { createInterface, type Interface as ReadlineInterface } from 'readline'
 import path from 'path'
@@ -22,7 +22,9 @@ const __dirname = path.dirname(__filename)
 // Path to Python script
 const PYTHON_SCRIPT = path.join(__dirname, '../python/analyze_audio.py')
 // Try to use venv Python if available, otherwise fall back to system python3
-const VENV_PYTHON = path.join(__dirname, '../../venv/bin/python')
+const VENV_PYTHON = process.platform === 'win32'
+  ? path.join(__dirname, '../../venv/Scripts/python.exe')
+  : path.join(__dirname, '../../venv/bin/python')
 const PYTHON_EXECUTABLE = process.env.PYTHON_PATH || VENV_PYTHON
 
 /**
@@ -521,6 +523,33 @@ interface WorkerState {
 
 let workerState: WorkerState | null = null
 
+/**
+ * Forcefully terminate a child process. On Windows, SIGTERM/SIGKILL are
+ * no-ops so we use `taskkill /F /T` (force + kill child tree) instead.
+ */
+function forceKillProcess(proc: ChildProcess): void {
+  if (proc.killed || proc.pid == null) return
+  if (process.platform === 'win32') {
+    try {
+      execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' })
+    } catch {}
+  } else {
+    try { proc.kill('SIGKILL') } catch {}
+  }
+}
+
+function gracefulKillProcess(proc: ChildProcess, forceAfterMs = 3000): void {
+  if (proc.killed || proc.pid == null) return
+  if (process.platform === 'win32') {
+    // Windows has no graceful signal — go straight to force kill
+    forceKillProcess(proc)
+  } else {
+    proc.kill('SIGTERM')
+    const killTimer = setTimeout(() => forceKillProcess(proc), forceAfterMs)
+    killTimer.unref?.()
+  }
+}
+
 function destroyWorker(reason: string): void {
   if (!workerState) return
   const state = workerState
@@ -540,13 +569,7 @@ function destroyWorker(reason: string): void {
   } catch {}
 
   if (!state.process.killed) {
-    state.process.kill('SIGTERM')
-    const killTimer = setTimeout(() => {
-      if (!state.process.killed) {
-        state.process.kill('SIGKILL')
-      }
-    }, 3000)
-    killTimer.unref?.()
+    gracefulKillProcess(state.process)
   }
 }
 
@@ -924,8 +947,8 @@ function shouldUseEmergencyFallback(): boolean {
   return Date.now() < emergencyFallbackUntil
 }
 
-function activateSafeModeCooldown(signal: NodeJS.Signals | null, audioPath: string): void {
-  if (!signal || !FATAL_NATIVE_SIGNALS.has(signal)) return
+function activateSafeModeCooldown(signal: NodeJS.Signals | null, audioPath: string, timedOut = false): void {
+  if (!timedOut && (!signal || !FATAL_NATIVE_SIGNALS.has(signal))) return
   if (SAFE_MODE_COOLDOWN_MS <= 0) return
 
   safeModeCooldownUntil = Date.now() + SAFE_MODE_COOLDOWN_MS
@@ -1307,9 +1330,10 @@ function runPythonAnalysisAttempt(
       `[attempt:${attemptId}] env AUDIO_ANALYSIS_SAFE_MODE=${env.AUDIO_ANALYSIS_SAFE_MODE || '0'} AUDIO_ANALYSIS_DISABLE_ESSENTIA=${env.AUDIO_ANALYSIS_DISABLE_ESSENTIA || '0'} AUDIO_ANALYSIS_DISABLE_TENSORFLOW=${env.AUDIO_ANALYSIS_DISABLE_TENSORFLOW || '0'} AUDIO_ANALYSIS_DISABLE_FINGERPRINT=${env.AUDIO_ANALYSIS_DISABLE_FINGERPRINT || '0'} NUMBA_DISABLE_JIT=${env.NUMBA_DISABLE_JIT || '0'} DEBUG_ANALYSIS=${env.DEBUG_ANALYSIS || '0'}`
     )
 
+    // Do NOT use spawn's `timeout` option — it sends SIGTERM which is a
+    // no-op on Windows.  Instead we manage our own timeout below.
     const proc = spawn(PYTHON_EXECUTABLE, args, {
-      timeout: timeoutMs,
-      stdio: ['ignore', 'pipe', 'pipe'], // Explicitly pipe stdout/stderr
+      stdio: ['ignore', 'pipe', 'pipe'],
       env,
     })
     writeAudioAnalysisDebugLog(
@@ -1317,12 +1341,23 @@ function runPythonAnalysisAttempt(
     )
 
     let didAbort = false
+    let didTimeout = false
     let settled = false
+
+    // Manual timeout — works on every platform
+    const processTimer = setTimeout(() => {
+      if (settled) return
+      didTimeout = true
+      writeAudioAnalysisDebugLog(`[attempt:${attemptId}] timeout after ${timeoutMs}ms — killing process`)
+      forceKillProcess(proc)
+    }, timeoutMs)
+    processTimer.unref?.()
     let stdout = ''
     let pythonError = ''
     const logPrefix = mode === 'safe' ? '[audio-analysis:safe]' : '[audio-analysis]'
 
     const cleanupAbortListener = () => {
+      clearTimeout(processTimer)
       if (signal) {
         signal.removeEventListener('abort', onAbort)
       }
@@ -1353,15 +1388,8 @@ function runPythonAnalysisAttempt(
       didAbort = true
       writeAudioAnalysisDebugLog(`[attempt:${attemptId}] abort signal received`)
       if (!proc.killed) {
-        proc.kill('SIGTERM')
+        gracefulKillProcess(proc, 2000)
       }
-
-      const killTimer = setTimeout(() => {
-        if (!proc.killed) {
-          proc.kill('SIGKILL')
-        }
-      }, 2000)
-      killTimer.unref?.()
     }
 
     if (signal) {
@@ -1440,12 +1468,17 @@ function runPythonAnalysisAttempt(
 
       if (code !== 0) {
         // Process killed by signal (OOM, timeout, etc.)
-        if (closeSignal || code === null) {
-          activateSafeModeCooldown(closeSignal, audioPath)
-          const reason = closeSignal === 'SIGTERM' ? 'process timed out or was terminated'
+        // On Windows there are no signals — didTimeout tracks our manual timeout.
+        if (closeSignal || code === null || didTimeout) {
+          const reason = didTimeout ? 'process timed out or was terminated'
+            : closeSignal === 'SIGTERM' ? 'process timed out or was terminated'
             : closeSignal === 'SIGKILL' ? 'process was killed (likely out of memory)'
             : `process received signal ${closeSignal || 'unknown'}`
-          if (mode === 'safe' && closeSignal && FATAL_NATIVE_SIGNALS.has(closeSignal)) {
+
+          // Activate safe-mode cooldown for timeouts and fatal signals
+          activateSafeModeCooldown(closeSignal, audioPath, didTimeout)
+
+          if (mode === 'safe' && (didTimeout || (closeSignal && FATAL_NATIVE_SIGNALS.has(closeSignal)))) {
             activateEmergencyFallbackCooldown(audioPath, reason)
           }
           console.error(`Audio analysis killed (${mode}) for ${audioPath}: ${reason}`)
