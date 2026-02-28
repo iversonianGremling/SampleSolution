@@ -81,11 +81,13 @@ npm install --production --legacy-peer-deps
 # bundled Node.js, not the system Node.  Native addons must match that ABI.
 echo ""
 echo "🔧 Rebuilding native modules for Electron..."
-ELECTRON_VERSION=$(node -e "console.log(require('$FRONTEND_DIR/node_modules/electron/package.json').version)")
-npx --prefix "$FRONTEND_DIR" @electron/rebuild \
+cd "$FRONTEND_DIR"
+ELECTRON_VERSION=$(node -e "console.log(require('electron/package.json').version)")
+npx @electron/rebuild \
   --module-dir "$BUNDLE_DIR" \
   --electron-version "$ELECTRON_VERSION" \
   --only better-sqlite3
+cd "$BUNDLE_DIR"
 
 # Create environment file
 echo ""
