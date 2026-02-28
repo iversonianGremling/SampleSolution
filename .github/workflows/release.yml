@@ -289,9 +289,10 @@ jobs:
             throw "No runnable executable found in release-assets"
           }
 
-          $log = Join-Path $env:RUNNER_TEMP "smoke-test-windows.log"
+          $logOut = Join-Path $env:RUNNER_TEMP "smoke-test-windows-stdout.log"
+          $logErr = Join-Path $env:RUNNER_TEMP "smoke-test-windows-stderr.log"
           $appProcName = [System.IO.Path]::GetFileNameWithoutExtension($exe.Name)
-          $proc = Start-Process -FilePath $exe.FullName -PassThru -RedirectStandardOutput $log -RedirectStandardError $log
+          $proc = Start-Process -FilePath $exe.FullName -PassThru -RedirectStandardOutput $logOut -RedirectStandardError $logErr
           $healthy = $false
 
           try {
@@ -318,9 +319,11 @@ jobs:
             }
 
             if (-not $healthy) {
-              if (Test-Path $log) {
-                Write-Host "=== App log tail ==="
-                Get-Content $log -Tail 200
+              foreach ($f in @($logOut, $logErr)) {
+                if (Test-Path $f) {
+                  Write-Host "=== $f tail ==="
+                  Get-Content $f -Tail 200
+                }
               }
               throw "Backend health endpoint did not respond in time."
             }
@@ -456,7 +459,7 @@ jobs:
           chmod +x "$APP_IMAGE"
 
           LOG_FILE="$RUNNER_TEMP/smoke-test-linux.log"
-          "$APP_IMAGE" --no-sandbox --disable-gpu >"$LOG_FILE" 2>&1 &
+          "$APP_IMAGE" --appimage-extract-and-run --no-sandbox --disable-gpu >"$LOG_FILE" 2>&1 &
           APP_PID=$!
           healthy=0
 
