@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -7,6 +7,71 @@ const runtimeConfig = require('./runtime-config.json');
 
 let mainWindow;
 let backendProcess = null;
+
+// ── Persistent log file ──
+// Writes all main-process console output to a rotating log file in userData
+// so users can inspect it after a crash.  The file is located at:
+//   Windows:  %APPDATA%/<app-name>/main.log
+//   macOS:    ~/Library/Application Support/<app-name>/main.log
+//   Linux:    ~/.config/<app-name>/main.log
+let _logStream = null;
+
+function getLogStream() {
+  if (_logStream) return _logStream;
+  try {
+    const logDir = app.getPath('userData');
+    fs.mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, 'main.log');
+
+    // Rotate: if the log exceeds 5 MB, move it to main.log.old
+    try {
+      const stats = fs.statSync(logPath);
+      if (stats.size > 5 * 1024 * 1024) {
+        fs.renameSync(logPath, logPath + '.old');
+      }
+    } catch {}
+
+    _logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    _logStream.write(`\n--- App started ${new Date().toISOString()} ---\n`);
+  } catch {}
+  return _logStream;
+}
+
+// Patch console.log / console.error to also write to the log file
+const _origLog = console.log;
+const _origErr = console.error;
+
+console.log = (...args) => {
+  _origLog(...args);
+  const s = getLogStream();
+  if (s) s.write(`[${new Date().toISOString()}] ${args.map(String).join(' ')}\n`);
+};
+
+console.error = (...args) => {
+  _origErr(...args);
+  const s = getLogStream();
+  if (s) s.write(`[${new Date().toISOString()}] [ERROR] ${args.map(String).join(' ')}\n`);
+};
+
+// ── Cross-platform process kill helpers ──
+function forceKillChild(proc) {
+  if (!proc || proc.killed || proc.pid == null) return;
+  if (process.platform === 'win32') {
+    try { execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' }); } catch {}
+  } else {
+    try { proc.kill('SIGKILL'); } catch {}
+  }
+}
+
+function gracefulKillChild(proc, forceAfterMs = 3000) {
+  if (!proc || proc.killed || proc.pid == null) return;
+  if (process.platform === 'win32') {
+    forceKillChild(proc);
+  } else {
+    proc.kill('SIGTERM');
+    setTimeout(() => forceKillChild(proc), forceAfterMs);
+  }
+}
 const DEFAULT_DEV_FRONTEND_PORT = runtimeConfig.ports.devFrontend;
 const DEFAULT_DEV_BACKEND_PORT = runtimeConfig.ports.devBackend;
 const DEFAULT_PROD_BACKEND_PORT = runtimeConfig.ports.prodBackend;
@@ -197,9 +262,10 @@ function attachBackendProcessHandlers(label = 'Backend') {
 
     // Show error dialog if backend crashes while app is running
     if (mainWindow && !mainWindow.isDestroyed() && !app.isQuitting) {
+      const logPath = path.join(app.getPath('userData'), 'main.log');
       dialog.showErrorBox(
         'Backend Stopped',
-        'The backend server has stopped unexpectedly. Please restart the application.'
+        `The backend server has stopped unexpectedly (code ${code}, signal ${signal}).\n\nLogs: ${logPath}\n\nPlease restart the application.`
       );
       app.quit();
     }
@@ -576,16 +642,7 @@ app.on('will-quit', (event) => {
   if (backendProcess && !backendProcess.killed) {
     console.log('App is quitting, stopping backend...');
     app.isQuitting = true;
-
-    backendProcess.kill('SIGTERM');
-
-    // Force kill after 3 seconds
-    setTimeout(() => {
-      if (backendProcess && !backendProcess.killed) {
-        console.log('Force killing backend...');
-        backendProcess.kill('SIGKILL');
-      }
-    }, 3000);
+    gracefulKillChild(backendProcess);
   }
 });
 

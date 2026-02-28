@@ -49,7 +49,6 @@ cat > "$BUNDLE_DIR/package.json" << 'EOF'
   "type": "module",
   "main": "dist/index.js",
   "dependencies": {
-    "@tensorflow/tfjs-node": "^4.11.0",
     "axios": "^1.6.5",
     "better-sqlite3": "^9.3.0",
     "cors": "^2.8.5",
@@ -65,6 +64,11 @@ cat > "$BUNDLE_DIR/package.json" << 'EOF'
   }
 }
 EOF
+
+# Remove yamnet.js — it depends on @tensorflow/tfjs-node (native C++ addon)
+# which is not bundled.  All ML inference runs via Python subprocess instead.
+rm -f "$BUNDLE_DIR/dist/services/yamnet.js" "$BUNDLE_DIR/dist/services/yamnet.js.map" \
+      "$BUNDLE_DIR/dist/services/yamnet.d.ts" "$BUNDLE_DIR/dist/services/yamnet.d.ts.map"
 
 # Install production dependencies
 echo ""
