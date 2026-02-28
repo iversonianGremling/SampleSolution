@@ -60,6 +60,7 @@ cat > "$BUNDLE_DIR/package.json" << 'EOF'
     "googleapis": "^130.0.0",
     "meyda": "^5.6.3",
     "multer": "^2.0.2",
+    "archiver": "^7.0.1",
     "uuid": "^9.0.0"
   }
 }

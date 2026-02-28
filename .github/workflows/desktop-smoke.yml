@@ -131,7 +131,7 @@ jobs:
                   $healthy = $true
                   break
                 }
-              } catch [System.Net.WebException] {
+              } catch {
                 # Keep polling until timeout.
               }
             }
