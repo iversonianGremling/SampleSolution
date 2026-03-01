@@ -91,6 +91,28 @@ npx @electron/rebuild \
   --only better-sqlite3
 cd "$BUNDLE_DIR"
 
+# Ensure bundled ffmpeg/ffprobe binaries are executable and clear macOS quarantine.
+echo ""
+echo "🔧 Fixing ffmpeg/ffprobe binary permissions..."
+# ffmpeg-static puts the binary at the package root (ffmpeg or ffmpeg.exe)
+# ffprobe-static puts it under bin/{platform}/{arch}/ffprobe[.exe]
+find "$BUNDLE_DIR/node_modules/ffmpeg-static" "$BUNDLE_DIR/node_modules/ffprobe-static" \
+    \( -name 'ffmpeg' -o -name 'ffmpeg.exe' -o -name 'ffprobe' -o -name 'ffprobe.exe' \) \
+    -type f -exec chmod +x {} + 2>/dev/null || true
+# Remove macOS quarantine attribute so Gatekeeper doesn't block the binaries
+if command -v xattr &> /dev/null; then
+    xattr -cr "$BUNDLE_DIR/node_modules/ffmpeg-static" 2>/dev/null || true
+    xattr -cr "$BUNDLE_DIR/node_modules/ffprobe-static" 2>/dev/null || true
+    echo "✓ Cleared quarantine attributes"
+fi
+echo "✓ Binary permissions set"
+
+# Clean ffmpeg-static/ffprobe-static install scripts and docs (not needed at runtime)
+rm -rf "$BUNDLE_DIR/node_modules/ffmpeg-static/install.js" \
+       "$BUNDLE_DIR/node_modules/ffmpeg-static/.github" \
+       "$BUNDLE_DIR/node_modules/ffprobe-static/install.js" \
+       "$BUNDLE_DIR/node_modules/ffprobe-static/.github" 2>/dev/null || true
+
 # Remove native module build artifacts (only the .node binary is needed at runtime).
 # These intermediate files add ~16 MB and create deeply nested paths that break
 # Windows NSIS installer builds (260-char path limit).

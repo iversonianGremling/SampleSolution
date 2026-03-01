@@ -653,7 +653,7 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
         const { promisify } = await import('util')
         const execAsync = promisify(exec)
         try {
-          await execAsync(`${FFMPEG_BIN} -i "${sourcePath}" -acodec libmp3lame -q:a 2 "${slicePath}" -y`, {
+          await execAsync(`"${FFMPEG_BIN}" -i "${sourcePath}" -acodec libmp3lame -q:a 2 "${slicePath}" -y`, {
             timeout: 30000,
           })
         } catch (ffErr) {
@@ -854,7 +854,7 @@ router.post('/import/files', upload.array('files'), async (req, res) => {
           const { promisify } = await import('util')
           const execAsync = promisify(exec)
           try {
-            await execAsync(`${FFMPEG_BIN} -i "${sourcePath}" -acodec libmp3lame -q:a 2 "${slicePath}" -y`, {
+            await execAsync(`"${FFMPEG_BIN}" -i "${sourcePath}" -acodec libmp3lame -q:a 2 "${slicePath}" -y`, {
               timeout: 30000,
             })
           } catch (ffErr) {
@@ -1028,7 +1028,7 @@ router.post('/import/folder', async (req, res) => {
             const { promisify } = await import('util')
             const execAsync = promisify(exec)
             try {
-              await execAsync(`${FFMPEG_BIN} -i "${filePath}" -acodec libmp3lame -q:a 2 "${slicePath}" -y`, {
+              await execAsync(`"${FFMPEG_BIN}" -i "${filePath}" -acodec libmp3lame -q:a 2 "${slicePath}" -y`, {
                 timeout: 30000,
               })
             } catch (ffErr) {

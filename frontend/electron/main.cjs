@@ -387,10 +387,32 @@ async function startBackend() {
   let ffprobePath = null;
   try {
     ffmpegPath = require(path.join(backendPath, 'node_modules', 'ffmpeg-static'));
-  } catch {}
+    if (ffmpegPath && !fs.existsSync(ffmpegPath)) {
+      console.error('ffmpeg-static resolved to non-existent path:', ffmpegPath);
+      ffmpegPath = null;
+    }
+  } catch (err) {
+    console.error('Failed to resolve ffmpeg-static:', err.message);
+  }
   try {
     ffprobePath = require(path.join(backendPath, 'node_modules', 'ffprobe-static')).path;
-  } catch {}
+    if (ffprobePath && !fs.existsSync(ffprobePath)) {
+      console.error('ffprobe-static resolved to non-existent path:', ffprobePath);
+      ffprobePath = null;
+    }
+  } catch (err) {
+    console.error('Failed to resolve ffprobe-static:', err.message);
+  }
+
+  // Ensure bundled binaries are executable and clear macOS quarantine flag
+  for (const binPath of [ffmpegPath, ffprobePath]) {
+    if (binPath && fs.existsSync(binPath)) {
+      try { fs.chmodSync(binPath, 0o755); } catch {}
+      if (process.platform === 'darwin') {
+        try { execSync(`xattr -cr "${binPath}"`, { stdio: 'ignore' }); } catch {}
+      }
+    }
+  }
 
   console.log('FFmpeg path:', ffmpegPath || 'not found (will use system PATH)');
   console.log('FFprobe path:', ffprobePath || 'not found (will use system PATH)');
