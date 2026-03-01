@@ -60,7 +60,9 @@ cat > "$BUNDLE_DIR/package.json" << 'EOF'
     "meyda": "^5.6.3",
     "multer": "^2.0.2",
     "archiver": "^7.0.1",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.0",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
   }
 }
 EOF

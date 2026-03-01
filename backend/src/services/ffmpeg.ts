@@ -1,6 +1,9 @@
 import { spawn } from 'child_process'
 import fs from 'fs/promises'
 
+export const FFMPEG_BIN = process.env.FFMPEG_PATH || 'ffmpeg'
+export const FFPROBE_BIN = process.env.FFPROBE_PATH || 'ffprobe'
+
 export type AudioConversionFormat = 'mp3' | 'wav' | 'flac' | 'aiff' | 'ogg' | 'm4a'
 export type AudioConversionBitDepth = 16 | 24 | 32
 
@@ -196,7 +199,7 @@ export async function convertAudioFile(
       outputPath,
     ]
 
-    const proc = spawn('ffmpeg', args)
+    const proc = spawn(FFMPEG_BIN, args)
     let stderr = ''
 
     proc.stderr.on('data', (data) => {
@@ -235,11 +238,15 @@ export async function extractSlice(
       outputPath,
     ]
 
-    const proc = spawn('ffmpeg', args)
+    const proc = spawn(FFMPEG_BIN, args)
     let stderr = ''
 
     proc.stderr.on('data', (data) => {
       stderr += data.toString()
+    })
+
+    proc.on('error', (error) => {
+      reject(error)
     })
 
     proc.on('close', (code) => {
@@ -266,11 +273,15 @@ export async function generatePeaks(
       '-of', 'csv=p=0',
     ]
 
-    const probe = spawn('ffprobe', probeArgs)
+    const probe = spawn(FFPROBE_BIN, probeArgs)
     let duration = ''
 
     probe.stdout.on('data', (data) => {
       duration += data.toString()
+    })
+
+    probe.on('error', (error) => {
+      reject(error)
     })
 
     probe.on('close', async (code) => {
@@ -291,7 +302,7 @@ export async function generatePeaks(
         '-',
       ]
 
-      const proc = spawn('ffmpeg', args)
+      const proc = spawn(FFMPEG_BIN, args)
       const chunks: Buffer[] = []
 
       proc.stdout.on('data', (data) => {
@@ -340,11 +351,15 @@ export async function getAudioDuration(inputPath: string): Promise<number> {
       '-of', 'csv=p=0',
     ]
 
-    const proc = spawn('ffprobe', args)
+    const proc = spawn(FFPROBE_BIN, args)
     let stdout = ''
 
     proc.stdout.on('data', (data) => {
       stdout += data.toString()
+    })
+
+    proc.on('error', (error) => {
+      reject(error)
     })
 
     proc.on('close', (code) => {
@@ -367,7 +382,7 @@ export async function getAudioFileMetadata(inputPath: string): Promise<AudioFile
       inputPath,
     ]
 
-    const proc = spawn('ffprobe', args)
+    const proc = spawn(FFPROBE_BIN, args)
     let stdout = ''
     let stderr = ''
 
@@ -377,6 +392,10 @@ export async function getAudioFileMetadata(inputPath: string): Promise<AudioFile
 
     proc.stderr.on('data', (data) => {
       stderr += data.toString()
+    })
+
+    proc.on('error', (error) => {
+      reject(error)
     })
 
     proc.on('close', (code) => {

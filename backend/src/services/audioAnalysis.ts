@@ -4,6 +4,7 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
+import { FFPROBE_BIN } from './ffmpeg.js'
 import { appendFileSync, mkdirSync } from 'fs'
 import { createInterface, type Interface as ReadlineInterface } from 'readline'
 import path from 'path'
@@ -985,7 +986,7 @@ async function probeAudioDurationSeconds(audioPath: string): Promise<number | nu
       audioPath,
     ]
 
-    const proc = spawn('ffprobe', args)
+    const proc = spawn(FFPROBE_BIN, args)
     let stdout = ''
 
     proc.stdout.on('data', (data) => {

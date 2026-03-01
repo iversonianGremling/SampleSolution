@@ -382,6 +382,19 @@ async function startBackend() {
   console.log('Data path:', backendDataPath);
   console.log('Python path:', pythonPath || 'not found');
 
+  // Resolve bundled ffmpeg/ffprobe binary paths from ffmpeg-static / ffprobe-static
+  let ffmpegPath = null;
+  let ffprobePath = null;
+  try {
+    ffmpegPath = require(path.join(backendPath, 'node_modules', 'ffmpeg-static'));
+  } catch {}
+  try {
+    ffprobePath = require(path.join(backendPath, 'node_modules', 'ffprobe-static')).path;
+  } catch {}
+
+  console.log('FFmpeg path:', ffmpegPath || 'not found (will use system PATH)');
+  console.log('FFprobe path:', ffprobePath || 'not found (will use system PATH)');
+
   // Environment variables for backend
   const backendEnv = {
     ...process.env,
@@ -397,7 +410,10 @@ async function startBackend() {
     CORS_ALLOW_NULL_ORIGIN: 'true',
     CORS_ALLOW_NO_ORIGIN: 'true',
     // Disable GPU for TensorFlow (CPU only)
-    CUDA_VISIBLE_DEVICES: '-1'
+    CUDA_VISIBLE_DEVICES: '-1',
+    // Bundled ffmpeg/ffprobe binary paths (fall back to system PATH if not found)
+    ...(ffmpegPath ? { FFMPEG_PATH: ffmpegPath } : {}),
+    ...(ffprobePath ? { FFPROBE_PATH: ffprobePath } : {}),
   };
 
   const backendArgs = ['dist/index.js'];
