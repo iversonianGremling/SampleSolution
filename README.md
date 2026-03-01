@@ -1,5 +1,8 @@
 # Sample Solution
 
+
+WARNING: If you intend to contribute to this project there's still a lot of AI slop everywhere. I'm commited to cleaning the code up manually but it'd be irresponsible on my part to not acknowledge this to anyone willing to use it. At the moment of writing this (3/1/2026) the versions that work are: docker compose on linux, electron on linux (still have to test if it passes without having the dependencies installed). The windows electron version seems to work with dependency issues. Thank you for your understanding.
+
 A practical audio sample management and analysis platform for music producers and sound designers. Import your library, slice audio quickly, auto-analyze features, and organize everything with tags, folders, and collections. Works as a webapp, running experiments for a desktop app (electron)
 
 <img width="1929" height="994" alt="image" src="https://github.com/user-attachments/assets/aee09211-d6c7-42ee-86c3-ffb8dedf7015" />
