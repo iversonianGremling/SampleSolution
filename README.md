@@ -41,50 +41,8 @@ A practical audio sample management and analysis platform for music producers an
   - Better sample slicing capabilities
   - Better support for self hosting
 
-## If you want to run it on docker or build it
-
-### Docker
-
-```bash
-docker compose up -d --build
-```
-
-GPU mode (optional):
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-```
-
-App URLs:
-- Frontend: `http://localhost:3000`
-- Backend: `http://localhost:4000`
-
-### Electron
-
-Development mode (backend + electron UI):
-
-```bash
-# terminal 1
-cd backend
-npm install
-npm run dev
-
-# terminal 2
-cd frontend
-npm install
-npm run dev:electron
-```
-
-Build desktop release artifacts:
-
-```bash
-cd frontend
-npm run build:electron
-```
-
-Output directory: `frontend/release/`
-
 ## Screenshots
+*Big images, be patient*
 
 <p align="center">
   <img width="1904" height="913" alt="image" src="https://github.com/user-attachments/assets/c9c39303-0230-4748-964a-b4055b4fc7c4" />
@@ -145,6 +103,51 @@ These notes are minimal and low-scope.
   - If OAuth features fail, verify backend env values for provider credentials and callback URLs.
 - **Source/dev users**
   - TensorFlow startup warnings are often informational.
+
+
+## If you want to run it on docker or build it
+
+### Docker
+
+```bash
+docker compose up -d --build
+```
+
+GPU mode (optional):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+
+App URLs:
+- Frontend: `http://localhost:3000`
+- Backend: `http://localhost:4000`
+
+### Electron
+
+Development mode (backend + electron UI):
+
+```bash
+# terminal 1
+cd backend
+npm install
+npm run dev
+
+# terminal 2
+cd frontend
+npm install
+npm run dev:electron
+```
+
+Build desktop release artifacts:
+
+```bash
+cd frontend
+npm run build:electron
+```
+
+Output directory: `frontend/release/`
+
 
 ## Roadmap
 
