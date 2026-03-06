@@ -147,7 +147,7 @@ describe('SliceList', () => {
       />
     )
 
-    const playButtons = screen.getAllByTitle('Play slice')
+    const playButtons = screen.getAllByTitle(/^Play \(/)
     await user.click(playButtons[0])
 
     expect(mockOnTogglePlay).toHaveBeenCalledWith(mockSlices[0])

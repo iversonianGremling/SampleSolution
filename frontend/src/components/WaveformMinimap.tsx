@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect } from 'react'
 import { flushSync } from 'react-dom'
-import { ChevronRight, ChevronLeft } from 'lucide-react'
+import { GripHorizontal } from 'lucide-react'
+import { drawWaveformBars } from '../utils/waveformSource'
 
 interface WaveformMinimapProps {
   minimapRef: React.RefObject<HTMLDivElement>
@@ -8,11 +9,15 @@ interface WaveformMinimapProps {
   viewportStart: number
   viewportEnd: number
   duration: number
+  peaks?: number[]
+  currentTime?: number
   onSetViewport?: (start: number, end: number) => void
+  onSeek?: (seconds: number) => void
 }
 
-const MIN_WIDTH = 0.1
+const MIN_WIDTH = 0.02
 const ZOOM_SENSITIVITY = 0.01
+const HANDLE_WIDTH = 12
 
 export function WaveformMinimap({
   minimapRef,
@@ -20,10 +25,53 @@ export function WaveformMinimap({
   viewportStart,
   viewportEnd,
   duration,
+  peaks,
+  currentTime = 0,
   onSetViewport,
+  onSeek,
 }: WaveformMinimapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const [showContent, setShowContent] = useState(false)
+
+  // Draw minimap waveform onto canvas whenever peaks, time, or size changes
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !peaks?.length || !duration) return
+    const dpr = window.devicePixelRatio || 1
+    const w = Math.round(canvas.clientWidth * dpr)
+    const h = Math.round(canvas.clientHeight * dpr)
+    if (!w || !h) return
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w
+      canvas.height = h
+    }
+    drawWaveformBars(canvas, peaks, currentTime, duration, {
+      waveColor: '#64748b',
+      progressColor: '#475569',
+      cursorColor: 'rgba(239, 68, 68, 0.8)',
+    })
+  }, [peaks, currentTime, duration])
+
+  // Resize observer to re-draw when canvas element resizes
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ro = new ResizeObserver(() => {
+      const dpr = window.devicePixelRatio || 1
+      canvas.width = Math.round(canvas.clientWidth * dpr)
+      canvas.height = Math.round(canvas.clientHeight * dpr)
+      if (peaks?.length && duration) {
+        drawWaveformBars(canvas, peaks, currentTime, duration, {
+          waveColor: '#64748b',
+          progressColor: '#475569',
+          cursorColor: 'rgba(239, 68, 68, 0.8)',
+        })
+      }
+    })
+    ro.observe(canvas)
+    return () => ro.disconnect()
+  }, [peaks, currentTime, duration])
 
   // Optimistic local state for instant visual feedback during dragging
   const [localStart, setLocalStart] = useState(viewportStart)
@@ -54,20 +102,23 @@ export function WaveformMinimap({
     if (isReady) {
       const timer = setTimeout(() => setShowContent(true), 300)
       return () => clearTimeout(timer)
+    } else {
+      setShowContent(false)
     }
   }, [isReady])
 
   // Prevent division by zero
   const safeDuration = duration || 1
   // Use local state for visual rendering (instant feedback during drag)
-  const leftPercent = (localStart / safeDuration) * 100
-  const widthPercent = ((localEnd - localStart) / safeDuration) * 100
+  // Default to full-width selector when duration is not yet known (pre-load state)
+  const leftPercent = duration > 0 ? (localStart / safeDuration) * 100 : 0
+  const widthPercent = duration > 0 ? ((localEnd - localStart) / safeDuration) * 100 : 100
 
   const clamp = (value: number, min: number, max: number) =>
     Math.max(min, Math.min(max, value))
 
   // ========== RESIZE HANDLES ==========
-  const handleResizeMouseDown = (e: React.MouseEvent, isLeft: boolean) => {
+  const doResize = (e: React.MouseEvent, isLeft: boolean) => {
     e.preventDefault()
     e.stopPropagation()
 
@@ -102,10 +153,6 @@ export function WaveformMinimap({
 
   // ========== CENTER DRAG (PAN + ZOOM SIMULTANEOUS) ==========
   const handleCenterMouseDown = (e: React.MouseEvent) => {
-    // Don't handle if clicking on resize handles
-    const target = e.target as HTMLElement
-    if (target.closest('.resize-handle')) return
-
     e.preventDefault()
     e.stopPropagation()
 
@@ -113,8 +160,8 @@ export function WaveformMinimap({
 
     isDraggingRef.current = true
 
-    const startX = e.clientX
-    const startY = e.clientY
+    const startClientX = e.clientX
+    const startClientY = e.clientY
     const initStart = viewportStart
     const initEnd = viewportEnd
     const initWidth = initEnd - initStart
@@ -123,8 +170,8 @@ export function WaveformMinimap({
     const onMouseMove = (moveEvent: MouseEvent) => {
       if (!containerRef.current) return
 
-      const dxPixels = moveEvent.clientX - startX
-      const dyPixels = moveEvent.clientY - startY
+      const dxPixels = moveEvent.clientX - startClientX
+      const dyPixels = moveEvent.clientY - startClientY
       const containerWidth = containerRef.current.offsetWidth
 
       // ZOOM: vertical movement changes width (down = zoom out, up = zoom in)
@@ -162,14 +209,57 @@ export function WaveformMinimap({
       updateViewport(nStart, nEnd)
     }
 
-    const onMouseUp = () => {
+    const onMouseUp = (upEvent: MouseEvent) => {
       isDraggingRef.current = false
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
+
+      // Click-to-seek: if mouse barely moved, seek to the clicked position
+      const movedX = Math.abs(upEvent.clientX - startClientX)
+      const movedY = Math.abs(upEvent.clientY - startClientY)
+      if (movedX < 5 && movedY < 5 && containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect()
+        const seekSeconds = Math.max(0, Math.min(duration, ((startClientX - rect.left) / rect.width) * duration))
+        onSeek?.(seekSeconds)
+      }
     }
 
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
+  }
+
+  // Top handle height in px — must match the CSS height of the grip bar (0.65rem ≈ 10.4px)
+  const TOP_HANDLE_PX = 10.4
+
+  // ========== SELECTOR MOUSEDOWN: routes to resize or center drag ==========
+  const handleSelectorMouseDown = (e: React.MouseEvent) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    const width = rect.width
+    const height = rect.height
+
+    // Top handle takes priority — always pan, never resize
+    if (y < TOP_HANDLE_PX) {
+      handleCenterMouseDown(e)
+      return
+    }
+
+    const inLeftZone = x < HANDLE_WIDTH
+    const inRightZone = x > width - HANDLE_WIDTH
+
+    if (inLeftZone || inRightZone) {
+      let useLeft: boolean
+      if (inLeftZone && inRightZone) {
+        // Handles overlap: top half → left handle, bottom half → right handle
+        useLeft = y < height / 2
+      } else {
+        useLeft = inLeftZone
+      }
+      doResize(e, useLeft)
+    } else {
+      handleCenterMouseDown(e)
+    }
   }
 
   // ========== BACKGROUND CLICK ==========
@@ -223,10 +313,15 @@ export function WaveformMinimap({
   return (
     <div className="mb-2 select-none">
       <div className="relative h-16">
-        {/* Waveform minimap canvas - rendered by wavesurfer */}
+        {/* Waveform minimap — custom canvas rendering */}
         <div
           ref={minimapRef}
-          className={`bg-gray-900 h-full rounded overflow-hidden border border-gray-700 transition-opacity duration-300 ${
+          className="absolute inset-0 hidden"
+          aria-hidden="true"
+        />
+        <canvas
+          ref={canvasRef}
+          className={`w-full h-full bg-gray-900 rounded overflow-hidden border border-gray-700 transition-opacity duration-300 ${
             showContent ? 'opacity-100' : 'opacity-0'
           }`}
         />
@@ -249,23 +344,37 @@ export function WaveformMinimap({
               border: '1px solid rgba(99, 102, 241, 0.6)',
               pointerEvents: 'auto',
             }}
-            onMouseDown={handleCenterMouseDown}
+            onMouseDown={handleSelectorMouseDown}
             onDoubleClick={handleDoubleClick}
           >
-            {/* Left resize handle */}
+            {/* Top drag handle — pan the viewport */}
             <div
-              className="resize-handle absolute left-0 top-0 h-full w-3 cursor-ew-resize flex items-center justify-center"
-              onMouseDown={(e) => handleResizeMouseDown(e, true)}
+              className="absolute top-0 left-0 right-0 flex items-center justify-center"
+              style={{ height: '0.65rem', backgroundColor: 'rgba(99, 102, 241, 0.85)', pointerEvents: 'none' }}
             >
-              <ChevronRight size={16} className="text-white/70" />
+              <GripHorizontal size={14} className="text-white/90 pointer-events-none" />
             </div>
 
-            {/* Right resize handle */}
+            {/* Left handle — visual only, events bubble to selector */}
             <div
-              className="resize-handle absolute right-0 top-0 h-full w-3 cursor-ew-resize flex items-center justify-center"
-              onMouseDown={(e) => handleResizeMouseDown(e, false)}
+              className="absolute left-0 bottom-0"
+              style={{ width: HANDLE_WIDTH, top: '0', cursor: 'ew-resize', zIndex: 1 }}
             >
-              <ChevronLeft size={16} className="text-white/70" />
+              {/* Left-pointing chevron at top */}
+              <svg width="10" height="10" viewBox="0 0 10 10" style={{ position: 'absolute', top: 14, left: 1 }}>
+                <path d="M3,2 L7,5 L3,8" stroke="rgba(225,225,235,0.95)" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+
+            {/* Right handle — visual only, events bubble to selector */}
+            <div
+              className="absolute right-0 bottom-0"
+              style={{ width: HANDLE_WIDTH, top: '0.65rem', cursor: 'ew-resize', zIndex: 1 }}
+            >
+              {/* Left-pointing chevron at bottom */}
+              <svg width="10" height="10" viewBox="0 0 10 10" style={{ position: 'absolute', bottom: 3, right: 1 }}>
+                <path d="M7,2 L3,5 L7,8" stroke="rgba(225,225,235,0.95)" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
             </div>
           </div>
         </div>

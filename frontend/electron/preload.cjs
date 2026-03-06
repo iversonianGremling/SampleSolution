@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 // Expose safe APIs to the renderer process
 contextBridge.exposeInMainWorld('electron', {
   isElectron: true,
+  isPackaged: !!process.env.PORTABLE_EXECUTABLE_DIR || process.defaultApp !== true,
   platform: process.platform,
   arch: process.arch,
   versions: {
@@ -24,6 +25,12 @@ contextBridge.exposeInMainWorld('electron', {
   getSetting: (key) => ipcRenderer.invoke('renderer-settings-get', key),
   setSetting: (key, value) => ipcRenderer.invoke('renderer-settings-set', key, value),
   removeSetting: (key) => ipcRenderer.invoke('renderer-settings-remove', key),
+
+  // Forward renderer diagnostics to Electron main process log.
+  logRenderer: (payload) => ipcRenderer.send('renderer-log', payload || {}),
+
+  // Get the path of the main process log file (for "open logs" UI)
+  getLogPath: () => ipcRenderer.invoke('get-log-path'),
 
   // File system APIs (can be extended)
   // For example: dialog APIs, file reading, etc.

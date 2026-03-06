@@ -1,4 +1,4 @@
-import { Download, Trash2, X, Loader2, RefreshCw, Pencil } from 'lucide-react'
+import { Download, Trash2, X, Loader2, RefreshCw, Pencil, FolderInput } from 'lucide-react'
 
 interface SourcesBatchActionsProps {
   selectedCount: number
@@ -9,6 +9,7 @@ interface SourcesBatchActionsProps {
   onBatchDownload: (ids: number[]) => void
   onAnalyzeSelected: (ids: number[]) => void
   onClearSelection: () => void
+  onMove?: () => void
   isEditing?: boolean
   isDeleting?: boolean
   isAnalyzing?: boolean
@@ -23,6 +24,7 @@ export function SourcesBatchActions({
   onBatchDownload,
   onAnalyzeSelected,
   onClearSelection,
+  onMove,
   isEditing = false,
   isDeleting = false,
   isAnalyzing = false,
@@ -46,6 +48,17 @@ export function SourcesBatchActions({
         <Download size={12} />
         Download
       </button>
+
+      {onMove && (
+        <button
+          onClick={onMove}
+          className="flex items-center gap-1 px-2.5 py-1 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 text-xs font-medium rounded transition-colors leading-none"
+          title="Move selected samples to a folder"
+        >
+          <FolderInput size={12} />
+          Move
+        </button>
+      )}
 
       {onBulkEdit && (
         <button

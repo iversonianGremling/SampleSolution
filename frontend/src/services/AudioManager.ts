@@ -2,6 +2,7 @@
  * Centralized audio management system for preventing duplicate playback
  * and coordinating audio across the application
  */
+import { logRendererError, logRendererInfo } from '../utils/rendererLog'
 
 interface AudioPlaybackState {
   audioId: number | string
@@ -46,13 +47,23 @@ export class AudioManager {
   }
 
   /**
-   * Stop any currently playing audio
+   * Stop any currently playing audio and fully release the HTMLAudioElement.
+   *
+   * On Windows Electron each HTMLAudioElement holds an open WASAPI stream handle.
+   * Simply calling .pause() keeps the handle alive until GC. With rapid hover-play
+   * (8+ elements created in <2 seconds) the OS audio session limit is hit and the
+   * renderer crashes (exit -1073741819 / 0xC0000005).
+   *
+   * Setting src='' and calling load() forces Chromium to immediately close the
+   * underlying media pipeline and release the WASAPI handle synchronously.
    */
   stopAll(): void {
     if (this.currentPlayback) {
       const { audioElement } = this.currentPlayback
+      logRendererInfo('AudioManager.stopAll', `Stopping audioId=${this.currentPlayback.audioId}`)
       audioElement.pause()
-      audioElement.currentTime = 0
+      audioElement.src = ''
+      audioElement.load()
       this.currentPlayback.isPlaying = false
       this.currentPlayback.isPaused = false
     }
@@ -103,8 +114,14 @@ export class AudioManager {
       return false
     }
 
-    // Stop any currently playing audio
-    this.stopAll()
+    // Fully destroy the previous element before creating a new one.
+    // On Windows, stopAll() only pauses — releaseCurrentElement() also clears
+    // src and calls load() to synchronously release the WASAPI stream handle.
+    this.releaseCurrentElement()
+    logRendererInfo(
+      'AudioManager.play',
+      `audioId=${audioId} url=${audioUrl} rate=${options?.playbackRate ?? 1} volume=${options?.volume ?? 1}`
+    )
 
     try {
       const audio = new Audio(audioUrl)
@@ -141,6 +158,7 @@ export class AudioManager {
       // Handle audio end
       const handleEnd = () => {
         if (this.currentPlayback?.audioId === audioId) {
+          logRendererInfo('AudioManager.ended', `audioId=${audioId}`)
           this.currentPlayback.isPlaying = false
           this.currentPlayback.onEnd?.()
         }
@@ -149,6 +167,10 @@ export class AudioManager {
       // Handle audio error
       const handleError = () => {
         if (this.currentPlayback?.audioId === audioId) {
+          logRendererError(
+            'AudioManager.error',
+            `audioId=${audioId} src=${audio.currentSrc || audioUrl} code=${audio.error?.code ?? 'unknown'}`
+          )
           this.currentPlayback.isPlaying = false
           this.currentPlayback.onEnd?.()
         }
@@ -158,8 +180,9 @@ export class AudioManager {
       audio.addEventListener('error', handleError)
 
       // Attempt to play
-      audio.play().catch(() => {
+      audio.play().catch((error) => {
         if (this.currentPlayback?.audioId === audioId) {
+          logRendererError('AudioManager.playReject', error)
           this.currentPlayback.isPlaying = false
           this.currentPlayback.onEnd?.()
         }
@@ -167,7 +190,7 @@ export class AudioManager {
 
       return true
     } catch (error) {
-      console.error('Failed to create audio element:', error)
+      logRendererError('AudioManager.createFailed', error)
       this.currentPlayback = null
       return false
     }
@@ -178,6 +201,20 @@ export class AudioManager {
    */
   dispose(): void {
     this.stopAll()
+    this.currentPlayback = null
+  }
+
+  /**
+   * Fully tear down the current audio element (src='', load()) without logging.
+   * Called internally when replacing playback to ensure the old WASAPI handle
+   * is released before a new element is created.
+   */
+  private releaseCurrentElement(): void {
+    if (!this.currentPlayback) return
+    const { audioElement } = this.currentPlayback
+    audioElement.pause()
+    audioElement.src = ''
+    audioElement.load()
     this.currentPlayback = null
   }
 }

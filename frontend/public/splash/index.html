@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SampleSolution Loading</title>
+    <link rel="stylesheet" href="./css/main.css" />
+  </head>
+  <body>
+    <svg
+      class="liquid-glass-defs"
+      aria-hidden="true"
+      width="0"
+      height="0"
+      focusable="false"
+    >
+      <defs>
+        <filter
+          id="liquid-glass-filter"
+          x="-20%"
+          y="-20%"
+          width="140%"
+          height="140%"
+          color-interpolation-filters="sRGB"
+        >
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="0.008 0.02"
+            numOctaves="3"
+            seed="13"
+            stitchTiles="stitch"
+            result="vector-map"
+          >
+            <animate
+              attributeName="baseFrequency"
+              dur="7.6s"
+              values="0.007 0.017;0.013 0.031;0.008 0.02;0.007 0.017"
+              repeatCount="indefinite"
+            />
+          </feTurbulence>
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="vector-map"
+            scale="34"
+            xChannelSelector="R"
+            yChannelSelector="G"
+            result="warp-all"
+          >
+            <animate
+              attributeName="scale"
+              dur="8.4s"
+              values="26;40;30;26"
+              repeatCount="indefinite"
+            />
+          </feDisplacementMap>
+          <feMorphology
+            in="SourceAlpha"
+            operator="erode"
+            radius="2.2"
+            result="inner-alpha"
+          />
+          <feComposite
+            in="SourceAlpha"
+            in2="inner-alpha"
+            operator="out"
+            result="rim-alpha"
+          />
+          <feGaussianBlur in="rim-alpha" stdDeviation="0.35" result="rim-soft" />
+          <feComposite in="warp-all" in2="rim-soft" operator="in" result="rim-warp" />
+          <feComposite
+            in="SourceGraphic"
+            in2="rim-soft"
+            operator="out"
+            result="center-clear"
+          />
+          <feOffset in="rim-warp" dx="-0.7" dy="0.15" result="rim-r-shift" />
+          <feColorMatrix
+            in="rim-r-shift"
+            type="matrix"
+            values="1 0 0 0 0
+                    0 0 0 0 0
+                    0 0 0 0 0
+                    0 0 0 0.24 0"
+            result="rim-red"
+          />
+          <feOffset in="rim-warp" dx="0.85" dy="-0.2" result="rim-b-shift" />
+          <feColorMatrix
+            in="rim-b-shift"
+            type="matrix"
+            values="0 0 0 0 0
+                    0 0 0 0 0
+                    0 0 1 0 0
+                    0 0 0 0.2 0"
+            result="rim-blue"
+          />
+          <feMerge>
+            <feMergeNode in="center-clear" />
+            <feMergeNode in="rim-warp" />
+            <feMergeNode in="rim-red" />
+            <feMergeNode in="rim-blue" />
+          </feMerge>
+        </filter>
+      </defs>
+    </svg>
+
+    <main class="splash">
+      <div class="image-layer" aria-hidden="true"></div>
+      <div class="vignette-layer" aria-hidden="true"></div>
+      <img
+        class="logo-image"
+        src="../SampleSolutionLogo.transparent.png"
+        alt="Sample Solution logo"
+      />
+      <div class="logo-shine" aria-hidden="true"></div>
+      <div class="liquid-glass-overlay" aria-hidden="true"></div>
+      <h1 class="logo-title">Sample Solution</h1>
+
+      <section class="quote-block quote-block-top">
+        <p id="hero-quote" class="quote-text"></p>
+      </section>
+
+      <section class="quote-block quote-block-bottom">
+        <p class="quote-text"></p>
+      </section>
+
+      <footer class="status-area">
+        <div class="loading-bar" aria-hidden="true">
+          <div id="loading-fill" class="loading-fill"></div>
+        </div>
+        <p id="loading-text" class="loading-text">Starting application...</p>
+      </footer>
+    </main>
+
+    <script>
+      const { ipcRenderer } = require("electron");
+      const loadingStages = [
+        "Starting application...",
+        "Initializing backend...",
+        "Loading services...",
+        "Almost ready...",
+      ];
+      const loadingProgress = [18, 42, 71, 92];
+
+      ipcRenderer.on("update-loading-text", (_event, text) => {
+        const target = document.getElementById("loading-text");
+        const fill = document.getElementById("loading-fill");
+        if (target && typeof text === "string" && text.trim()) {
+          target.textContent = text;
+        }
+        if (fill && typeof text === "string") {
+          const idx = loadingStages.indexOf(text);
+          const pct = idx >= 0 ? loadingProgress[idx] : 30;
+          fill.style.width = `${pct}%`;
+        }
+      });
+
+      ipcRenderer.on("update-quote", (_event, quote) => {
+        const target = document.getElementById("hero-quote");
+        if (target && typeof quote === "string" && quote.trim()) {
+          target.textContent = quote;
+        }
+      });
+    </script>
+  </body>
+</html>

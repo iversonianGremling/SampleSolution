@@ -8,7 +8,7 @@ import {
   RotateCcw,
 } from 'lucide-react'
 import type { SliceWithTrackExtended } from '../types'
-import { getSliceDownloadUrl, persistLabRender } from '../api/client'
+import { getSliceDownloadUrl, getTrackPeaks, persistLabRender } from '../api/client'
 // import { batchReanalyzeSamples } from '../api/client'
 import { useScopedSamples, useInvalidateScopedSamples } from '../hooks/useScopedSamples'
 import {
@@ -25,30 +25,13 @@ import { Led } from './lab/Led'
 import { FxModule } from './lab/FxModule'
 import { clamp, formatDb } from './lab/helpers'
 import { useAppDialog } from '../hooks/useAppDialog'
+import { logRendererError } from '../utils/rendererLog'
+import {
+  buildWaveformAccessMessage,
+  checkWaveformSourceAccessible,
+  getWaveformSourceLabel,
+} from '../utils/waveformSource'
 
-const buildWaveformOverview = (buffer: AudioBuffer, targetPoints = 400) => {
-  const points = Math.max(32, targetPoints)
-  const peaks = new Float32Array(points)
-  const blockSize = Math.max(1, Math.floor(buffer.length / points))
-
-  for (let i = 0; i < points; i++) {
-    const start = i * blockSize
-    const end = Math.min(buffer.length, start + blockSize)
-    let peak = 0
-
-    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
-      const data = buffer.getChannelData(channel)
-      for (let sampleIndex = start; sampleIndex < end; sampleIndex++) {
-        const sample = Math.abs(data[sampleIndex] || 0)
-        if (sample > peak) peak = sample
-      }
-    }
-
-    peaks[i] = peak
-  }
-
-  return peaks
-}
 
 function makeExportName(slice: SliceWithTrackExtended) {
   const safe = (slice.name || `sample-${slice.id}`)
@@ -72,8 +55,6 @@ interface WaveformDrawParams {
   offsetRatio: number
   fadeInRatio: number
   fadeOutRatio: number
-  effectiveRate: number
-  sampleDurationSec: number
 }
 
 function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
@@ -89,49 +70,29 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
   canvas.height = h
   ctx.clearRect(0, 0, w, h)
 
-  const { peaks, offsetRatio, fadeInRatio, fadeOutRatio, effectiveRate, sampleDurationSec } = params
+  const { peaks, offsetRatio, fadeInRatio, fadeOutRatio } = params
   if (peaks.length === 0) return
 
-  const isLightTheme = document.documentElement.dataset.theme === 'light'
-  const gridLineColor = isLightTheme ? 'rgba(51,65,85,0.12)' : 'rgba(148,163,184,0.08)'
-  const markerLineColor = isLightTheme ? 'rgba(51,65,85,0.2)' : 'rgba(148,163,184,0.12)'
-  const markerTextColor = isLightTheme ? 'rgba(71,85,105,0.75)' : 'rgba(148,163,184,0.35)'
-  const waveformTopColor = isLightTheme ? 'rgba(8,145,178,0.62)' : 'rgba(6,182,212,0.7)'
-  const waveformMidColor = isLightTheme ? 'rgba(8,145,178,0.34)' : 'rgba(6,182,212,0.3)'
-  const waveformCenterColor = isLightTheme ? 'rgba(8,145,178,0.4)' : 'rgba(6,182,212,0.25)'
-  const offsetShadeColor = isLightTheme ? 'rgba(255,255,255,0.42)' : 'rgba(0,0,0,0.5)'
-  const offsetLineColor = isLightTheme ? '#b45309' : '#fbbf24'
-  const fadeFillColor = isLightTheme ? 'rgba(124,58,237,0.16)' : 'rgba(167,139,250,0.18)'
-  const fadeLineColor = isLightTheme ? '#7c3aed' : '#a78bfa'
+  const offsetShadeColor = 'rgba(0,0,0,0.5)'
+  const offsetLineColor = '#fbbf24'
+  const fadeFillColor = 'rgba(167,139,250,0.18)'
+  const fadeLineColor = '#a78bfa'
 
   const midY = h / 2
 
-  // Grid lines
-  ctx.strokeStyle = gridLineColor
-  ctx.lineWidth = 1
-  for (let i = 0; i <= 4; i++) {
-    const y = (h / 4) * i
-    ctx.beginPath()
-    ctx.moveTo(0, y)
-    ctx.lineTo(w, y)
-    ctx.stroke()
-  }
-
-  // Time markers with labels (adapted to playback rate)
-  const effectiveDuration = sampleDurationSec / Math.max(0.01, effectiveRate)
-  ctx.strokeStyle = markerLineColor
-  ctx.fillStyle = markerTextColor
-  ctx.font = `${9 * dpr}px "JetBrains Mono", monospace`
-  ctx.textAlign = 'center'
-  const numMarkers = 10
-  for (let i = 1; i < numMarkers; i++) {
-    const x = (w / numMarkers) * i
-    ctx.beginPath()
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, h)
-    ctx.stroke()
-    const timeSec = (i / numMarkers) * effectiveDuration
-    ctx.fillText(`${timeSec.toFixed(1)}s`, x, h - 3 * dpr)
+  // Waveform bars (matching drawWaveformBars style from SampleDetailsView)
+  const barWidth = 2
+  const barGap = 1
+  const stride = barWidth + barGap
+  const barCount = Math.floor(w / stride)
+  ctx.fillStyle = '#6366f1'
+  for (let i = 0; i < barCount; i++) {
+    const peakIdx = Math.floor((i / barCount) * peaks.length)
+    const amp = clamp(peaks[peakIdx] ?? 0, 0, 1)
+    const barHeight = Math.max(2, amp * h * 0.9)
+    const x = i * stride
+    const y = (h - barHeight) / 2
+    ctx.fillRect(x, y, barWidth, barHeight)
   }
 
   // Offset dimming region
@@ -149,39 +110,6 @@ function drawWaveform(canvas: HTMLCanvasElement, params: WaveformDrawParams) {
     ctx.stroke()
     ctx.setLineDash([])
   }
-
-  // Waveform polygon
-  const waveGrad = ctx.createLinearGradient(0, 0, 0, h)
-  waveGrad.addColorStop(0, waveformTopColor)
-  waveGrad.addColorStop(0.5, waveformMidColor)
-  waveGrad.addColorStop(1, waveformTopColor)
-
-  ctx.fillStyle = waveGrad
-  ctx.beginPath()
-  ctx.moveTo(0, midY)
-
-  for (let i = 0; i < peaks.length; i++) {
-    const x = (i / (peaks.length - 1)) * w
-    const amp = clamp(peaks[i], 0, 1)
-    ctx.lineTo(x, midY - amp * (midY - 2))
-  }
-
-  for (let i = peaks.length - 1; i >= 0; i--) {
-    const x = (i / (peaks.length - 1)) * w
-    const amp = clamp(peaks[i], 0, 1)
-    ctx.lineTo(x, midY + amp * (midY - 2))
-  }
-
-  ctx.closePath()
-  ctx.fill()
-
-  // Center line
-  ctx.strokeStyle = waveformCenterColor
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(0, midY)
-  ctx.lineTo(w, midY)
-  ctx.stroke()
 
   // Fade In envelope
   if (fadeInRatio > 0.001) {
@@ -282,6 +210,7 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
   const [isOverwriting, setIsOverwriting] = useState(false)
   // const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [waveformErrorMessage, setWaveformErrorMessage] = useState<string | null>(null)
   const [waveformOverview, setWaveformOverview] = useState<Float32Array>(new Float32Array(0))
   const [isWaveformLoading, setIsWaveformLoading] = useState(false)
   const [isSampleDragOver, setIsSampleDragOver] = useState(false)
@@ -382,6 +311,7 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
 
   useEffect(() => {
     setErrorMessage(null)
+    setWaveformErrorMessage(null)
   }, [selectedSampleId, settings])
 
   useEffect(() => {
@@ -398,10 +328,8 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
       offsetRatio,
       fadeInRatio,
       fadeOutRatio,
-      effectiveRate,
-      sampleDurationSec: sampleDuration,
     }
-  }, [waveformOverview, settings.offset, settings.fadeIn, settings.fadeOut, sampleDuration, effectiveRate])
+  }, [waveformOverview, settings.offset, settings.fadeIn, settings.fadeOut, sampleDuration])
 
   // Canvas drawing
   useEffect(() => {
@@ -543,7 +471,23 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
     const engine = engineRef.current
     if (!engine) throw new Error('Audio engine not initialized.')
 
-    const decoded = await engine.decodeFromUrl(getSliceDownloadUrl(selectedSample.id))
+    const sourceUrl = getSliceDownloadUrl(selectedSample.id)
+    const check = await checkWaveformSourceAccessible(sourceUrl)
+    if (!check.ok) {
+      const fileLabel = getWaveformSourceLabel(
+        sourceUrl,
+        selectedSample.name || selectedSample.filePath || `sample-${selectedSample.id}`
+      )
+      const reason = check.reason || 'unknown problem'
+      const message = buildWaveformAccessMessage(fileLabel, reason)
+      logRendererError(
+        'Lab.waveformPreflightFailed',
+        `sample=${selectedSample.id} source=${sourceUrl} reason=${reason}`
+      )
+      throw new Error(message)
+    }
+
+    const decoded = await engine.decodeFromUrl(sourceUrl)
     decodedBufferCacheRef.current.set(selectedSample.id, decoded)
     return decoded
   }
@@ -561,12 +505,26 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
 
     void (async () => {
       try {
-        const decoded = await withSelectedBuffer()
+        const trackPeaks = await getTrackPeaks(selectedSample.trackId)
         if (cancelled) return
-        setWaveformOverview(buildWaveformOverview(decoded))
-      } catch {
+        setWaveformErrorMessage(null)
+        // Trim to just the slice's portion of the track
+        const trackDuration = selectedSample.track.duration ?? 0
+        let slicePeaks: number[]
+        if (trackDuration > 0 && trackPeaks.length > 0) {
+          const startIdx = Math.floor((selectedSample.startTime / trackDuration) * trackPeaks.length)
+          const endIdx = Math.ceil((selectedSample.endTime / trackDuration) * trackPeaks.length)
+          slicePeaks = trackPeaks.slice(Math.max(0, startIdx), Math.min(trackPeaks.length, endIdx))
+        } else {
+          slicePeaks = trackPeaks
+        }
+        setWaveformOverview(new Float32Array(slicePeaks.length > 0 ? slicePeaks : trackPeaks))
+      } catch (error) {
         if (cancelled) return
         setWaveformOverview(new Float32Array(0))
+        const message = error instanceof Error ? error.message : 'Failed to load waveform'
+        setWaveformErrorMessage(message)
+        logRendererError('Lab.waveformLoadFailed', message)
       } finally {
         if (!cancelled) {
           setIsWaveformLoading(false)
@@ -590,16 +548,22 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
       setIsPreparingPreview(true)
       const engine = engineRef.current
       if (!engine) throw new Error('Audio engine not initialized.')
+      if (!selectedSample) throw new Error('Drop a sample into the Lab to begin.')
 
-      const buffer = await withSelectedBuffer()
+      const url = getSliceDownloadUrl(selectedSample.id)
+      const playDuration = await engine.playFromUrl(
+        url,
+        selectedSample.startTime,
+        selectedSample.endTime,
+        settings,
+        () => {
+          setIsPreviewing(false)
+          stopPlayheadAnimation()
+        },
+      )
       setIsPreparingPreview(false)
       setIsPreviewing(true)
-
       playStartRef.current = engine.getContextTime()
-      const playDuration = await engine.play(buffer, settings, () => {
-        setIsPreviewing(false)
-        stopPlayheadAnimation()
-      })
       playDurationRef.current = playDuration ?? 0
       startPlayheadAnimation()
     } catch (error) {
@@ -1183,8 +1147,12 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
                     Loading waveform...
                   </div>
                 ) : waveformOverview.length === 0 ? (
-                  <div className="absolute inset-0 flex items-center justify-center text-[11px] text-text-muted">
-                    No waveform data
+                  <div
+                    className={`absolute inset-0 flex items-center justify-center text-[11px] ${
+                      waveformErrorMessage ? 'text-amber-300 px-4 text-center' : 'text-text-muted'
+                    }`}
+                  >
+                    {waveformErrorMessage || 'No waveform data'}
                   </div>
                 ) : null}
                 <canvas ref={canvasRef} className="w-full h-full block" />

@@ -14,6 +14,7 @@ import { applySliceFilters } from '../utils/sliceFilters'
 import { getRelatedKeys, getRelatedNotes, freqToNoteName } from '../utils/musicTheory'
 import AudioManager from '../services/AudioManager'
 import { prepareSamplePreviewPlayback } from '../services/samplePreviewPlayback'
+import { logRendererInfo } from '../utils/rendererLog'
 import type { FeatureWeights, NormalizationMethod, SamplePoint, SliceFilterState, AudioFeaturesWithMetadata } from '../types'
 import type { AudioFilterState } from './SourcesAudioFilter'
 import type { TunePlaybackMode } from '../utils/tunePlaybackMode'
@@ -350,11 +351,13 @@ export function SampleSpaceView({
     const sample = allSlices?.find((slice) => slice.id === point.id)
 
     if (!sample) {
+      logRendererInfo('SampleSpace.playPointFallback', `point=${point.id} url=${getSliceDownloadUrl(point.id)}`)
       audioManager.play(point.id, getSliceDownloadUrl(point.id), { playbackRate: 1 })
       return
     }
 
     const { url, playbackRate } = prepareSamplePreviewPlayback(sample, tuneTargetNote)
+    logRendererInfo('SampleSpace.playPoint', `point=${point.id} url=${url} rate=${playbackRate}`)
     audioManager.play(point.id, url, { playbackRate })
   }, [allSlices, tuneTargetNote])
 

@@ -17,7 +17,16 @@ import {
   Pencil,
 } from 'lucide-react'
 import type { SliceWithTrackExtended, Tag, Folder, AudioFeatures } from '../types'
-import { getSliceDownloadUrl, deleteSlice, batchReanalyzeSamples, type UpdateSlicePayload } from '../api/client'
+import {
+  getSliceDownloadUrl,
+  getSlicePlaybackUrl,
+  getSimilarSlices,
+  getSliceAudioFeatures,
+  deleteSlice,
+  batchReanalyzeSamples,
+  getTrackPeaks,
+  type UpdateSlicePayload,
+} from '../api/client'
 import { InstrumentIcon } from './InstrumentIcon'
 import { freqToNoteName, freqToPitchDisplay } from '../utils/musicTheory'
 import { SliceWaveform, type SliceWaveformRef } from './SliceWaveform'
@@ -26,6 +35,7 @@ import { ConfirmModal } from './ConfirmModal'
 import { SampleTypeIcon } from './SampleTypeIcon'
 import { useAppDialog } from '../hooks/useAppDialog'
 import { prepareTunePreviewPlayback } from '../services/tunePreviewAudio'
+import { logRendererError, logRendererInfo } from '../utils/rendererLog'
 import {
   getTunePlaybackMode,
   getTunePreserveFormants,
@@ -146,9 +156,9 @@ interface SimilarSample {
   name: string
   filePath: string
   similarity: number
-  track: {
-    title: string
-  }
+  track?: {
+    title?: string
+  } | null
 }
 
 function SimilarSamplesSection({
@@ -168,12 +178,12 @@ function SimilarSamplesSection({
   const { data: similarSamples, isLoading } = useQuery<SimilarSample[]>({
     queryKey: ['similar-samples', sampleId],
     queryFn: async () => {
-      const res = await fetch(`/api/slices/${sampleId}/similar?limit=6`)
-      if (!res.ok) {
-        if (res.status === 404) return []
+      try {
+        return await getSimilarSlices(sampleId, 6)
+      } catch (error: any) {
+        if (error?.response?.status === 404) return []
         throw new Error('Failed to fetch similar samples')
       }
-      return res.json()
     },
   })
 
@@ -184,12 +194,15 @@ function SimilarSamplesSection({
     return Number.isFinite(candidateId) && candidateId !== currentSampleId
   })
 
-  const handleMouseEnter = (similarSampleId: number) => {
+  const handleMouseEnter = (similarSampleId: number, similarFilePath?: string | null) => {
     setHoveredSample(similarSampleId)
     if (audioRef.current) {
       audioRef.current.pause()
     }
-    audioRef.current = new Audio(getSliceDownloadUrl(similarSampleId))
+    const playbackUrl =
+      getSlicePlaybackUrl({ id: similarSampleId, filePath: similarFilePath || null })
+      || getSliceDownloadUrl(similarSampleId)
+    audioRef.current = new Audio(playbackUrl)
     audioRef.current.volume = 0.5
     audioRef.current.play().catch(() => {})
   }
@@ -246,7 +259,7 @@ function SimilarSamplesSection({
               type="button"
               key={sampleIdNum}
               data-tour="sample-details-similar-card"
-              onMouseEnter={() => handleMouseEnter(sampleIdNum)}
+              onMouseEnter={() => handleMouseEnter(sampleIdNum, sample.filePath)}
               onMouseLeave={handleMouseLeave}
               onClick={() => onSelectSample?.(sampleIdNum)}
               className={`group relative p-1.5 rounded-lg border transition-all text-left ${
@@ -262,7 +275,7 @@ function SimilarSamplesSection({
                 {sample.name}
               </div>
               <div className="text-[9px] text-text-muted truncate">
-                {sample.track.title}
+                {sample.track?.title || 'Unknown source'}
               </div>
             </button>
           )
@@ -381,9 +394,14 @@ export function SampleDetailsView({
     const requestId = ++waveformRequestRef.current
     let cancelled = false
 
+    // Electron renderer is crashing on some local file:// media loads in WaveSurfer.
+    // Use backend streaming URL for details waveform stability.
+    const defaultSourceUrl = getSliceDownloadUrl(sample.id)
+    logRendererInfo('SampleDetails.waveformSource', `sample=${sample.id} url=${defaultSourceUrl}`)
+
     if (Math.abs(manualPitch) <= 0.0001) {
       setIsPreparingWaveform(false)
-      setPreparedWaveform(getSliceDownloadUrl(sample.id), 0)
+      setPreparedWaveform(defaultSourceUrl, 0)
       return () => {
         cancelled = true
       }
@@ -398,11 +416,14 @@ export function SampleDetailsView({
           sample.id,
           manualPitch,
           mode,
-          getSliceDownloadUrl(sample.id),
+          defaultSourceUrl,
           {
-            allowHqPreview: true,
-            immediateFallbackToTape: false,
-            renderFullSample: true,
+            // Keep sample details responsive/stable in Electron:
+            // render short preview in background and play immediate tape fallback.
+            allowHqPreview: false,
+            immediateFallbackToTape: true,
+            renderFullSample: false,
+            maxRenderSeconds: 6,
             preserveFormants: mode !== 'tape' && preserveFormants,
           }
         )
@@ -410,11 +431,15 @@ export function SampleDetailsView({
         if (cancelled || requestId !== waveformRequestRef.current) return
 
         const playbackSemitones = Math.abs(playbackRate - 1) > 0.0001 ? 12 * Math.log2(playbackRate) : 0
+        logRendererInfo(
+          'SampleDetails.waveformPrepared',
+          `sample=${sample.id} url=${url} rate=${playbackRate} semitones=${playbackSemitones}`
+        )
         setPreparedWaveform(url, playbackSemitones)
       } catch (error) {
-        console.error('Failed to prepare tuned sample details waveform:', error)
+        logRendererError('SampleDetails.waveformPrepareFailed', error)
         if (!cancelled && requestId === waveformRequestRef.current) {
-          setPreparedWaveform(getSliceDownloadUrl(sample.id), manualPitch)
+          setPreparedWaveform(defaultSourceUrl, manualPitch)
         }
       } finally {
         if (!cancelled && requestId === waveformRequestRef.current) {
@@ -426,7 +451,7 @@ export function SampleDetailsView({
     return () => {
       cancelled = true
     }
-  }, [sample?.id, manualPitch, pitchAlgorithm, preserveFormants, setPreparedWaveform])
+  }, [sample, sample?.id, manualPitch, pitchAlgorithm, preserveFormants, setPreparedWaveform])
 
   useEffect(() => {
     return () => {
@@ -434,13 +459,20 @@ export function SampleDetailsView({
     }
   }, [])
 
+  // Fetch precomputed peaks for waveform rendering (avoids AudioContext decode on Windows)
+  const { data: peaksData } = useQuery<number[]>({
+    queryKey: ['trackPeaks', sample?.trackId],
+    queryFn: () => getTrackPeaks(sample!.trackId),
+    enabled: !!sample,
+    staleTime: Infinity,
+  })
+
   // Fetch audio features for the advanced tab
   const { data: audioFeatures } = useQuery<AudioFeatures>({
     queryKey: ['audioFeatures', sample?.id],
     queryFn: async () => {
-      const res = await fetch(`/api/slices/${sample?.id}/features`)
-      if (!res.ok) throw new Error('Failed to fetch audio features')
-      return res.json()
+      if (!sample?.id) throw new Error('No sample selected')
+      return getSliceAudioFeatures(sample.id)
     },
     enabled: !!sample && activeTab === 'advanced',
   })
@@ -480,6 +512,8 @@ export function SampleDetailsView({
       </div>
     )
   }
+
+  const samplePlaybackUrl = getSliceDownloadUrl(sample.id)
 
   const handlePlayPause = async () => {
     if (!waveformRef.current) return
@@ -541,7 +575,8 @@ export function SampleDetailsView({
   const isAutoPitch = externalPitch !== 0 && Math.abs(manualPitch - externalPitch) < 0.01
   const sampleTypeLabel = sample.sampleType === 'oneshot' ? 'One-shot' : sample.sampleType === 'loop' ? 'Loop' : 'Unspecified'
   const allInstrumentTags = allTags.filter((tag) => normalizeTagCategory(tag.category) === 'instrument' && !isSampleTypeTag(tag))
-  const instrumentTags = sample.tags.filter((tag) => normalizeTagCategory(tag.category) === 'instrument' && !isSampleTypeTag(tag))
+  const sampleTags = Array.isArray(sample.tags) ? sample.tags : []
+  const instrumentTags = sampleTags.filter((tag) => normalizeTagCategory(tag.category) === 'instrument' && !isSampleTypeTag(tag))
   const instrumentTagIds = new Set(instrumentTags.map((tag) => tag.id))
   const availableInstrumentTags = allInstrumentTags.filter((tag) => !instrumentTagIds.has(tag.id))
   const replacementInstrumentOptions = allInstrumentTags.filter((tag) => tag.id !== editingInstrumentTagId)
@@ -791,9 +826,10 @@ export function SampleDetailsView({
               <SliceWaveform
                 ref={waveformRef}
                 sliceId={sample.id}
-                sourceUrl={waveformSourceUrl || getSliceDownloadUrl(sample.id)}
+                sourceUrl={waveformSourceUrl || samplePlaybackUrl}
                 height={70}
                 pitchSemitones={waveformPlaybackSemitones}
+                peaksData={peaksData}
                 onReady={() => setIsWaveformReady(true)}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}

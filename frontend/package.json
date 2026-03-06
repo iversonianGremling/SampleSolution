@@ -11,10 +11,12 @@
   },
   "scripts": {
     "dev": "vite",
-    "dev:electron": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
+    "dev:electron": "concurrently --kill-others-on-fail \"npm run dev\" \"wait-on http://localhost:3000 && node scripts/run-electron-dev.cjs\"",
     "build": "tsc && vite build",
-    "bundle-backend": "bash scripts/bundle-backend.sh",
-    "build:electron": "npm run bundle-backend && npm run build && cross-env NODE_ENV=production electron-builder",
+    "setup-python": "node scripts/setup-python.mjs",
+    "bundle-backend": "node scripts/bundle-backend.mjs",
+    "check-backend-bundle": "node -e \"const fs=require('fs');const p='embedded-backend/dist/index.js';if(!fs.existsSync(p)){console.error('ERROR: '+p+' missing — run npm run bundle-backend first');process.exit(1);}console.log('Backend bundle OK:',p);\"",
+    "build:electron": "npm run setup-python && npm run bundle-backend && npm run check-backend-bundle && npm run build && cross-env NODE_ENV=production electron-builder",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -46,14 +48,13 @@
       }
     ],
     "asarUnpack": [
-      "**/*.node",
-      "embedded-backend/**/*",
-      "embedded-python/**/*"
+      "**/*.node"
     ],
     "directories": {
       "output": "release"
     },
     "linux": {
+      "icon": "public/icon.png",
       "target": [
         "AppImage",
         "deb"
@@ -63,12 +64,14 @@
       "maintainer": "Sample Solution Team <contact@sample-solution.local>"
     },
     "win": {
+      "icon": "public/icon.ico",
       "target": [
         "nsis",
         "portable"
       ]
     },
     "mac": {
+      "icon": "public/icon.icns",
       "target": [
         "dmg",
         "zip"
@@ -93,13 +96,13 @@
     "density-clustering": "^1.3.0",
     "driver.js": "^1.4.0",
     "lucide-react": "^0.309.0",
+    "peaks.js": "^3.4.2",
     "pixi.js": "^8.15.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-rotary-knob": "^3.0.3",
     "soundtouchjs": "^0.3.0",
-    "tone": "^15.1.22",
-    "wavesurfer.js": "^7.6.2"
+    "tone": "^15.1.22"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",

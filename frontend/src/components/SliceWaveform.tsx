@@ -1,12 +1,15 @@
-import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react'
-import WaveSurfer from 'wavesurfer.js'
+import { useEffect, useRef, useImperativeHandle, forwardRef, useState, useCallback } from 'react'
 import { getSliceDownloadUrl } from '../api/client'
+import { logRendererError } from '../utils/rendererLog'
+import { useCustomWaveform } from '../hooks/useCustomWaveform'
 
 interface SliceWaveformProps {
   sliceId: number
   sourceUrl?: string
   height?: number
   pitchSemitones?: number
+  /** Kept for API compatibility; the visualizer decodes audio directly. */
+  peaksData?: number[]
   onReady?: () => void
   onPlay?: () => void
   onPause?: () => void
@@ -23,105 +26,122 @@ export interface SliceWaveformRef {
 
 export const SliceWaveform = forwardRef<SliceWaveformRef, SliceWaveformProps>(
   ({ sliceId, sourceUrl, height = 80, pitchSemitones = 0, onReady, onPlay, onPause, onFinish }, ref) => {
-    const containerRef = useRef<HTMLDivElement>(null)
-    const wavesurferRef = useRef<WaveSurfer | null>(null)
+    const didRetryRef = useRef(false)
+    const [audioError, setAudioError] = useState<string | null>(null)
+    const [isDragging, setIsDragging] = useState(false)
 
-    // Store callbacks in refs so they're always current without triggering effect re-runs
-    const onReadyRef = useRef(onReady)
-    const onPlayRef = useRef(onPlay)
-    const onPauseRef = useRef(onPause)
-    const onFinishRef = useRef(onFinish)
-    const pitchSemitonesRef = useRef(pitchSemitones)
+    const {
+      canvasRef,
+      audioRef,
+      isDecoding,
+      decodeError,
+      isAudioReady,
+      handleMouseDown: _handleMouseDown,
+      handleMouseMove,
+      handleMouseUp: _handleMouseUp,
+      handleMouseLeave: _handleMouseLeave,
+      handleClick,
+      handleAudioPlay,
+      handleAudioPause,
+      handleAudioEnded,
+      handleAudioMetadata,
+      play,
+      pause,
+      getZoom,
+    } = useCustomWaveform({
+      sliceId,
+      sourceUrl,
+      pitchSemitones,
+      waveColor: '#6366f1',
+      progressColor: '#818cf8',
+      cursorColor: '#ffffff',
+      onReady,
+      onPlay,
+      onPause,
+      onFinish,
+    })
 
-    useEffect(() => {
-      onReadyRef.current = onReady
-      onPlayRef.current = onPlay
-      onPauseRef.current = onPause
-      onFinishRef.current = onFinish
-    }, [onReady, onPlay, onPause, onFinish])
+    // Wrap mouse handlers to track drag state for cursor styling
+    const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+      setIsDragging(true)
+      _handleMouseDown(e)
+    }, [_handleMouseDown])
 
-    // Update playback rate when pitchSemitones changes
-    useEffect(() => {
-      pitchSemitonesRef.current = pitchSemitones
-      if (!wavesurferRef.current) return
-      const rate = Math.pow(2, pitchSemitones / 12)
-      wavesurferRef.current.setPlaybackRate(rate)
-    }, [pitchSemitones])
+    const handleMouseUp = useCallback(() => {
+      setIsDragging(false)
+      _handleMouseUp()
+    }, [_handleMouseUp])
+
+    const handleMouseLeave = useCallback(() => {
+      setIsDragging(false)
+      _handleMouseLeave()
+    }, [_handleMouseLeave])
 
     useImperativeHandle(ref, () => ({
-      play: async () => {
-        try {
-          await wavesurferRef.current?.play()
-        } catch (error) {
-          console.error('Play failed:', error)
-        }
-      },
-      pause: () => {
-        wavesurferRef.current?.pause()
-      },
-      isPlaying: () => wavesurferRef.current?.isPlaying() || false,
-      getCurrentTime: () => wavesurferRef.current?.getCurrentTime() || 0,
-      getDuration: () => wavesurferRef.current?.getDuration() || 0,
+      play,
+      pause,
+      isPlaying: () => !!audioRef.current && !audioRef.current.paused,
+      getCurrentTime: () => audioRef.current?.currentTime ?? 0,
+      getDuration: () => audioRef.current?.duration ?? 0,
     }))
 
-    useEffect(() => {
-      if (!containerRef.current) return
-
-      const ws = WaveSurfer.create({
-        container: containerRef.current,
-        waveColor: '#6366f1',
-        progressColor: '#818cf8',
-        cursorWidth: 2,
-        cursorColor: '#fff',
-        barWidth: 2,
-        barGap: 1,
-        barRadius: 2,
-        height,
-        normalize: true,
-        interact: true,
-        backend: 'WebAudio',
-      })
-
-      wavesurferRef.current = ws
-
-      // Set up event listeners
-      ws.on('ready', () => {
-        const rate = Math.pow(2, pitchSemitonesRef.current / 12)
-        ws.setPlaybackRate(rate)
-        onReadyRef.current?.()
-      })
-      ws.on('play', () => {
-        onPlayRef.current?.()
-      })
-      ws.on('pause', () => {
-        onPauseRef.current?.()
-      })
-      ws.on('finish', () => {
-        onFinishRef.current?.()
-      })
-      ws.on('error', (error) => {
-        console.error('WaveSurfer error:', error)
-      })
-
-      // Cleanup
-      return () => {
-        wavesurferRef.current = null
-        ws.destroy()
+    const handleAudioError = useCallback(() => {
+      const audio = audioRef.current
+      if (!audio) return
+      const downloadUrl = getSliceDownloadUrl(sliceId)
+      if (!didRetryRef.current && audio.src !== downloadUrl) {
+        didRetryRef.current = true
+        logRendererError('SliceWaveform.errorRetry', `slice=${sliceId}`)
+        audio.src = downloadUrl
+        audio.load()
+      } else {
+        logRendererError('SliceWaveform.error', `slice=${sliceId}`)
+        setAudioError('Audio failed to load')
       }
-    }, [height])
+    }, [sliceId, audioRef])
 
+    // Reset error state on source change
     useEffect(() => {
-      const ws = wavesurferRef.current
-      if (!ws) return
-      // Always reset transport when switching slices/sources.
-      ws.stop()
-      onPauseRef.current?.()
-      ws.load(sourceUrl || getSliceDownloadUrl(sliceId))
+      didRetryRef.current = false
+      setAudioError(null)
     }, [sliceId, sourceUrl])
+
+    const isZoomed = getZoom() > 1
+    const cursorStyle = isDragging ? 'grabbing' : isZoomed ? 'grab' : 'pointer'
 
     return (
       <div className="bg-surface-base rounded-lg p-3">
-        <div ref={containerRef} />
+        {(audioError || decodeError) && (
+          <div className="mb-2 rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200">
+            {audioError || decodeError}
+          </div>
+        )}
+        <div className="relative" style={{ height }}>
+          {isDecoding && !isAudioReady && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="text-[10px] text-slate-500">Decoding waveform…</div>
+            </div>
+          )}
+          <canvas
+            ref={canvasRef}
+            style={{ width: '100%', height: '100%', display: 'block', cursor: cursorStyle }}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseLeave}
+            onClick={handleClick}
+          />
+        </div>
+        {/* Hidden audio element for playback */}
+        <audio
+          ref={audioRef}
+          preload="metadata"
+          onLoadedMetadata={handleAudioMetadata}
+          onPlay={handleAudioPlay}
+          onPause={handleAudioPause}
+          onEnded={handleAudioEnded}
+          onError={handleAudioError}
+        />
       </div>
     )
   }

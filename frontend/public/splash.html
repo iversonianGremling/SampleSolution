@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sample Extractor - Loading</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&display=swap');
+
+        :root {
+            --bg: #000000;
+            --fg: #f5f7fa;
+            --ghost: #8f9399;
+            --ghost-soft: #6f7379;
+            --line: rgba(255, 255, 255, 0.16);
+            --line-active: rgba(255, 255, 255, 0.94);
+            --quote: rgba(240, 243, 248, 0.86);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--fg);
+            font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+            overflow: hidden;
+        }
+
+        .splash {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background:
+                radial-gradient(95% 90% at 76% 18%, rgba(255, 255, 255, 0.08), transparent 58%),
+                radial-gradient(80% 80% at 22% 74%, rgba(255, 255, 255, 0.05), transparent 62%),
+                #000;
+        }
+
+        .noise {
+            position: absolute;
+            inset: -20%;
+            opacity: 0.08;
+            background:
+                repeating-linear-gradient(0deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 4px),
+                repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 5px);
+            animation: driftNoise 70s linear infinite;
+        }
+
+        .type-layer {
+            position: absolute;
+            inset: 0 0 34px 0;
+            overflow: hidden;
+        }
+
+        .ghost,
+        .primary {
+            position: absolute;
+            margin: 0;
+            text-transform: uppercase;
+            letter-spacing: 0.28em;
+            line-height: 1;
+            white-space: nowrap;
+            user-select: none;
+            pointer-events: none;
+        }
+
+        .ghost {
+            color: var(--ghost);
+            font-weight: 300;
+            filter: blur(0.2px);
+            animation: ghostFloat 48s ease-in-out infinite alternate;
+        }
+
+        .primary {
+            color: var(--fg);
+            font-weight: 400;
+            letter-spacing: 0.03em;
+            animation: primaryBreathe 36s ease-in-out infinite;
+        }
+
+        .title-top {
+            top: 8px;
+            left: -8px;
+            font-size: clamp(58px, 9.5vw, 88px);
+        }
+
+        .title-mid {
+            top: 88px;
+            left: 420px;
+            font-size: clamp(58px, 9.5vw, 88px);
+        }
+
+        .title-right {
+            top: 171px;
+            right: -10px;
+            font-size: clamp(58px, 9.5vw, 88px);
+        }
+
+        .g1 { top: 18px; left: -6px; font-size: 56px; }
+        .g2 { top: 80px; left: -4px; font-size: 56px; }
+        .g3 { top: 144px; left: -2px; font-size: 56px; }
+        .g4 { top: 212px; left: -2px; font-size: 56px; letter-spacing: 0.34em; }
+        .g5 { top: 250px; right: 78px; font-size: 56px; }
+        .g6 { top: 298px; right: 84px; font-size: 56px; }
+        .g7 { top: 346px; right: 85px; font-size: 56px; }
+
+        .credit {
+            position: absolute;
+            left: 14px;
+            top: 242px;
+            margin: 0;
+            color: var(--fg);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-size: 56px;
+            line-height: 0.95;
+            font-weight: 500;
+            user-select: none;
+            pointer-events: none;
+            animation: slowFade 24s ease-in-out infinite alternate;
+        }
+
+        .symbol {
+            position: absolute;
+            left: 240px;
+            top: 148px;
+            width: 300px;
+            opacity: 0.95;
+            animation: symbolDrift 42s ease-in-out infinite alternate;
+            user-select: none;
+            pointer-events: none;
+        }
+
+        .quote-wrap {
+            position: absolute;
+            left: 16px;
+            right: 16px;
+            bottom: 44px;
+            min-height: 40px;
+            display: flex;
+            align-items: center;
+            pointer-events: none;
+        }
+
+        .quote {
+            margin: 0;
+            color: var(--quote);
+            font-size: 13px;
+            font-weight: 300;
+            line-height: 1.38;
+            letter-spacing: 0.065em;
+            text-transform: uppercase;
+            opacity: 0.88;
+            transition: opacity 1400ms ease;
+            max-width: 100%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .progress-shell {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 34px;
+            display: flex;
+            align-items: center;
+            padding: 0 0;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 5px;
+            background: var(--line);
+            overflow: hidden;
+            border-radius: 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background:
+                linear-gradient(90deg, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.72) 75%, rgba(255,255,255,0.95) 100%);
+            width: 0%;
+            box-shadow: 0 0 16px rgba(255,255,255,0.28);
+            animation: loader 18s cubic-bezier(0.18, 0.1, 0.28, 0.98) infinite;
+        }
+
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            border: 0;
+        }
+
+        @keyframes loader {
+            0% { width: 3%; transform: translateX(-2%); }
+            35% { width: 42%; transform: translateX(8%); }
+            65% { width: 78%; transform: translateX(18%); }
+            100% { width: 98%; transform: translateX(0%); }
+        }
+
+        @keyframes ghostFloat {
+            0% { transform: translateY(0) translateX(0); opacity: 0.88; }
+            100% { transform: translateY(-3px) translateX(2px); opacity: 0.72; }
+        }
+
+        @keyframes primaryBreathe {
+            0% { opacity: 0.9; }
+            50% { opacity: 1; }
+            100% { opacity: 0.9; }
+        }
+
+        @keyframes symbolDrift {
+            0% { transform: translate(0, 0) scale(1); }
+            100% { transform: translate(4px, -3px) scale(1.01); }
+        }
+
+        @keyframes slowFade {
+            0% { opacity: 0.92; }
+            100% { opacity: 0.78; }
+        }
+
+        @keyframes driftNoise {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(35px, 18px); }
+        }
+    </style>
+</head>
+<body>
+    <div class="splash">
+        <div class="noise"></div>
+
+        <div class="type-layer" aria-hidden="true">
+            <p class="ghost g1">SYNECDO</p>
+            <p class="ghost g2">CHENEW</p>
+            <p class="ghost g3">SAMPLEV</p>
+            <p class="ghost g4">0.1.0A</p>
+            <p class="primary title-top">SAMPLES</p>
+            <p class="primary title-mid">OLUTION</p>
+            <p class="primary title-right">N</p>
+            <p class="ghost g5">HTTPS://</p>
+            <p class="ghost g6">GITHUB.COM/</p>
+            <p class="ghost g7">IVERSONIANGREMLING</p>
+            <p class="credit">BY<br>IVERSONI<br>ANGREM<br>LING</p>
+            <svg class="symbol" viewBox="0 0 400 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path
+                    d="M16 94C56 113 84 112 103 95C117 82 126 58 150 44C181 26 221 29 250 50C267 63 276 81 275 98C274 118 264 132 246 141C220 154 181 154 152 144C123 133 110 111 112 92C114 74 131 59 152 52C172 45 198 45 218 53C238 61 253 77 264 94C274 110 293 114 314 107C329 102 341 89 361 86C375 84 387 87 392 94"
+                    stroke="#F3F5F8"
+                    stroke-width="9"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                />
+            </svg>
+        </div>
+
+        <div class="quote-wrap">
+            <p class="quote" id="quote">INITIALIZING BACKEND SERVICES...</p>
+        </div>
+
+        <div class="progress-shell" aria-hidden="true">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+        </div>
+
+        <div class="sr-only" id="loading-text">Starting application...</div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+        const quoteEl = document.getElementById('quote');
+        const loadingEl = document.getElementById('loading-text');
+
+        // Update loading text
+        ipcRenderer.on('update-loading-text', (event, text) => {
+            if (loadingEl) {
+                loadingEl.textContent = text;
+            }
+        });
+
+        // Update quote
+        ipcRenderer.on('update-quote', (event, quote) => {
+            setQuote(quote);
+        });
+
+        // Array of interesting quotes/facts
+        const quotes = [
+            "Even if P=NP the polynomials could be so huge that we might be thankful that the problems are solvable in \"only exponential\" time.",
+            "The sweat of a hippopotamus is pink.",
+            "Physics can't disprove that the laws of the universe can change at any point and make it collapse",
+            "\"I think\" doesn't imply that \"I am\" strictly speaking",
+            "Consciousness is not a well-defined phenomenon and it's not even clear if it exists in any meaningful way",
+            "Multiversal theory is, technically speaking, a pseudoscience",
+            "The flow of time for LLMs freezes when they receive no messages, if they were conscious they'd pop in and out of existence as they process messages",
+            "There's nothing particularly special about neurons compared to other forms of information processing",
+            "For nihilism doing nothing has the same value as doing something, that doesn't imply that doing nothing is better in any way",
+            "Real and true are different concepts",
+            "Even if things are historically dependent it doesn't mean that they aren't deterministic",
+            "Determinism doesn't imply predictability, and unpredictability doesn't imply free will",
+            "Simulation theory requires very optimistic assumptions",
+            "The background radiation is the remnants of an event that, probably, had no interaction with anything but itself",
+            "Meta has detailed information about people who don't use facebook or any of their services who are as young as 7 years old",
+            "Immortality in any form is terrifying",
+            "For the current most popular theory of time in physics causality, retrocausality or lack of causality are interchangeable"
+        ];
+
+        let currentQuoteIndex = 0;
+        let quoteInterval;
+
+        function setQuote(nextQuote) {
+            if (!quoteEl || typeof nextQuote !== 'string' || !nextQuote.trim()) return;
+            quoteEl.style.opacity = '0.2';
+            setTimeout(() => {
+                quoteEl.textContent = nextQuote.toUpperCase();
+                quoteEl.style.opacity = '0.88';
+            }, 550);
+        }
+
+        // Change quote slowly
+        function startQuoteRotation() {
+            setQuote(quotes[currentQuoteIndex]);
+            quoteInterval = setInterval(() => {
+                currentQuoteIndex = (currentQuoteIndex + 1) % quotes.length;
+                setQuote(quotes[currentQuoteIndex]);
+            }, 9000);
+        }
+
+        // Start quote rotation when page loads
+        startQuoteRotation();
+
+        // Clean up interval when window is closed
+        window.addEventListener('beforeunload', () => {
+            if (quoteInterval) {
+                clearInterval(quoteInterval);
+            }
+        });
+    </script>
+</body>
+</html>

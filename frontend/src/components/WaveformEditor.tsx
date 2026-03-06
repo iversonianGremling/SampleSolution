@@ -1,15 +1,20 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   Play,
   Pause,
   Volume2,
   Repeat,
+  ChevronLeft,
+  ChevronRight,
+  GripHorizontal,
+  X,
 } from 'lucide-react'
-import { useWavesurfer } from '../hooks/useWavesurfer'
+import { useWavesurfer, type WaveformRegion } from '../hooks/useWavesurfer'
 import { useSlices, useCreateSlice, useDeleteSlice } from '../hooks/useTracks'
 import { getTrackAudioUrl } from '../api/client'
 import { SliceList } from './SliceList'
 import { WaveformMinimap } from './WaveformMinimap'
+import { drawViewportWaveform } from '../utils/waveformSource'
 import type { Track } from '../types'
 
 interface WaveformEditorProps {
@@ -17,7 +22,6 @@ interface WaveformEditorProps {
 }
 
 interface PendingRegion {
-  id: string
   start: number
   end: number
 }
@@ -25,7 +29,6 @@ interface PendingRegion {
 export function WaveformEditor({ track }: WaveformEditorProps) {
   const [pendingRegion, setPendingRegion] = useState<PendingRegion | null>(null)
   const [sliceName, setSliceName] = useState('')
-  const [showContent, setShowContent] = useState(false)
   const [playingSliceId, setPlayingSliceId] = useState<number | null>(null)
   const [isLoopEnabled, setIsLoopEnabled] = useState(false)
 
@@ -33,48 +36,45 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
   const createSlice = useCreateSlice(track.id)
   const deleteSlice = useDeleteSlice(track.id)
 
+  const waveformCanvasRef = useRef<HTMLCanvasElement>(null)
+
+  // Refs for the rAF loop — avoid stale closures without restarting the loop
+  const waveformPeaksRef = useRef<number[]>([])
+  const durationRef = useRef(0)
+  const viewportStartRef = useRef(0)
+  const viewportEndRef = useRef(0)
+
   const {
     containerRef,
     minimapRef,
+    audioElRef,
     isPlaying,
     isReady,
     currentTime,
     duration,
+    waveformPeaks,
     playPause,
+    seekTo,
     playRegion,
     playRegionLoop,
-    updatePlayingRegionBounds,
     pause,
-    clearRegions,
-    removeRegion,
     viewportStart,
     viewportEnd,
     setViewportRegion,
+    draftSelection,
+    handleZoomviewMouseDown,
+    error: waveformError,
   } = useWavesurfer({
     audioUrl: getTrackAudioUrl(track.id),
-    onRegionCreated: (region: any) => {
-      // If there's already a pending region, remove the newly created one
-      if (pendingRegion) {
-        removeRegion(region.id)
-        return
-      }
+    trackId: track.id,
+    onRegionCreated: (region: WaveformRegion) => {
+      // Ignore new drags while a pending region is already being named
+      if (pendingRegion) return
       setPendingRegion({
-        id: region.id,
         start: region.start,
         end: region.end,
       })
       setSliceName(`${track.title} - Slice ${(slices?.length || 0) + 1}`)
-    },
-    onRegionUpdated: (region: any) => {
-      if (pendingRegion && region.id === pendingRegion.id) {
-        setPendingRegion({
-          ...pendingRegion,
-          start: region.start,
-          end: region.end,
-        })
-        // Update the playing region bounds if currently playing
-        updatePlayingRegionBounds(region.start, region.end, isLoopEnabled)
-      }
     },
   })
 
@@ -102,30 +102,65 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
     }
   }, [isPlaying])
 
-  // Fade in the waveform after a delay once ready
-  useEffect(() => {
-    if (isReady) {
-      const timer = setTimeout(() => {
-        setShowContent(true)
-      }, 300)
-      return () => clearTimeout(timer)
-    } else {
-      setShowContent(false)
-    }
-  }, [isReady])
+  // Keep refs in sync with latest state so the rAF loop never captures stale values
+  useEffect(() => { waveformPeaksRef.current = waveformPeaks }, [waveformPeaks])
+  useEffect(() => { durationRef.current = duration }, [duration])
+  useEffect(() => { viewportStartRef.current = viewportStart }, [viewportStart])
+  useEffect(() => { viewportEndRef.current = viewportEnd }, [viewportEnd])
 
-  // Don't load existing slices as regions on the waveform
-  // This keeps the waveform clean and focused on creating new slices
+  // rAF loop: reads audio.currentTime directly each frame for perfectly smooth playhead.
+  // No interpolation needed — the browser updates currentTime continuously.
   useEffect(() => {
-    if (isReady) {
-      clearRegions()
+    let rafId: number
+    const tick = () => {
+      const canvas = waveformCanvasRef.current
+      const peaks = waveformPeaksRef.current
+      const dur = durationRef.current
+      const vsStart = viewportStartRef.current
+      const vsEnd = viewportEndRef.current
+      if (canvas && peaks.length && dur) {
+        const displayTime = audioElRef.current?.currentTime ?? 0
+        const dpr = window.devicePixelRatio || 1
+        const w = Math.round(canvas.clientWidth * dpr)
+        const h = Math.round(canvas.clientHeight * dpr)
+        if (w && h) {
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w
+            canvas.height = h
+          }
+          drawViewportWaveform(canvas, peaks, dur, vsStart, vsEnd, displayTime, {
+            waveColor: '#4f46e5',
+            progressColor: '#818cf8',
+            cursorColor: '#f59e0b',
+          })
+        }
+      }
+      rafId = requestAnimationFrame(tick)
     }
-  }, [isReady, clearRegions])
+    rafId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafId)
+  }, [])
+
+  // Compute the yellow selection overlay in percentage coordinates.
+  // During drag: comes directly from mouse-tracked percentages (no time round-trip → no offset).
+  // After drag: computed from the saved start/end times + current viewport.
+  const selectionOverlay = useMemo(() => {
+    if (draftSelection) {
+      return { left: `${draftSelection.leftPercent}%`, width: `${draftSelection.widthPercent}%` }
+    }
+    if (pendingRegion && viewportEnd > viewportStart) {
+      const span = viewportEnd - viewportStart
+      const leftPct = (pendingRegion.start - viewportStart) / span * 100
+      const rightPct = (pendingRegion.end - viewportStart) / span * 100
+      const clampedLeft = Math.max(0, leftPct)
+      const clampedWidth = Math.max(0, Math.min(100, rightPct) - clampedLeft)
+      return { left: `${clampedLeft}%`, width: `${clampedWidth}%` }
+    }
+    return null
+  }, [draftSelection, pendingRegion, viewportStart, viewportEnd])
 
   const handleSaveSlice = () => {
     if (pendingRegion && sliceName.trim()) {
-      // Immediately remove the pending region from the waveform
-      removeRegion(pendingRegion.id)
       createSlice.mutate({
         name: sliceName.trim(),
         startTime: pendingRegion.start,
@@ -138,19 +173,90 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
   }
 
   const handleCancelSlice = () => {
-    // Immediately remove the pending region from the waveform
-    if (pendingRegion) {
-      removeRegion(pendingRegion.id)
-    }
     setPendingRegion(null)
     setSliceName('')
     setIsLoopEnabled(false)
   }
 
+  const handleRegionHandleDrag = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!pendingRegion || !containerRef.current || !duration) return
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = containerRef.current.getBoundingClientRect()
+    if (!rect.width) return
+
+    const capturedStart = pendingRegion.start
+    const capturedEnd = pendingRegion.end
+    const regionDuration = capturedEnd - capturedStart
+    const capturedViewportSpan = viewportEnd - viewportStart
+    const startClientX = e.clientX
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaTime = ((moveEvent.clientX - startClientX) / rect.width) * capturedViewportSpan
+      let newStart = capturedStart + deltaTime
+      let newEnd = capturedEnd + deltaTime
+      if (newStart < 0) { newStart = 0; newEnd = regionDuration }
+      if (newEnd > duration) { newEnd = duration; newStart = duration - regionDuration }
+      setPendingRegion({ start: newStart, end: newEnd })
+    }
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }, [pendingRegion, viewportStart, viewportEnd, duration])
+
+  const handleLeftHandleDrag = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!pendingRegion || !containerRef.current || !duration) return
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = containerRef.current.getBoundingClientRect()
+    if (!rect.width) return
+    const capturedStart = pendingRegion.start
+    const capturedEnd = pendingRegion.end
+    const capturedViewportSpan = viewportEnd - viewportStart
+    const startClientX = e.clientX
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaTime = ((moveEvent.clientX - startClientX) / rect.width) * capturedViewportSpan
+      const newStart = Math.max(0, Math.min(capturedStart + deltaTime, capturedEnd - 0.05))
+      setPendingRegion({ start: newStart, end: capturedEnd })
+    }
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }, [pendingRegion, viewportStart, viewportEnd, duration])
+
+  const handleRightHandleDrag = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!pendingRegion || !containerRef.current || !duration) return
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = containerRef.current.getBoundingClientRect()
+    if (!rect.width) return
+    const capturedStart = pendingRegion.start
+    const capturedEnd = pendingRegion.end
+    const capturedViewportSpan = viewportEnd - viewportStart
+    const startClientX = e.clientX
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaTime = ((moveEvent.clientX - startClientX) / rect.width) * capturedViewportSpan
+      const newEnd = Math.max(capturedStart + 0.05, Math.min(capturedEnd + deltaTime, duration))
+      setPendingRegion({ start: capturedStart, end: newEnd })
+    }
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }, [pendingRegion, viewportStart, viewportEnd, duration])
+
   const handleWaveformDoubleClick = () => {
-    // Clear pending selection on double-click
     if (pendingRegion) {
-      removeRegion(pendingRegion.id)
       setPendingRegion(null)
       setSliceName('')
       setIsLoopEnabled(false)
@@ -175,25 +281,91 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
           viewportStart={viewportStart}
           viewportEnd={viewportEnd}
           duration={duration}
+          peaks={waveformPeaks}
+          currentTime={currentTime}
           onSetViewport={setViewportRegion}
+          onSeek={seekTo}
         />
 
         {/* Main Waveform */}
         <div className="relative">
+          {/* Outer wrapper: clipping + background + opacity transition */}
           <div
-            ref={containerRef}
-            className={`bg-surface-base rounded-lg overflow-x-auto overflow-y-hidden transition-opacity duration-300 ${
-              showContent ? 'opacity-100' : 'opacity-0'
-            }`}
-            onDoubleClick={handleWaveformDoubleClick}
-          />
+            className="relative bg-surface-base rounded-lg overflow-hidden"
+            style={{ height: 128 }}
+          >
+            {/* Custom canvas: waveform bars with viewport-aware downsampling */}
+            <canvas ref={waveformCanvasRef} className="absolute inset-0 w-full h-full" />
+            {/* peaks.js ZoomView: transparent waveform, renders playhead on top */}
+            <div
+              ref={containerRef}
+              className="absolute inset-0"
+              onMouseDown={(e) => { if (!pendingRegion) handleZoomviewMouseDown(e) }}
+              onDoubleClick={handleWaveformDoubleClick}
+            />
+            {/* Yellow selection overlay — pure CSS div so position always matches the mouse exactly */}
+            {selectionOverlay && (
+              <div
+                className="absolute top-0 bottom-0 pointer-events-none"
+                style={{
+                  left: selectionOverlay.left,
+                  width: selectionOverlay.width,
+                  backgroundColor: 'rgba(245, 158, 11, 0.35)',
+                  borderLeft: '2px solid rgba(245, 158, 11, 0.8)',
+                  borderRight: '2px solid rgba(245, 158, 11, 0.8)',
+                }}
+              >
+                {pendingRegion && !draftSelection && (
+                  <>
+                    {/* Top drag handle — move entire region */}
+                    <div
+                      className="absolute top-0 left-0 right-0 flex items-center justify-center cursor-grab active:cursor-grabbing"
+                      style={{ height: '0.35rem', backgroundColor: 'rgba(245, 158, 11, 0.85)', pointerEvents: 'auto' }}
+                      onMouseDown={handleRegionHandleDrag}
+                    >
+                      <GripHorizontal size={10} className="text-white/90 pointer-events-none" />
+                    </div>
+                    {/* Left resize handle */}
+                    <div
+                      className="absolute top-0 bottom-0 left-0 flex items-center justify-center cursor-ew-resize"
+                      style={{ width: '0.5rem', backgroundColor: 'rgba(245, 158, 11, 0.08)', pointerEvents: 'auto' }}
+                      onMouseDown={handleLeftHandleDrag}
+                    >
+                      <ChevronRight size={8} className="text-white/90 pointer-events-none" />
+                    </div>
+                    {/* Right resize handle */}
+                    <div
+                      className="absolute top-0 bottom-0 right-0 flex items-center justify-center cursor-ew-resize"
+                      style={{ width: '0.5rem', backgroundColor: 'rgba(245, 158, 11, 0.08)', pointerEvents: 'auto' }}
+                      onMouseDown={handleRightHandleDrag}
+                    >
+                      <ChevronLeft size={8} className="text-white/90 pointer-events-none" />
+                    </div>
+                    {/* X dismiss button — top-right corner */}
+                    <button
+                      className="absolute flex items-center justify-center rounded-full bg-amber-500/70 hover:bg-amber-400 text-white transition-colors"
+                      style={{ top: '0.25rem', right: '0.25rem', width: '1.1rem', height: '1.1rem', pointerEvents: 'auto', zIndex: 10 }}
+                      onClick={handleCancelSlice}
+                    >
+                      <X size={9} />
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
           {/* Loading animation */}
-          {!showContent && (
+          {!isReady && !waveformError && (
             <div className="absolute inset-0 flex items-center justify-center bg-surface-base rounded-lg">
               <div className="flex flex-col items-center gap-3">
                 <div className="w-12 h-12 border-4 border-accent-primary/30 border-t-accent-primary rounded-full animate-spin" />
                 <span className="text-sm text-slate-400">Loading waveform...</span>
               </div>
+            </div>
+          )}
+          {waveformError && (
+            <div className="absolute inset-0 flex items-center justify-center bg-surface-base/95 rounded-lg px-4">
+              <span className="text-sm text-amber-300 text-center">{waveformError}</span>
             </div>
           )}
         </div>
@@ -208,8 +380,10 @@ export function WaveformEditor({ track }: WaveformEditorProps) {
             >
               {isPlaying ? <Pause size={20} /> : <Play size={20} className="ml-0.5" />}
             </button>
-            <div className="text-sm text-slate-400">
-              {formatTime(currentTime)} / {formatTime(duration)}
+            <div className="flex items-center gap-3">
+              <div className="text-sm text-slate-400">
+                {formatTime(currentTime)} / {formatTime(duration)}
+              </div>
             </div>
           </div>
           <div className="text-sm text-slate-500">

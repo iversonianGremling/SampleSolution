@@ -12,6 +12,7 @@ import {
   FolderPlus,
   Trash2,
   Pencil,
+  FolderInput,
 } from 'lucide-react'
 import {
   useTags,
@@ -20,8 +21,11 @@ import {
   useGenerateAiTagsForSlice,
   useToggleFavorite,
   useFolders,
+  useCollections,
   useAddSliceToFolder,
   useRemoveSliceFromFolder,
+  useBatchAddSlicesToFolder,
+  useCreateFolder,
   useCreateTag,
   useBatchGenerateAiTags,
   useDeleteSliceGlobal,
@@ -30,6 +34,8 @@ import {
   useUpdateTrack,
 } from '../hooks/useTracks'
 import { useAppDialog } from '../hooks/useAppDialog'
+import { AnalysisWarningAlertContent } from './AnalysisWarningAlertContent'
+import { MoveToFolderModal } from './MoveToFolderModal'
 import { getSliceDownloadUrl } from '../api/client'
 import { TagSearchInput } from './TagSearchInput'
 import { CompactSliceRow } from './CompactSliceRow'
@@ -159,14 +165,20 @@ export function SampleListPanel({
     }
   }, [selectedSliceId, slices, currentPage, itemsPerPage])
 
+  // Move to folder modal state
+  const [showMoveModal, setShowMoveModal] = useState(false)
+
   // Data fetching
   const { data: allTags } = useTags()
   const { data: folders } = useFolders()
+  const { data: collections } = useCollections()
   const addTagToSlice = useAddTagToSlice()
   const removeTagFromSlice = useRemoveTagFromSlice()
   const toggleFavorite = useToggleFavorite()
   const addSliceToFolder = useAddSliceToFolder()
   const removeSliceFromFolder = useRemoveSliceFromFolder()
+  const batchAddSlicesToFolder = useBatchAddSlicesToFolder()
+  const createFolder = useCreateFolder()
   const batchGenerateAiTags = useBatchGenerateAiTags()
   const batchDeleteSlices = useBatchDeleteSlices()
   const deleteSlice = useDeleteSliceGlobal()
@@ -274,18 +286,15 @@ export function SampleListPanel({
               batchGenerateAiTags.mutate(Array.from(selectedSliceIds), {
                 onSuccess: (result) => {
                   if (result.warnings && result.warnings.totalWithWarnings > 0) {
-                    const preview = result.warnings.messages.slice(0, 3)
-                    const extra = Math.max(0, result.warnings.messages.length - preview.length)
-                    const details = preview.map((m) => `• ${m}`).join('\n')
                     void showAlert({
                       title: 'Analysis Warning',
-                      message: [
-                        `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before analysis.`,
-                        details,
-                        extra > 0 ? `...and ${extra} more warning(s).` : '',
-                      ]
-                        .filter(Boolean)
-                        .join('\n'),
+                      message: (
+                        <AnalysisWarningAlertContent
+                          totalWithWarnings={result.warnings.totalWithWarnings}
+                          warningMessages={result.warnings.messages}
+                          phase="analysis"
+                        />
+                      ),
                     })
                   }
                   setSelectedSliceIds(new Set())
@@ -318,6 +327,13 @@ export function SampleListPanel({
           >
             <Download size={12} />
             Download
+          </button>
+          <button
+            onClick={() => setShowMoveModal(true)}
+            className="flex items-center gap-1 px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs rounded transition-colors"
+          >
+            <FolderInput size={12} />
+            Move
           </button>
           <button
             onClick={() => {
@@ -483,6 +499,63 @@ export function SampleListPanel({
         </div>
       )}
       {dialogNode}
+      {showMoveModal && (
+        <MoveToFolderModal
+          selectedSlices={slices.filter((s) => selectedSliceIds.has(s.id))}
+          folders={folders ?? []}
+          collections={collections ?? []}
+          onMove={async (targetFolderId, removeFromCurrentFolders) => {
+            const sliceIds = Array.from(selectedSliceIds)
+            await new Promise<void>((resolve, reject) => {
+              batchAddSlicesToFolder.mutate(
+                { folderId: targetFolderId, sliceIds },
+                {
+                  onSuccess: async () => {
+                    if (removeFromCurrentFolders) {
+                      // Remove from all their current folders
+                      const selectedSlices = slices.filter((s) => selectedSliceIds.has(s.id))
+                      const removals: Promise<void>[] = []
+                      for (const slice of selectedSlices) {
+                        for (const folderId of slice.folderIds) {
+                          if (folderId !== targetFolderId) {
+                            removals.push(
+                              new Promise<void>((res, rej) => {
+                                removeSliceFromFolder.mutate(
+                                  { folderId, sliceId: slice.id },
+                                  { onSuccess: () => res(), onError: rej }
+                                )
+                              })
+                            )
+                          }
+                        }
+                      }
+                      try {
+                        await Promise.all(removals)
+                      } catch (e) {
+                        reject(e)
+                        return
+                      }
+                    }
+                    setSelectedSliceIds(new Set())
+                    setShowMoveModal(false)
+                    resolve()
+                  },
+                  onError: reject,
+                }
+              )
+            })
+          }}
+          onCreateFolder={async (name, collectionId) => {
+            return new Promise((resolve, reject) => {
+              createFolder.mutate(
+                { name, collectionId: collectionId ?? undefined },
+                { onSuccess: resolve, onError: reject }
+              )
+            })
+          }}
+          onCancel={() => setShowMoveModal(false)}
+        />
+      )}
     </div>
   )
 }

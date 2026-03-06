@@ -141,6 +141,19 @@ router.post('/import', async (req, res) => {
         .limit(1)
 
       if (existing.length > 0) {
+        const track = existing[0]
+        if (track.status !== 'error') {
+          success.push(videoId)
+          continue
+        }
+        // Retry errored tracks
+        await db
+          .update(schema.tracks)
+          .set({ status: 'pending', audioPath: null, peaksPath: null })
+          .where(eq(schema.tracks.youtubeId, videoId))
+        processTrack(videoId).catch((err) => {
+          console.error(`Failed to retry track ${videoId}:`, err)
+        })
         success.push(videoId)
         continue
       }
@@ -155,6 +168,7 @@ router.post('/import', async (req, res) => {
         description: info.description,
         thumbnailUrl: info.thumbnailUrl,
         duration: info.duration,
+        source: 'youtube',
         status: 'pending',
         createdAt: new Date().toISOString(),
       })

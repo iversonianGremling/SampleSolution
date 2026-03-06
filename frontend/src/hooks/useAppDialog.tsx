@@ -14,7 +14,7 @@ import { PromptModal } from '../components/PromptModal'
 
 type ConfirmDialogOptions = {
   title?: string
-  message: string
+  message: ReactNode
   confirmText?: string
   cancelText?: string
   isDestructive?: boolean
@@ -25,7 +25,7 @@ type ConfirmDialogOptions = {
 
 type AlertDialogOptions = {
   title?: string
-  message: string
+  message: ReactNode
   buttonText?: string
   isDestructive?: boolean
 }

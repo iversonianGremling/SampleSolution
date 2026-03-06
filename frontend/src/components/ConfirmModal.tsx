@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { X, AlertTriangle } from 'lucide-react'
 
 interface ConfirmModalProps {
   title: string
-  message: string
+  message: ReactNode
   confirmText?: string
   cancelText?: string
   hideCancel?: boolean
@@ -103,7 +103,11 @@ export function ConfirmModal({
 
           {/* Content */}
           <div className="px-6 py-4 space-y-4">
-            <p className="text-sm text-slate-300">{message}</p>
+            {typeof message === 'string' ? (
+              <p className="text-sm whitespace-pre-line text-slate-300">{message}</p>
+            ) : (
+              message
+            )}
 
             {/* Optional checkbox */}
             {checkboxLabel && (

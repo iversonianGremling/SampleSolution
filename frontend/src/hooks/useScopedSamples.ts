@@ -30,6 +30,8 @@ function scopeToString(scope: SourceScope): string {
       return `library:${scope.libraryId}`
     case 'my-folder':
       return `my-folder:${scope.folderId}`
+    case 'all-folders':
+      return 'all-folders'
     case 'collection':
       return `collection:${scope.collectionId}`
     default:
@@ -129,7 +131,7 @@ export function useScopedSamples(
   // Some backend deployments don't correctly handle scoped my-folder/collection queries.
   // For those scopes, fetch from "all" and let the UI apply precise folder-based filtering.
   const scopeString =
-    scope.type === 'my-folder' || scope.type === 'collection'
+    scope.type === 'my-folder' || scope.type === 'collection' || scope.type === 'all-folders'
       ? 'all'
       : scopeToString(scope)
 

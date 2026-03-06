@@ -1,10 +1,15 @@
 import { spawn } from 'child_process'
+import fs from 'fs'
+import path from 'path'
 
 export type DownloadTool = 'yt-dlp' | 'spotdl'
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on'])
 const installInFlight = new Map<DownloadTool, Promise<void>>()
 const availableTools = new Set<DownloadTool>()
+
+// Cache: tool name → resolved absolute path (or null = use PATH)
+const resolvedToolPaths = new Map<DownloadTool, string | null>()
 
 function parseBooleanEnv(value: string | undefined, fallback = false): boolean {
   if (value === undefined || value === null || value.trim() === '') return fallback
@@ -23,7 +28,58 @@ const AUTO_INSTALL_HINT_BY_TOOL: Record<DownloadTool, string> = {
   spotdl: 'Set AUTO_INSTALL_SPOTDL=1 (or AUTO_INSTALL_DOWNLOAD_TOOLS=1)',
 }
 
-function commandExists(command: string): Promise<boolean> {
+/**
+ * Returns candidate absolute paths for a tool binary given the Python executable path.
+ * pip installs scripts into the same Scripts/ (Windows) or bin/ (Unix) dir as python.
+ */
+function getCandidateToolPaths(tool: DownloadTool): string[] {
+  const pythonPath = process.env.PYTHON_PATH
+  if (!pythonPath) return []
+
+  const pythonDir = path.dirname(pythonPath)
+
+  if (process.platform === 'win32') {
+    // pip may install into Scripts/ relative to python.exe, or into the same dir
+    return [
+      path.join(pythonDir, 'Scripts', `${tool}.exe`),
+      path.join(pythonDir, 'Scripts', tool),
+      path.join(pythonDir, `${tool}.exe`),
+      path.join(pythonDir, tool),
+    ]
+  }
+
+  // Unix: pip installs into bin/ alongside python, or one level up in bin/
+  return [
+    path.join(pythonDir, tool),
+    path.join(path.dirname(pythonDir), 'bin', tool),
+  ]
+}
+
+/** Resolves the absolute path to a tool, or null if it must be found via PATH. */
+function resolveToolPath(tool: DownloadTool): string | null {
+  if (resolvedToolPaths.has(tool)) return resolvedToolPaths.get(tool)!
+
+  for (const candidate of getCandidateToolPaths(tool)) {
+    if (fs.existsSync(candidate)) {
+      resolvedToolPaths.set(tool, candidate)
+      return candidate
+    }
+  }
+
+  resolvedToolPaths.set(tool, null)
+  return null
+}
+
+export function spawnTool(tool: DownloadTool, args: string[], opts: object = {}) {
+  const resolved = resolveToolPath(tool)
+  return spawn(resolved ?? tool, args, opts)
+}
+
+function commandExists(tool: DownloadTool): Promise<boolean> {
+  // Always re-check disk for candidate paths (may have just been installed)
+  resolvedToolPaths.delete(tool)
+  const resolved = resolveToolPath(tool)
+
   return new Promise((resolve) => {
     let settled = false
     const settle = (value: boolean) => {
@@ -32,9 +88,7 @@ function commandExists(command: string): Promise<boolean> {
       resolve(value)
     }
 
-    const proc = spawn(command, ['--version'], {
-      stdio: 'ignore',
-    })
+    const proc = spawn(resolved ?? tool, ['--version'], { stdio: 'ignore' })
 
     proc.on('error', (error) => {
       const err = error as NodeJS.ErrnoException
@@ -45,16 +99,23 @@ function commandExists(command: string): Promise<boolean> {
       settle(true)
     })
 
-    proc.on('close', () => {
-      settle(true)
-    })
+    proc.on('close', () => { settle(true) })
   })
+}
+
+function getPipCommand(): { cmd: string; args: string[] } {
+  const pythonPath = process.env.PYTHON_PATH
+  if (pythonPath) {
+    return { cmd: pythonPath, args: ['-m', 'pip'] }
+  }
+  return { cmd: process.platform === 'win32' ? 'pip' : 'pip3', args: [] }
 }
 
 function runInstallCommand(tool: DownloadTool): Promise<void> {
   const packageName = tool === 'yt-dlp' ? 'yt-dlp' : 'spotdl'
+  const { cmd, args } = getPipCommand()
   return new Promise((resolve, reject) => {
-    const proc = spawn('pip', ['install', '--no-cache-dir', '--upgrade', packageName], {
+    const proc = spawn(cmd, [...args, 'install', '--no-cache-dir', '--upgrade', packageName], {
       env: process.env,
     })
 

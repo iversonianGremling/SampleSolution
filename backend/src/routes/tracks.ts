@@ -5,6 +5,7 @@ import path from 'path'
 import { db, schema } from '../db/index.js'
 import { getVideoInfo, extractVideoId } from '../services/ytdlp.js'
 import { processTrack } from '../services/processor.js'
+import { generatePeaks } from '../services/ffmpeg.js'
 
 const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
@@ -772,8 +773,16 @@ router.get('/:id/audio', async (req, res) => {
 })
 
 // Get waveform peaks
+// ?n=<count> requests a specific number of peaks (default 800, max 20000).
+// High-resolution requests are generated on-the-fly and not cached (only the
+// default 800-peak file is persisted on disk).
 router.get('/:id/peaks', async (req, res) => {
   const id = parseInt(req.params.id)
+  const requestedN = parseInt(String(req.query.n || ''), 10)
+  const numPeaks = Number.isFinite(requestedN) && requestedN > 0
+    ? Math.min(requestedN, 200000)
+    : 800
+  const isCustomResolution = numPeaks !== 800
 
   try {
     const track = await db
@@ -782,11 +791,41 @@ router.get('/:id/peaks', async (req, res) => {
       .where(eq(schema.tracks.id, id))
       .limit(1)
 
-    if (track.length === 0 || !track[0].peaksPath) {
+    if (track.length === 0) {
       return res.status(404).json({ error: 'Peaks not found' })
     }
 
-    const peaks = JSON.parse(await fs.readFile(track[0].peaksPath, 'utf-8'))
+    const [existingTrack] = track
+
+    // For custom resolution requests, generate peaks on-the-fly (no caching).
+    if (isCustomResolution && existingTrack.audioPath) {
+      const peaks = await generatePeaks(existingTrack.audioPath, null as unknown as string, numPeaks)
+      return res.json(peaks)
+    }
+
+    let peaksPath = existingTrack.peaksPath
+
+    if (!peaksPath && existingTrack.audioPath) {
+      const peaksDir = path.join(DATA_DIR, 'peaks')
+      await fs.mkdir(peaksDir, { recursive: true })
+      const fileSafeId = String(existingTrack.youtubeId || `track_${existingTrack.id}`).replace(/[^a-zA-Z0-9_-]/g, '_')
+      const generatedPeaksPath = path.join(peaksDir, `${fileSafeId}.json`)
+      await generatePeaks(existingTrack.audioPath, generatedPeaksPath)
+
+      const [updatedTrack] = await db
+        .update(schema.tracks)
+        .set({ peaksPath: generatedPeaksPath })
+        .where(eq(schema.tracks.id, existingTrack.id))
+        .returning({ peaksPath: schema.tracks.peaksPath })
+
+      peaksPath = updatedTrack?.peaksPath ?? generatedPeaksPath
+    }
+
+    if (!peaksPath) {
+      return res.status(404).json({ error: 'Peaks not found' })
+    }
+
+    const peaks = JSON.parse(await fs.readFile(peaksPath, 'utf-8'))
     res.json(peaks)
   } catch (error) {
     console.error('Error fetching peaks:', error)

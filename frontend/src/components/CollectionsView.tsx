@@ -30,12 +30,14 @@ import { SourcesRuleFilterBuilder } from './SourcesRuleFilterBuilder'
 import { CustomOrderModal } from './CustomOrderModal'
 import { ResizableDivider } from './ResizableDivider'
 import { SourcesBatchActions } from './SourcesBatchActions'
+import { MoveToFolderModal } from './MoveToFolderModal'
 import { SourcesAudioFilter, AudioFilterState } from './SourcesAudioFilter'
 import { SampleSearchScopeMenu } from './SampleSearchScopeMenu'
 import { SampleSortMenu } from './SampleSortMenu'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import { useResizablePanel } from '../hooks/useResizablePanel'
 import { useAppDialog } from '../hooks/useAppDialog'
+import { AnalysisWarningAlertContent } from './AnalysisWarningAlertContent'
 import {
   useCollections,
   useCreateCollection,
@@ -217,11 +219,15 @@ export function FoldersView() {
     return notes
   }, [audioFilter.selectedNotes, audioFilter.relatedNotesLevels])
 
+  // Move to folder modal state
+  const [showMoveModal, setShowMoveModal] = useState(false)
+
   // Data hooks
   const { data: collections = [] } = useCollections()
   const { data: folders = [] } = useFolders(
     activeCollectionId ? { collectionId: activeCollectionId } : undefined
   )
+  const { data: allFolders = [] } = useFolders()
   const { data: allTags = [] } = useTags()
   const { data: folderFacets } = useFolderFacets(selectedFolderId)
   const { data: collectionFacets } = useCollectionFacets(
@@ -644,18 +650,15 @@ export function FoldersView() {
         {
           onSuccess: async (result) => {
             if (result.warnings && result.warnings.totalWithWarnings > 0) {
-              const preview = result.warnings.messages.slice(0, 3)
-              const extra = Math.max(0, result.warnings.messages.length - preview.length)
-              const details = preview.map((m) => `• ${m}`).join('\n')
               await showAlert({
                 title: 'Analysis Warning',
-                message: [
-                  `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before re-analysis.`,
-                  details,
-                  extra > 0 ? `...and ${extra} more warning(s).` : '',
-                ]
-                  .filter(Boolean)
-                  .join('\n'),
+                message: (
+                  <AnalysisWarningAlertContent
+                    totalWithWarnings={result.warnings.totalWithWarnings}
+                    warningMessages={result.warnings.messages}
+                    phase="re-analysis"
+                  />
+                ),
               })
             }
             setSelectedSampleIds(new Set())
@@ -1578,6 +1581,7 @@ export function FoldersView() {
             onBatchDelete={handleBatchDelete}
             onBatchDownload={handleBatchDownload}
             onAnalyzeSelected={handleAnalyzeSelected}
+            onMove={() => setShowMoveModal(true)}
             onClearSelection={() => setSelectedSampleIds(new Set())}
             isDeleting={batchDeleteSlices.isPending}
             isAnalyzing={batchReanalyzeSlices.isPending}
@@ -1645,6 +1649,62 @@ export function FoldersView() {
         />
       )}
       {dialogNode}
+      {showMoveModal && (
+        <MoveToFolderModal
+          selectedSlices={samples.filter((s) => selectedSampleIdsInCurrentView.has(s.id)) as any}
+          folders={allFolders}
+          collections={collections}
+          onMove={async (targetFolderId, removeFromCurrentFolders) => {
+            const selectedSlices = samples.filter((s) => selectedSampleIdsInCurrentView.has(s.id))
+            const sliceIds = selectedSlices.map((s) => s.id)
+            await new Promise<void>((resolve, reject) => {
+              batchAddSlices.mutate(
+                { folderId: targetFolderId, sliceIds },
+                {
+                  onSuccess: async () => {
+                    if (removeFromCurrentFolders) {
+                      const removals: Promise<void>[] = []
+                      for (const slice of selectedSlices) {
+                        for (const folderId of slice.folderIds) {
+                          if (folderId !== targetFolderId) {
+                            removals.push(
+                              new Promise<void>((res, rej) => {
+                                removeSliceFromFolder.mutate(
+                                  { folderId, sliceId: slice.id },
+                                  { onSuccess: () => res(), onError: rej }
+                                )
+                              })
+                            )
+                          }
+                        }
+                      }
+                      try {
+                        await Promise.all(removals)
+                      } catch (e) {
+                        reject(e)
+                        return
+                      }
+                    }
+                    setSelectedSampleIds(new Set())
+                    setShowMoveModal(false)
+                    resolve()
+                  },
+                  onError: reject,
+                }
+              )
+            })
+          }}
+          onCreateFolder={async (name, collectionId) => {
+            return new Promise((resolve, reject) => {
+              createFolder.mutate(
+                { name, collectionId: collectionId ?? undefined },
+                { onSuccess: resolve, onError: reject }
+              )
+            })
+          }}
+          onCancel={() => setShowMoveModal(false)}
+        />
+      )}
     </div>
   )
 }

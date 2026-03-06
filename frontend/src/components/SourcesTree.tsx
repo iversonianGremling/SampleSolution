@@ -440,6 +440,9 @@ export function SourcesTree({
         } else {
           setDropPosition('inside')
         }
+      } else if (hasJsonData && targetId !== null) {
+        // Samples always drop "inside" a folder
+        setDropPosition('inside')
       } else {
         setDropPosition(null)
       }
@@ -998,7 +1001,7 @@ export function SourcesTree({
     const isDragging = draggedFolderId === node.id
 
     // Highlight self when dropping inside
-    const shouldHighlightSelf = isDragOver && dropPosition === 'inside' && draggedFolderId !== null
+    const shouldHighlightSelf = isDragOver && dropPosition === 'inside'
 
     if (isEditing) {
       return (
@@ -1407,7 +1410,7 @@ export function SourcesTree({
               })()}
 
               {/* YouTube Section */}
-              <div>
+              {(tree?.youtube?.length ?? 0) > 0 && <div>
                 {(() => {
                   const youtubeSectionActive = currentScope.type === 'youtube'
                   const youtubeSectionContainsActive = currentScope.type === 'youtube-video'
@@ -1494,7 +1497,7 @@ export function SourcesTree({
                     No videos found
                   </div>
                 )}
-              </div>
+              </div>}
 
               {streamingSections.map((section) => {
                 const sectionActive = currentScope.type === section.scopeType
@@ -1627,7 +1630,7 @@ export function SourcesTree({
                     const librarySectionContainsActive = currentScope.type === 'library'
                     return (
                       <div
-                        className={`flex items-center gap-1 pl-1.5 pr-0.5 py-0.5 min-h-6 text-[12px] rounded-sm transition-colors ${
+                        className={`flex items-center gap-1 pl-1.5 pr-0.5 py-0.5 min-h-6 text-[12px] rounded-sm transition-colors cursor-pointer ${
                           librarySectionContainsActive
                             ? 'bg-accent-warm/12 text-accent-warm'
                             : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
@@ -1670,16 +1673,19 @@ export function SourcesTree({
               {tree?.folders && tree.folders.length > 0 && (
                 <div>
                   {(() => {
-                    const importedFoldersSectionContainsActive = currentScope.type === 'folder'
+                    const importedFoldersSectionContainsActive = currentScope.type === 'folder' || currentScope.type === 'my-folder'
+                    const importedFoldersSectionActive = currentScope.type === 'all-folders'
                     return (
                       <div
-                        className={`flex items-center gap-1 pl-1.5 pr-0.5 py-0.5 min-h-6 text-[12px] rounded-sm transition-colors ${
-                          importedFoldersSectionContainsActive
+                        className={`flex items-center gap-1 pl-1.5 pr-0.5 py-0.5 min-h-6 text-[12px] rounded-sm transition-colors cursor-pointer ${
+                          importedFoldersSectionActive
+                            ? 'bg-accent-warm/12 text-accent-warm'
+                            : importedFoldersSectionContainsActive
                             ? 'bg-accent-warm/12 text-accent-warm'
                             : 'text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
                         }`}
                       >
-                        <SelectionMarker state={importedFoldersSectionContainsActive ? 'contains-active' : 'none'} />
+                        <SelectionMarker state={importedFoldersSectionActive ? 'active' : importedFoldersSectionContainsActive ? 'contains-active' : 'none'} />
                         <button
                           type="button"
                           onClick={() => toggleSection('folders')}
@@ -1688,10 +1694,14 @@ export function SourcesTree({
                         >
                           {expandedSections.has('folders') ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                         </button>
-                        <div className="flex flex-1 items-center gap-1.5 py-0.5 text-left">
+                        <button
+                          type="button"
+                          onClick={() => onScopeChange({ type: 'all-folders' })}
+                          className="flex flex-1 items-center gap-1.5 py-0.5 text-left"
+                        >
                           <FolderOpen size={14} className="text-amber-500" />
                           <span>Imported Folders</span>
-                        </div>
+                        </button>
                         <span className="min-w-[3ch] text-right text-xs tabular-nums text-slate-500">
                           {totalImportedFolderSlices}
                         </span>
@@ -1794,14 +1804,17 @@ export function SourcesTree({
                   const canMoveDown = collectionIndex >= 0 && collectionIndex < collections.length - 1
 
                   return (
-                    <div key={key} className="relative">
+                    <div
+                      key={key}
+                      className={`relative rounded-md transition-colors ${isDropTarget ? 'bg-accent-warm/15 outline outline-2 outline-accent-warm/40' : ''}`}
+                      onDragOver={(e) => handleCollectionDragOver(e, key)}
+                      onDrop={(e) => handleCollectionDrop(e, key, entry.id)}
+                      onDragLeave={handleDragLeave}
+                    >
                       <div
                         className={`group relative flex items-center gap-2 rounded-md transition-colors ${
-                          isDropTarget ? 'bg-accent-warm/15' : 'hover:bg-surface-overlay'
+                          isDropTarget ? '' : 'hover:bg-surface-overlay'
                         }`}
-                        onDragOver={(e) => handleCollectionDragOver(e, key)}
-                        onDrop={(e) => handleCollectionDrop(e, key, entry.id)}
-                        onDragLeave={handleDragLeave}
                       >
                         <SelectionMarker state={collectionMarkerState} />
                         <button
@@ -1945,9 +1958,6 @@ export function SourcesTree({
 
                       {isExpanded && (
                         <div
-                          onDragOver={(e) => handleCollectionDragOver(e, key)}
-                          onDrop={(e) => handleCollectionDrop(e, key, entry.id)}
-                          onDragLeave={handleDragLeave}
                           className="rounded-md"
                         >
                           {entry.filtered.map(folder => renderMyFolderNode(folder, 0))}

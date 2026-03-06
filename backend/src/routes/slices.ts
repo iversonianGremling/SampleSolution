@@ -10,6 +10,7 @@ import {
   convertAudioFile,
   extractSlice,
   getAudioFileMetadata,
+  generateBidirectionalPeaks,
   type AudioConversionFormat,
   type AudioConversionBitDepth,
 } from '../services/ffmpeg.js'
@@ -2046,6 +2047,7 @@ router.get('/sources/samples', async (req, res) => {
         createdAt: schema.slices.createdAt,
         trackTitle: schema.tracks.title,
         trackYoutubeId: schema.tracks.youtubeId,
+        trackDuration: schema.tracks.duration,
         trackSource: schema.tracks.source,
         trackFolderPath: schema.tracks.folderPath,
         trackOriginalPath: schema.tracks.originalPath,
@@ -2734,6 +2736,7 @@ router.get('/sources/samples', async (req, res) => {
       track: {
         title: slice.trackTitle,
         youtubeId: slice.trackYoutubeId,
+        duration: slice.trackDuration,
         source: slice.trackSource,
         folderPath: slice.trackFolderPath,
         originalPath: slice.trackOriginalPath,
@@ -3802,6 +3805,41 @@ router.get('/slices/:id/download', async (req, res) => {
   } catch (error) {
     console.error('Error streaming slice:', error)
     res.status(500).json({ error: 'Failed to stream slice' })
+  }
+})
+
+// Waveform peaks for a slice — decoded server-side via ffmpeg.
+// Returns bidirectional peaks { tops: number[], bots: number[] } so the
+// frontend can render a proper positive/negative waveform without using the
+// Chromium codec stack (decodeAudioData crashes the renderer on Windows Electron
+// with certain audio formats such as 24-bit AIFF).
+// ?n=<count>  number of bars (default 4000, max 20000)
+router.get('/slices/:id/peaks', async (req, res) => {
+  const id = parseInt(req.params.id)
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid slice id' })
+
+  const rawN = req.query.n
+  const numPeaks = Math.min(
+    20000,
+    Math.max(1, rawN ? parseInt(String(rawN), 10) || 4000 : 4000)
+  )
+
+  try {
+    const rows = await db
+      .select()
+      .from(schema.slices)
+      .where(eq(schema.slices.id, id))
+      .limit(1)
+
+    if (rows.length === 0 || !rows[0].filePath) {
+      return res.status(404).json({ error: 'Slice not found' })
+    }
+
+    const peaks = await generateBidirectionalPeaks(rows[0].filePath, numPeaks)
+    return res.json(peaks)
+  } catch (error) {
+    console.error('Error generating slice peaks:', error)
+    return res.status(500).json({ error: 'Failed to generate peaks' })
   }
 })
 

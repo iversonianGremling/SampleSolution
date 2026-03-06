@@ -1,7 +1,7 @@
 import { spawn } from 'child_process'
 import path from 'path'
 import type { YouTubeVideoInfo } from '../types/index.js'
-import { ensureDownloadTool } from './downloadTools.js'
+import { ensureDownloadTool, spawnTool } from './downloadTools.js'
 
 const DATA_DIR = process.env.DATA_DIR || './data'
 const YOUTUBE_VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/
@@ -28,7 +28,7 @@ export async function getVideoInfo(videoId: string): Promise<YouTubeVideoInfo> {
       `https://www.youtube.com/watch?v=${videoId}`,
     ]
 
-    const proc = spawn('yt-dlp', args)
+    const proc = spawnTool('yt-dlp', args)
     let stdout = ''
     let stderr = ''
 
@@ -77,10 +77,23 @@ export async function downloadAudio(
       '--audio-quality', '0', // Best quality
       '-o', outputTemplate,
       '--no-playlist',
-      `https://www.youtube.com/watch?v=${videoId}`,
     ]
 
-    const proc = spawn('yt-dlp', args)
+    const ffmpegPath = process.env.FFMPEG_PATH
+    if (ffmpegPath) {
+      args.push('--ffmpeg-location', path.dirname(ffmpegPath))
+    }
+
+    // On Windows packaged builds, yt-dlp can't find Node on PATH.
+    // Point it at the embedded Node binary so YouTube JS extraction works.
+    const nodeBinaryPath = process.env.NODE_BINARY_PATH
+    if (nodeBinaryPath) {
+      args.push('--extractor-args', `youtube:player_client=default;js_runtimes=node:${nodeBinaryPath}`)
+    }
+
+    args.push(`https://www.youtube.com/watch?v=${videoId}`)
+
+    const proc = spawnTool('yt-dlp', args)
     let stderr = ''
 
     proc.stderr.on('data', (data) => {

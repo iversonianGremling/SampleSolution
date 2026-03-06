@@ -259,9 +259,94 @@ export async function extractSlice(
   })
 }
 
+export interface BidirectionalPeaks {
+  tops: number[]  // positive peak per bar, normalised [0, 1]
+  bots: number[]  // abs of negative peak per bar, normalised [0, 1]
+}
+
+/**
+ * Generate bidirectional waveform peaks (separate positive and negative)
+ * via ffmpeg raw PCM decode. Returns enough bars to match the fidelity of
+ * browser-side decodeAudioData without using Chromium's codec stack.
+ */
+export async function generateBidirectionalPeaks(
+  inputPath: string,
+  numPeaks: number = 4000
+): Promise<BidirectionalPeaks> {
+  return new Promise((resolve, reject) => {
+    const probeArgs = [
+      '-i', inputPath,
+      '-show_entries', 'format=duration',
+      '-v', 'quiet',
+      '-of', 'csv=p=0',
+    ]
+
+    const probe = spawn(FFPROBE_BIN, probeArgs)
+    let durationStr = ''
+
+    probe.stdout.on('data', (data) => { durationStr += data.toString() })
+    probe.on('error', reject)
+
+    probe.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error('Failed to probe audio duration for bidirectional peaks'))
+        return
+      }
+
+      const durationSec = parseFloat(durationStr.trim())
+      // Target ~44100 Hz mono; samplesPerBar gives one bar per visual column.
+      const samplesPerBar = Math.max(1, Math.floor((durationSec * 44100) / numPeaks))
+
+      const args = [
+        '-i', inputPath,
+        '-ac', '1',      // mix to mono
+        '-ar', '44100',  // consistent sample rate
+        '-f', 's16le',   // raw signed 16-bit LE
+        '-',
+      ]
+
+      const proc = spawn(FFMPEG_BIN, args)
+      const chunks: Buffer[] = []
+
+      proc.stdout.on('data', (data) => { chunks.push(data) })
+      proc.stderr.on('data', () => {})  // suppress ffmpeg progress output
+      proc.on('error', reject)
+
+      proc.on('close', (exitCode) => {
+        if (exitCode !== 0) {
+          reject(new Error('Failed to extract audio for bidirectional peaks'))
+          return
+        }
+
+        const buffer = Buffer.concat(chunks)
+        const samples = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.length >> 1)
+
+        const tops: number[] = new Array(numPeaks).fill(0)
+        const bots: number[] = new Array(numPeaks).fill(0)
+
+        for (let i = 0; i < numPeaks; i++) {
+          const start = i * samplesPerBar
+          const end   = Math.min(start + samplesPerBar, samples.length)
+          let maxPos = 0
+          let minNeg = 0
+          for (let j = start; j < end; j++) {
+            const v = samples[j]
+            if (v > maxPos) maxPos = v
+            else if (v < minNeg) minNeg = v
+          }
+          tops[i] = maxPos / 32768
+          bots[i] = -minNeg / 32768  // stored as positive magnitude
+        }
+
+        resolve({ tops, bots })
+      })
+    })
+  })
+}
+
 export async function generatePeaks(
   inputPath: string,
-  outputPath: string,
+  outputPath: string | null,
   numPeaks: number = 800
 ): Promise<number[]> {
   return new Promise((resolve, reject) => {
@@ -334,8 +419,10 @@ export async function generatePeaks(
           peaks.push(max / 32768) // Normalize to 0-1
         }
 
-        // Save peaks to file
-        await fs.writeFile(outputPath, JSON.stringify(peaks))
+        // Save peaks to file (only when outputPath is provided)
+        if (outputPath) {
+          await fs.writeFile(outputPath, JSON.stringify(peaks))
+        }
         resolve(peaks)
       })
     })

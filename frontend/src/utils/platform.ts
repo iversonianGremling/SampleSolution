@@ -4,6 +4,7 @@
 
 interface ElectronAPI {
   isElectron: boolean;
+  isPackaged?: boolean;
   platform: string;
   arch: string;
   versions: {
@@ -17,6 +18,8 @@ interface ElectronAPI {
   getSetting?: (key: string) => Promise<string | null>;
   setSetting?: (key: string, value: string) => Promise<boolean>;
   removeSetting?: (key: string) => Promise<boolean>;
+  logRenderer?: (payload: { level?: 'log' | 'warn' | 'error'; message?: string; context?: string }) => void;
+  getLogPath?: () => Promise<string | null>;
 }
 
 declare global {

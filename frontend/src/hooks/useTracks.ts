@@ -465,6 +465,7 @@ export function useCreateFolder() {
     mutationFn: api.createFolder,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
     },
   })
 }
@@ -509,6 +510,7 @@ export function useUpdateFolder() {
       api.updateFolder(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
     },
   })
 }
@@ -519,6 +521,7 @@ export function useDeleteFolder() {
     mutationFn: api.deleteFolder,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
     },
   })
 }
@@ -531,6 +534,7 @@ export function useAddSliceToFolder() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
     },
   })
 }
@@ -582,6 +586,7 @@ export function useRemoveSliceFromFolder() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
       queryClient.invalidateQueries({ queryKey: ['folders'] })
+      queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
     },
   })
 }

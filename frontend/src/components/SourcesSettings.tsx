@@ -4,6 +4,7 @@ import * as api from '../api/client'
 import { useQuery, useQueryClient, useMutation, useQueries } from '@tanstack/react-query'
 import { BackupPanel } from './BackupPanel'
 import { useAppDialog } from '../hooks/useAppDialog'
+import { AnalysisWarningAlertContent } from './AnalysisWarningAlertContent'
 import {
   useAccessibility,
   MIN_FONT_SCALE_PERCENT,
@@ -37,6 +38,7 @@ const REANALYZE_BENCHMARK_SAMPLE_COUNT = 569
 const REANALYZE_BENCHMARK_DURATION_MS = 20 * 60 * 1000
 const REANALYZE_BENCHMARK_CONCURRENCY = 10
 const REANALYZE_HIGH_PROCESS_WARNING_THRESHOLD = 7
+const shownReanalyzeWarningJobIds = new Set<string>()
 
 const clampReanalyzeConcurrency = (value: number): number => {
   if (!Number.isFinite(value)) return DEFAULT_REANALYZE_CONCURRENCY
@@ -3668,8 +3670,6 @@ export function SourcesSettings() {
 
   const queryClient = useQueryClient()
   const previousReanalyzeStatusRef = useRef<api.BatchReanalyzeJobState | null>(null)
-  const shownWarningJobRef = useRef<string | null>(null)
-
   const { data: librarySampleCount, refetch: refetchSliceCount } = useQuery<number>({
     queryKey: ['slice-count'],
     queryFn: api.getSliceCount,
@@ -3857,22 +3857,17 @@ export function SourcesSettings() {
     if (reanalyzeJobStatus.status !== 'completed') return
     if (reanalyzeJobStatus.warnings.totalWithWarnings <= 0) return
     if (!reanalyzeJobStatus.jobId) return
-    if (shownWarningJobRef.current === reanalyzeJobStatus.jobId) return
-
-    shownWarningJobRef.current = reanalyzeJobStatus.jobId
-    const preview = reanalyzeJobStatus.warnings.messages.slice(0, 5)
-    const extra = Math.max(0, reanalyzeJobStatus.warnings.messages.length - preview.length)
-    const details = preview.map((message) => `• ${message}`).join('\n')
-
+    if (shownReanalyzeWarningJobIds.has(reanalyzeJobStatus.jobId)) return
+    shownReanalyzeWarningJobIds.add(reanalyzeJobStatus.jobId)
     void showAlert({
       title: 'Analysis Warning',
-      message: [
-        `Warning: ${reanalyzeJobStatus.warnings.totalWithWarnings} sample(s) had potential custom state before re-analysis.`,
-        details,
-        extra > 0 ? `...and ${extra} more warning(s).` : '',
-      ]
-        .filter(Boolean)
-        .join('\n'),
+      message: (
+        <AnalysisWarningAlertContent
+          totalWithWarnings={reanalyzeJobStatus.warnings.totalWithWarnings}
+          warningMessages={reanalyzeJobStatus.warnings.messages}
+          phase="re-analysis"
+        />
+      ),
     })
   }, [reanalyzeJobStatus, showAlert])
 

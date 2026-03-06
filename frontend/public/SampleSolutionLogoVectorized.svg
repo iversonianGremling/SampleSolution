@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 504.12 500">
+  <defs>
+    <filter id="whiteMask" x="-10%" y="-10%" width="120%" height="120%">
+      <feColorMatrix
+        in="SourceGraphic"
+        type="matrix"
+        values="
+          0 0 0 0 1
+          0 0 0 0 1
+          0 0 0 0 1
+          0.2126 0.7152 0.0722 0 -0.08
+        "
+      />
+    </filter>
+  </defs>
+  <image
+    width="1059"
+    height="547"
+    transform="translate(4 110.57) scale(.47)"
+    xlink:href="SampleSolutionLogo.png"
+    filter="url(#whiteMask)"
+  />
+</svg>

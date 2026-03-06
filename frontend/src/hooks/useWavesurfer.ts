@@ -1,292 +1,292 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import WaveSurfer from 'wavesurfer.js'
-import RegionsPlugin, { Region } from 'wavesurfer.js/dist/plugins/regions.js'
+import { flushSync } from 'react-dom'
+import { logRendererError } from '../utils/rendererLog'
+import {
+  buildWaveformAccessMessage,
+  checkWaveformSourceAccessible,
+  getWaveformSourceLabel,
+} from '../utils/waveformSource'
+import { getTrackPeaks } from '../api/client'
+// peaks.js removed — all rendering is handled by the custom canvas in WaveformEditor.
+// Transport and events are wired directly to a plain <audio> element, which avoids
+// the peaks.js init crash on Windows Electron (contextIsolation:true).
+
+// Base resolution fetched on load. When zoomed in enough to require more detail,
+// a higher-resolution fetch is triggered (up to MAX_PEAKS_RESOLUTION).
+const BASE_PEAKS_RESOLUTION = 4000
+const MAX_PEAKS_RESOLUTION = 200000
+// Only upgrade resolution when the viewport covers less than this fraction of
+// the full track duration (zoomed in past ~10%).
+const ZOOM_UPGRADE_THRESHOLD = 0.50
+// Debounce zoom-triggered re-fetches to avoid spamming the backend.
+const ZOOM_FETCH_DEBOUNCE_MS = 400
+
+export interface WaveformRegion {
+  id: string
+  start: number
+  end: number
+}
 
 interface UseWavesurferOptions {
   audioUrl: string
-  onRegionCreated?: (region: Region) => void
-  onRegionUpdated?: (region: Region) => void
+  trackId: number
+  onRegionCreated?: (region: WaveformRegion) => void
+  onRegionUpdated?: (region: WaveformRegion) => void
 }
 
 export function useWavesurfer({
   audioUrl,
+  trackId,
   onRegionCreated,
-  onRegionUpdated,
 }: UseWavesurferOptions) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const wavesurferRef = useRef<WaveSurfer | null>(null)
-  const regionsRef = useRef<RegionsPlugin | null>(null)
-  const onRegionCreatedRef = useRef(onRegionCreated)
-  const onRegionUpdatedRef = useRef(onRegionUpdated)
-
-  // Minimap refs
   const minimapRef = useRef<HTMLDivElement>(null)
-  const minimapWavesurferRef = useRef<WaveSurfer | null>(null)
-  const minimapRegionsRef = useRef<RegionsPlugin | null>(null)
-  const viewportRegionRef = useRef<Region | null>(null)
-  const playbackPositionRegionRef = useRef<Region | null>(null)
-  const currentZoomRef = useRef<number>(150)
+  const audioElRef = useRef<HTMLAudioElement | null>(null)
   const playingRegionBoundsRef = useRef<{ start: number; end: number; loop: boolean } | null>(null)
+
+  const onRegionCreatedRef = useRef(onRegionCreated)
+  useEffect(() => { onRegionCreatedRef.current = onRegionCreated }, [onRegionCreated])
 
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [isReady, setIsReady] = useState(false)
-  const [isMinimapReady, setIsMinimapReady] = useState(false)
   const [viewportStart, setViewportStart] = useState(0)
   const [viewportEnd, setViewportEnd] = useState(0)
+  const [waveformPeaks, setWaveformPeaks] = useState<number[]>([])
+  const [draftSelection, setDraftSelection] = useState<{ leftPercent: number; widthPercent: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  // Keep refs up to date
+  // Capture viewport in a ref so the mousedown handler never goes stale
+  const viewportStartRef = useRef(0)
+  const viewportEndRef = useRef(0)
+  useEffect(() => { viewportStartRef.current = viewportStart }, [viewportStart])
+  useEffect(() => { viewportEndRef.current = viewportEnd }, [viewportEnd])
+
+  // Track the currently-fetched peaks resolution so we don't re-fetch unnecessarily.
+  const currentPeaksResolutionRef = useRef(0)
+
+  // When zoomed in past ZOOM_UPGRADE_THRESHOLD, fetch higher-resolution peaks so
+  // bars show real detail rather than repeating the same handful of base values.
   useEffect(() => {
-    onRegionCreatedRef.current = onRegionCreated
-    onRegionUpdatedRef.current = onRegionUpdated
-  }, [onRegionCreated, onRegionUpdated])
+    if (!duration || !trackId) return
+    const viewportDuration = viewportEnd - viewportStart
+    if (viewportDuration <= 0) return
 
-  // Initialize main waveform
-  useEffect(() => {
-    if (!containerRef.current || !audioUrl) return
+    const zoomFraction = viewportDuration / duration
 
-    const regions = RegionsPlugin.create()
-    regionsRef.current = regions
+    // Calculate how many peaks we need so the visible portion has ~BASE_PEAKS_RESOLUTION bars.
+    const needed = zoomFraction < ZOOM_UPGRADE_THRESHOLD
+      ? Math.min(MAX_PEAKS_RESOLUTION, Math.ceil(BASE_PEAKS_RESOLUTION / zoomFraction))
+      : BASE_PEAKS_RESOLUTION
 
-    const ws = WaveSurfer.create({
-      container: containerRef.current,
-      waveColor: '#4f46e5',
-      progressColor: '#818cf8',
-      cursorColor: '#f59e0b',
-      cursorWidth: 2,
-      barWidth: 2,
-      barGap: 1,
-      barRadius: 2,
-      height: 128,
-      normalize: true,
-      minPxPerSec: 150,
-      autoScroll: false,
-      autoCenter: false,
-      plugins: [regions],
-    })
+    // Don't re-fetch if the current resolution is already sufficient (within 20%).
+    // Also skip if we haven't finished the initial load yet (resolution = 0 means
+    // the initial fetch in the audio setup effect will handle it).
+    if (currentPeaksResolutionRef.current === 0) return
+    if (needed <= currentPeaksResolutionRef.current * 1.2) return
 
-    wavesurferRef.current = ws
-
-    ws.load(audioUrl)
-
-    ws.on('ready', () => {
-      setDuration(ws.getDuration())
-      setIsReady(true)
-    })
-
-    ws.on('play', () => setIsPlaying(true))
-    ws.on('pause', () => setIsPlaying(false))
-    ws.on('timeupdate', (time) => setCurrentTime(time))
-
-    regions.on('region-created', (region) => {
-      onRegionCreatedRef.current?.(region)
-    })
-
-    // Listen to both region-updated (after update) and region-update (during update)
-    regions.on('region-updated', (region) => {
-      onRegionUpdatedRef.current?.(region)
-    })
-
-    regions.on('region-update', (region) => {
-      if (region) {
-        onRegionUpdatedRef.current?.(region)
+    const timer = setTimeout(async () => {
+      try {
+        const peaks = await getTrackPeaks(trackId, needed)
+        if (peaks?.length) {
+          currentPeaksResolutionRef.current = peaks.length
+          setWaveformPeaks(peaks)
+        }
+      } catch {
+        // Non-fatal — keep using existing peaks
       }
-    })
+    }, ZOOM_FETCH_DEBOUNCE_MS)
 
-    regions.enableDragSelection({
-      color: 'rgba(245, 158, 11, 0.3)',
+    return () => clearTimeout(timer)
+  }, [viewportStart, viewportEnd, duration, trackId])
+
+  useEffect(() => {
+    if (!audioUrl) return
+
+    setError(null)
+    setIsReady(false)
+    setIsPlaying(false)
+    setCurrentTime(0)
+    setDuration(0)
+    setViewportStart(0)
+    setViewportEnd(0)
+    currentPeaksResolutionRef.current = 0
+
+    let cancelled = false
+    let boundaryIntervalId = 0
+
+    void (async () => {
+      // 1. Preflight — verify the audio URL is reachable before touching the DOM
+      const check = await checkWaveformSourceAccessible(audioUrl)
+      if (cancelled) return
+      if (!check.ok) {
+        const reason = check.reason ?? 'unknown problem'
+        setError(buildWaveformAccessMessage(getWaveformSourceLabel(audioUrl), reason))
+        logRendererError('useWavesurfer.preflightFailed', `url=${audioUrl} reason=${reason}`)
+        return
+      }
+
+      // Fetch backend-generated peaks (ffmpeg PCM analysis — safe on Windows Electron,
+      // no AudioContext.decodeAudioData involved, see electron/electron#42271).
+      try {
+        const rawPeaks = await getTrackPeaks(trackId)
+        if (cancelled) return
+        if (rawPeaks?.length) {
+          currentPeaksResolutionRef.current = rawPeaks.length
+          setWaveformPeaks(rawPeaks)
+        }
+      } catch {
+        // Non-fatal — waveform renders flat if peaks are unavailable
+      }
+
+      if (cancelled) return
+
+      // 2. Create audio element. Appending to document.body ensures playback works across
+      //    all browsers and Electron (a detached element may be paused by the browser GC).
+      const audioEl = document.createElement('audio')
+      audioEl.src = audioUrl
+      audioEl.preload = 'metadata'
+      audioEl.style.display = 'none'
+      document.body.appendChild(audioEl)
+      audioElRef.current = audioEl
+
+      // 3. Wait for metadata (duration). The preflight probe above already hit the URL,
+      //    so the browser typically serves it from cache — this resolves near-instantly.
+      const audioDuration = await new Promise<number>((resolve) => {
+        if (audioEl.readyState >= 1 && audioEl.duration > 0) {
+          resolve(audioEl.duration)
+          return
+        }
+        const timeout = setTimeout(() => resolve(0), 5000)
+        const onMeta = () => { clearTimeout(timeout); resolve(audioEl.duration || 0) }
+        const onErr  = () => { clearTimeout(timeout); resolve(0) }
+        audioEl.addEventListener('loadedmetadata', onMeta, { once: true })
+        audioEl.addEventListener('error', onErr, { once: true })
+      })
+
+      if (cancelled) return
+
+      const initViewport = (dur: number) => {
+        if (dur <= 0 || cancelled) return
+        setDuration(dur)
+        setViewportStart(0)
+        setViewportEnd(dur)
+        setIsReady(true)
+      }
+
+      // 4. Wire playback events directly to the audio element
+      audioEl.addEventListener('play', () => {
+        if (cancelled) return
+        setIsPlaying(true)
+      })
+      audioEl.addEventListener('pause', () => {
+        if (cancelled) return
+        setIsPlaying(false)
+      })
+      audioEl.addEventListener('ended', () => {
+        if (cancelled) return
+        setIsPlaying(false)
+        playingRegionBoundsRef.current = null
+      })
+      audioEl.addEventListener('seeked', () => {
+        if (cancelled) return
+        setCurrentTime(audioEl.currentTime)
+      })
+
+      // Region boundary check via 1ms setInterval — tighter than rAF (~16ms) and far
+      // tighter than timeupdate (~250ms), enabling sub-millisecond loop accuracy.
+      boundaryIntervalId = window.setInterval(() => {
+        if (cancelled) return
+        const bounds = playingRegionBoundsRef.current
+        if (bounds && !audioEl.paused && audioEl.currentTime >= bounds.end) {
+          if (bounds.loop) {
+            audioEl.currentTime = bounds.start
+          } else {
+            audioEl.pause()
+            playingRegionBoundsRef.current = null
+          }
+        }
+      }, 1)
+
+      if (audioDuration > 0) {
+        initViewport(audioDuration)
+      } else {
+        audioEl.addEventListener('loadedmetadata', () => initViewport(audioEl.duration), { once: true })
+        audioEl.addEventListener('canplay', () => {
+          if (audioEl.duration > 0) initViewport(audioEl.duration)
+        }, { once: true })
+      }
+    })().catch((initError) => {
+      if (cancelled) return
+      const reason = initError instanceof Error ? initError.message : String(initError)
+      setError(buildWaveformAccessMessage(getWaveformSourceLabel(audioUrl), reason))
+      logRendererError('useWavesurfer.asyncFailed', `url=${audioUrl} reason=${reason}`)
     })
 
     return () => {
-      ws.destroy()
+      cancelled = true
+      if (boundaryIntervalId) clearInterval(boundaryIntervalId)
+      const audioEl = audioElRef.current
+      if (audioEl) {
+        audioEl.pause()
+        audioEl.src = ''
+        audioEl.remove()
+        audioElRef.current = null
+      }
+      playingRegionBoundsRef.current = null
     }
   }, [audioUrl])
 
-  // Initialize minimap waveform
-  useEffect(() => {
-    if (!minimapRef.current || !audioUrl) return
-
-    const minimapRegions = RegionsPlugin.create()
-    minimapRegionsRef.current = minimapRegions
-
-    const minimapWs = WaveSurfer.create({
-      container: minimapRef.current,
-      waveColor: '#64748b',
-      progressColor: '#475569',
-      height: 60,
-      normalize: true,
-      interact: false,
-      plugins: [minimapRegions],
+  const setViewportRegion = useCallback((start: number, end: number) => {
+    const dur = duration
+    if (!dur) return
+    const finalStart = Math.max(0, Math.min(start, dur))
+    const finalEnd = Math.max(finalStart + 0.01, Math.min(end, dur))
+    flushSync(() => {
+      setViewportStart(finalStart)
+      setViewportEnd(finalEnd)
     })
+  }, [duration])
 
-    minimapWavesurferRef.current = minimapWs
-    minimapWs.load(audioUrl)
-
-    minimapWs.on('ready', () => {
-      setIsMinimapReady(true)
-    })
-
-    return () => {
-      minimapWs.destroy()
-    }
-  }, [audioUrl])
-
-  // Function to update main waveform based on viewport region changes
-  // This is defined outside useEffect so it can be called from setViewportStart
-  const updateMainWaveform = useCallback(() => {
-    if (!viewportRegionRef.current || !wavesurferRef.current || !minimapWavesurferRef.current) {
-      return
-    }
-
-    const region = viewportRegionRef.current
-    const start = region.start
-    const end = region.end
-    const visibleDuration = end - start
-
-    // Calculate zoom level (pixels per second)
-    const mainWidth = wavesurferRef.current.getWidth()
-    const pxPerSec = mainWidth / visibleDuration
-
-    // Only apply zoom if it changed significantly (>1%) to reduce re-renders
-    const zoomChange = Math.abs(pxPerSec - currentZoomRef.current) / currentZoomRef.current
-    if (zoomChange > 0.01) {
-      wavesurferRef.current.zoom(pxPerSec)
-      currentZoomRef.current = pxPerSec
-    }
-
-    // Use WaveSurfer's native setScrollTime method to position the view
-    // This moves the viewing window to show the start of the viewport region
-    wavesurferRef.current.setScrollTime(start)
-  }, [])
-
-  // Create viewport region when both instances are ready
-  useEffect(() => {
-    if (!isReady || !isMinimapReady || !minimapRegionsRef.current || !wavesurferRef.current) {
-      return
-    }
-
-    const duration = minimapWavesurferRef.current?.getDuration() || 0
-    if (duration === 0) return
-
-    // Create viewport region spanning the entire waveform initially
-    // drag/resize are FALSE - WaveformMinimap component handles all interaction
-    // color is transparent - WaveformMinimap component handles the visual overlay
-    const viewportRegion = minimapRegionsRef.current.addRegion({
-      id: 'viewport-region',
-      start: 0,
-      end: duration,
-      drag: false,
-      resize: false,
-      color: 'transparent',
-    })
-
-    viewportRegionRef.current = viewportRegion
-
-    // Initial sync
-    updateMainWaveform()
-    setViewportStart(viewportRegion.start)
-    setViewportEnd(viewportRegion.end)
-
-    // Calculate time duration that corresponds to 2px on the minimap
-    // Formula: (2px / minimapWidth) * duration gives us the time needed for 2px
-    const minimapWidth = minimapWavesurferRef.current?.getWidth() || 1
-    const indicatorDuration = Math.max((2 / minimapWidth) * duration, 0.001)
-
-    // Create playback position indicator on minimap
-    const playbackPositionRegion = minimapRegionsRef.current.addRegion({
-      id: 'playback-position',
-      start: 0,
-      end: indicatorDuration,
-      drag: false,
-      resize: false,
-      color: 'rgba(239, 68, 68, 0.8)', // Brighter red for playback position
-    })
-
-    playbackPositionRegionRef.current = playbackPositionRegion
-
-    // Update playback position during playback
-    const updatePlaybackPosition = () => {
-      if (playbackPositionRegionRef.current && wavesurferRef.current) {
-        const currentTime = wavesurferRef.current.getCurrentTime()
-        playbackPositionRegionRef.current.setOptions({
-          start: currentTime,
-          end: Math.min(currentTime + indicatorDuration, duration),
-        })
-      }
-    }
-
-    wavesurferRef.current.on('timeupdate', updatePlaybackPosition)
-
-    return () => {
-      viewportRegionRef.current = null
-      playbackPositionRegionRef.current = null
-      wavesurferRef.current?.un('timeupdate', updatePlaybackPosition)
-    }
-  }, [isReady, isMinimapReady])
-
-  const play = useCallback(() => {
-    wavesurferRef.current?.play()
-  }, [])
+  // Playback controls
+  const play = useCallback(() => { audioElRef.current?.play() }, [])
 
   const pause = useCallback(() => {
-    wavesurferRef.current?.pause()
+    audioElRef.current?.pause()
     playingRegionBoundsRef.current = null
   }, [])
 
   const playPause = useCallback(() => {
-    wavesurferRef.current?.playPause()
+    const audio = audioElRef.current
+    if (!audio) return
+    if (audio.paused) {
+      audio.play()
+    } else {
+      audio.pause()
+    }
   }, [])
 
   const seekTo = useCallback((time: number) => {
-    if (wavesurferRef.current && duration > 0) {
-      wavesurferRef.current.seekTo(time / duration)
-    }
-  }, [duration])
+    const audio = audioElRef.current
+    if (!audio) return
+    audio.currentTime = time
+  }, [])
 
   const playRegion = useCallback((start: number, end: number) => {
-    if (wavesurferRef.current) {
-      wavesurferRef.current.setTime(start)
-      wavesurferRef.current.play()
-
-      const checkEnd = () => {
-        if (wavesurferRef.current && wavesurferRef.current.getCurrentTime() >= end) {
-          wavesurferRef.current.pause()
-          wavesurferRef.current.un('timeupdate', checkEnd)
-        }
-      }
-      wavesurferRef.current.on('timeupdate', checkEnd)
-    }
+    const audio = audioElRef.current
+    if (!audio) return
+    playingRegionBoundsRef.current = { start, end, loop: false }
+    audio.currentTime = start
+    audio.play()
   }, [])
 
   const playRegionLoop = useCallback((start: number, end: number, loop: boolean) => {
-    if (wavesurferRef.current) {
-      // Store the playing region bounds in a ref so it can be updated dynamically
-      playingRegionBoundsRef.current = { start, end, loop }
-
-      wavesurferRef.current.setTime(start)
-      wavesurferRef.current.play()
-
-      const checkEnd = () => {
-        if (wavesurferRef.current && playingRegionBoundsRef.current) {
-          const { start: currentStart, end: currentEnd, loop: currentLoop } = playingRegionBoundsRef.current
-          const currentTime = wavesurferRef.current.getCurrentTime()
-
-          if (currentTime >= currentEnd) {
-            if (currentLoop) {
-              // Loop back to start (use current start in case it changed)
-              wavesurferRef.current.setTime(currentStart)
-            } else {
-              // Stop playback
-              wavesurferRef.current.pause()
-              wavesurferRef.current.un('timeupdate', checkEnd)
-              playingRegionBoundsRef.current = null
-            }
-          }
-        }
-      }
-      wavesurferRef.current.on('timeupdate', checkEnd)
-    }
+    const audio = audioElRef.current
+    if (!audio) return
+    playingRegionBoundsRef.current = { start, end, loop }
+    audio.currentTime = start
+    audio.play()
   }, [])
 
   const updatePlayingRegionBounds = useCallback((start: number, end: number, loop: boolean) => {
@@ -295,69 +295,68 @@ export function useWavesurfer({
     }
   }, [])
 
-  const addRegion = useCallback(
-    (id: string, start: number, end: number, color?: string) => {
-      if (regionsRef.current) {
-        return regionsRef.current.addRegion({
-          id,
-          start,
-          end,
-          color: color || 'rgba(245, 158, 11, 0.3)',
-          drag: true,
-          resize: true,
-          minLength: 0.1,
-        })
-      }
-    },
-    []
-  )
+  // Region stubs — kept for API compatibility with WaveformEditor
+  const addRegion = useCallback((_id: string, _start: number, _end: number, _color?: string): WaveformRegion | undefined => undefined, [])
+  const clearRegions = useCallback(() => {}, [])
+  const removeRegion = useCallback((_id: string) => {}, [])
+  const getRegions = useCallback((): WaveformRegion[] => [], [])
 
-  const clearRegions = useCallback(() => {
-    regionsRef.current?.clearRegions()
-  }, [])
+  // Drag-to-create slice region on the zoomview canvas div.
+  // Tracks position as percentages so the CSS overlay always matches the mouse exactly.
+  const handleZoomviewMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const container = containerRef.current
+    const dur = duration
+    if (!container || !dur) return
+    if (e.button !== 0) return
 
-  const removeRegion = useCallback((id: string) => {
-    const region = regionsRef.current?.getRegions().find((r) => r.id === id)
-    if (region) {
-      region.remove()
+    const rect = container.getBoundingClientRect()
+    if (!rect.width) return
+
+    const vsStart = viewportStartRef.current
+    const zoomSeconds = viewportEndRef.current - vsStart
+
+    const toPercent = (clientX: number) =>
+      Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100))
+
+    const startXPercent = toPercent(e.clientX)
+    const startTime = vsStart + (startXPercent / 100) * zoomSeconds
+
+    let hasDragged = false
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const currentXPercent = toPercent(moveEvent.clientX)
+      const leftPercent = Math.min(startXPercent, currentXPercent)
+      const widthPercent = Math.abs(currentXPercent - startXPercent)
+      if (widthPercent < 0.5) return
+      hasDragged = true
+      flushSync(() => setDraftSelection({ leftPercent, widthPercent }))
     }
-  }, [])
 
-  const getRegions = useCallback(() => {
-    return regionsRef.current?.getRegions() || []
-  }, [])
+    const onMouseUp = (upEvent: MouseEvent) => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+      setDraftSelection(null)
+      if (!hasDragged) return
+      const endTime = vsStart + (toPercent(upEvent.clientX) / 100) * zoomSeconds
+      const segStart = Math.min(startTime, endTime)
+      const segEnd = Math.max(startTime, endTime)
+      if (segEnd - segStart < 0.001) return
+      onRegionCreatedRef.current?.({ id: `region-${Date.now()}`, start: segStart, end: segEnd })
+    }
 
-  const setViewportRegion = useCallback(
-    (start: number, end: number) => {
-      if (!viewportRegionRef.current || !duration) return
-
-      // Clamp values to valid range
-      const finalStart = Math.max(0, Math.min(start, duration))
-      const finalEnd = Math.max(0, Math.min(end, duration))
-
-      // Update state
-      setViewportStart(finalStart)
-      setViewportEnd(finalEnd)
-
-      // Update the visual region
-      viewportRegionRef.current.setOptions({
-        start: finalStart,
-        end: finalEnd,
-      })
-
-      // Sync main waveform
-      updateMainWaveform()
-    },
-    [duration, updateMainWaveform]
-  )
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }, [duration])
 
   return {
     containerRef,
     minimapRef,
+    audioElRef,
     isPlaying,
     isReady,
     currentTime,
     duration,
+    waveformPeaks,
     play,
     pause,
     playPause,
@@ -372,5 +371,8 @@ export function useWavesurfer({
     viewportStart,
     viewportEnd,
     setViewportRegion,
+    draftSelection,
+    handleZoomviewMouseDown,
+    error,
   }
 }

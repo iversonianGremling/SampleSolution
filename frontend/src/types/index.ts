@@ -450,6 +450,7 @@ export type SourceScope =
   | { type: 'folder'; path: string }
   | { type: 'library'; libraryId: string }
   | { type: 'my-folder'; folderId: number }
+  | { type: 'all-folders' }
   | { type: 'collection'; collectionId: number }
 
 export interface SliceWithTrackExtended extends Slice {
@@ -457,6 +458,7 @@ export interface SliceWithTrackExtended extends Slice {
   track: {
     title: string
     youtubeId: string
+    duration?: number
     source?: 'youtube' | 'local'
     folderPath?: string | null
     originalPath?: string | null

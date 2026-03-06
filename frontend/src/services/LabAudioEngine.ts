@@ -905,6 +905,7 @@ export class LabAudioEngine {
   private activeChain: RealtimeFxChain | null = null
   private activeNodes: AudioNode[] = []
   private analyser: AnalyserNode | null = null
+  private activeMediaElement: HTMLAudioElement | null = null
   private waveformListeners = new Set<WaveformListener>()
   private waveformFrameHandle: AnimationHandle | null = null
   private endedNotified = true
@@ -1300,6 +1301,13 @@ export class LabAudioEngine {
         settings.pitchMode === 'tape' ? 0 : settings.pitchSemitones
       )
     }
+
+    if (this.activeMediaElement) {
+      this.activeMediaElement.playbackRate =
+        settings.pitchMode === 'tape'
+          ? clamp(Math.pow(2, settings.pitchSemitones / 12), 0.25, 4)
+          : clamp(settings.tempo, 0.25, 4)
+    }
   }
 
   stop() {
@@ -1323,6 +1331,14 @@ export class LabAudioEngine {
         // no-op
       }
       this.activePitchShifter = null
+    }
+
+    if (this.activeMediaElement) {
+      this.activeMediaElement.pause()
+      this.activeMediaElement.removeAttribute('src')
+      this.activeMediaElement.load()
+      this.activeMediaElement.remove()
+      this.activeMediaElement = null
     }
 
     for (const node of this.activeNodes) {
@@ -1410,6 +1426,82 @@ export class LabAudioEngine {
 
   getContextTime(): number {
     return this.context?.currentTime ?? 0
+  }
+
+  /**
+   * Play a slice from a URL using MediaElementAudioSourceNode.
+   * Avoids AudioContext.decodeAudioData — safe on Windows/Electron.
+   * Supports tape-mode pitch (via audio.playbackRate) and the full FX chain.
+   * HQ/granular pitch shift is approximated via tempo playback rate.
+   */
+  async playFromUrl(
+    url: string,
+    sliceStart: number,
+    sliceEnd: number,
+    settings: LabSettings,
+    onEnded?: () => void
+  ): Promise<number> {
+    this.stop()
+    const ctx = await this.ensureContextResumed()
+
+    const offset = clamp(settings.offset, 0, Math.max(0, sliceEnd - sliceStart - 0.0001))
+    const effectiveStart = sliceStart + offset
+    const effectiveRate =
+      settings.pitchMode === 'tape'
+        ? clamp(Math.pow(2, settings.pitchSemitones / 12), 0.25, 4)
+        : clamp(settings.tempo, 0.25, 4)
+    const playbackDuration = (sliceEnd - effectiveStart) / effectiveRate
+
+    const chain = this.createRealtimeFxChain(settings)
+    this.activeChain = chain
+    this.activeNodes = chain.nodes
+    this.analyser = chain.analyser
+    this.startWaveformPump()
+    this.endedNotified = false
+
+    const notifyEnded = () => {
+      if (this.endedNotified) return
+      this.endedNotified = true
+      onEnded?.()
+    }
+
+    const audio = document.createElement('audio')
+    audio.src = url
+    audio.preload = 'auto'
+    audio.style.display = 'none'
+    document.body.appendChild(audio)
+    this.activeMediaElement = audio
+
+    audio.playbackRate = effectiveRate
+
+    // Wait for metadata so we can seek reliably
+    await new Promise<void>((resolve) => {
+      if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        resolve()
+      } else {
+        audio.addEventListener('loadedmetadata', () => resolve(), { once: true })
+      }
+    })
+
+    audio.currentTime = effectiveStart
+
+    const source = ctx.createMediaElementSource(audio)
+    source.connect(chain.inputNode)
+
+    const onTimeUpdate = () => {
+      if (audio.currentTime >= sliceEnd) {
+        audio.pause()
+        notifyEnded()
+      }
+    }
+    audio.addEventListener('timeupdate', onTimeUpdate)
+    audio.addEventListener('ended', notifyEnded, { once: true })
+
+    this.applyFadeEnvelope(settings, playbackDuration, chain.envelopeNode)
+
+    await audio.play()
+
+    return playbackDuration
   }
 
   async dispose() {

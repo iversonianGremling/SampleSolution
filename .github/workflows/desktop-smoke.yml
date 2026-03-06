@@ -36,29 +36,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm ci --prefix backend
+          npm ci --prefix backend --ignore-scripts
           npm ci --prefix frontend
 
-      - name: Bundle backend
+      - name: Build backend
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x frontend/scripts/bundle-backend.sh || true
-          ./frontend/scripts/bundle-backend.sh
-
-      - name: Set up embedded Python
-        shell: bash
-        run: |
-          set -euo pipefail
-          chmod +x frontend/scripts/setup-python.sh || true
-          ./frontend/scripts/setup-python.sh
+          npm run --prefix backend build
 
       - name: Build desktop app
         shell: bash
         run: |
           set -euo pipefail
           cd frontend
-          npm run build:electron -- --publish never
+          npm run build:electron -- --publish=never
 
       - name: Resolve desktop runtime ports
         id: runtime-ports

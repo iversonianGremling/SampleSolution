@@ -27,6 +27,7 @@ import { SourcesSampleList } from './SourcesSampleList'
 import { SourcesYouTubeGroupedGrid } from './SourcesYouTubeGroupedGrid'
 import { SourcesYouTubeGroupedList } from './SourcesYouTubeGroupedList'
 import { SourcesBatchActions } from './SourcesBatchActions'
+import { MoveToFolderModal } from './MoveToFolderModal'
 import { SampleBulkEditModal, type SampleBulkEditRequest } from './SampleBulkEditModal'
 import { EditingModal } from './EditingModal'
 import { SampleSpaceView } from './SampleSpaceView'
@@ -43,6 +44,7 @@ import { useSourceTree } from '../hooks/useSourceTree'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import { useResizablePanel } from '../hooks/useResizablePanel'
 import { useAppDialog } from '../hooks/useAppDialog'
+import { AnalysisWarningAlertContent } from './AnalysisWarningAlertContent'
 import {
   useTags,
   useFolders,
@@ -65,6 +67,7 @@ import {
   useDeleteCollection,
   useCreateImportedFolder,
   useDeleteSource,
+  useBatchAddSlicesToFolder,
 } from '../hooks/useTracks'
 import type { SourceScope, SliceWithTrackExtended, Tag } from '../types'
 import {
@@ -901,9 +904,11 @@ export function SourcesView({
   const deleteSlice = useDeleteSliceGlobal()
   const batchDeleteSlices = useBatchDeleteSlices()
   const batchReanalyzeSlices = useBatchReanalyzeSlices()
+  const batchAddSlicesToFolder = useBatchAddSlicesToFolder()
   const createTagFromFolder = useCreateTagFromFolder()
   const createImportedFolder = useCreateImportedFolder()
   const deleteSource = useDeleteSource()
+  const [showMoveModal, setShowMoveModal] = useState(false)
 
   // Derived data
   const allSamples = useMemo(() => {
@@ -1019,6 +1024,14 @@ export function SourcesView({
       if (currentScope.type === 'collection') {
         const folderIds = sample.folderIds ?? []
         if (collectionFolderIds && folderIds.some((id) => collectionFolderIds.has(id))) {
+          ids.add(sample.id)
+        }
+        continue
+      }
+
+      if (currentScope.type === 'all-folders') {
+        const itemFolderIds = sample.folderIds ?? []
+        if (itemFolderIds.length > 0) {
           ids.add(sample.id)
         }
         continue
@@ -1274,6 +1287,10 @@ export function SourcesView({
       const itemFolderIds = sample.folderIds ?? []
       if (!scopeCollectionFolderIds || scopeCollectionFolderIds.size === 0) return false
       return itemFolderIds.some((id) => scopeCollectionFolderIds.has(id))
+    }
+
+    if (currentScope.type === 'all-folders') {
+      return (sample.folderIds ?? []).length > 0
     }
 
     return true
@@ -1744,11 +1761,11 @@ export function SourcesView({
     maxDuration: maxDuration >= 600 ? Infinity : maxDuration,
     showFavoritesOnly,
     selectedFolderIds:
-      currentScope.type === 'my-folder' || currentScope.type === 'collection' || currentScope.type === 'folder'
+      currentScope.type === 'my-folder' || currentScope.type === 'collection' || currentScope.type === 'folder' || currentScope.type === 'all-folders'
         ? []
         : selectedFolderIds,
     excludedFolderIds:
-      currentScope.type === 'my-folder' || currentScope.type === 'collection' || currentScope.type === 'folder'
+      currentScope.type === 'my-folder' || currentScope.type === 'collection' || currentScope.type === 'folder' || currentScope.type === 'all-folders'
         ? []
         : excludedFolderIds,
     selectedTrackId: currentScope.type === 'youtube-video' ? currentScope.trackId : null,
@@ -1788,7 +1805,7 @@ export function SourcesView({
   // Handlers
   const handleScopeChange = (scope: SourceScope) => {
     setCurrentScope(scope)
-    if (scope.type === 'collection' || scope.type === 'my-folder' || scope.type === 'folder') {
+    if (scope.type === 'collection' || scope.type === 'my-folder' || scope.type === 'folder' || scope.type === 'all-folders') {
       setSelectedFolderIds([])
       setExcludedFolderIds([])
     }
@@ -2558,18 +2575,15 @@ export function SourcesView({
         {
           onSuccess: async (result) => {
             if (result.warnings && result.warnings.totalWithWarnings > 0) {
-              const preview = result.warnings.messages.slice(0, 3)
-              const extra = Math.max(0, result.warnings.messages.length - preview.length)
-              const details = preview.map((m) => `• ${m}`).join('\n')
               await showAlert({
                 title: 'Analysis Warning',
-                message: [
-                  `Warning: ${result.warnings.totalWithWarnings} sample(s) had potential custom state before re-analysis.`,
-                  details,
-                  extra > 0 ? `...and ${extra} more warning(s).` : '',
-                ]
-                  .filter(Boolean)
-                  .join('\n'),
+                message: (
+                  <AnalysisWarningAlertContent
+                    totalWithWarnings={result.warnings.totalWithWarnings}
+                    warningMessages={result.warnings.messages}
+                    phase="re-analysis"
+                  />
+                ),
               })
             }
             setSelectedSampleIds(new Set())
@@ -2772,6 +2786,8 @@ export function SourcesView({
       case 'my-folder':
         const folder = folders.find(c => c.id === currentScope.folderId)
         return folder?.name || 'Folder'
+      case 'all-folders':
+        return 'Imported Folders'
       case 'collection':
         const collection = collections.find(c => c.id === currentScope.collectionId)
         return collection?.name || 'Collection'
@@ -3773,6 +3789,7 @@ export function SourcesView({
             onBatchDelete={handleBatchDelete}
             onBatchDownload={handleBatchDownload}
             onAnalyzeSelected={handleAnalyzeSelected}
+            onMove={() => setShowMoveModal(true)}
             onClearSelection={() => setSelectedSampleIds(new Set())}
             isEditing={isBulkEditSubmitting}
             isDeleting={batchDeleteSlices.isPending}
@@ -4925,6 +4942,61 @@ export function SourcesView({
       )}
 
       {dialogNode}
+      {showMoveModal && (
+        <MoveToFolderModal
+          selectedSlices={selectedSamplesInCurrentView as any}
+          folders={allFolders}
+          collections={collections}
+          onMove={async (targetFolderId, removeFromCurrentFolders) => {
+            const sliceIds = selectedSamplesInCurrentView.map((s) => s.id)
+            await new Promise<void>((resolve, reject) => {
+              batchAddSlicesToFolder.mutate(
+                { folderId: targetFolderId, sliceIds },
+                {
+                  onSuccess: async () => {
+                    if (removeFromCurrentFolders) {
+                      const removals: Promise<void>[] = []
+                      for (const slice of selectedSamplesInCurrentView) {
+                        for (const folderId of slice.folderIds) {
+                          if (folderId !== targetFolderId) {
+                            removals.push(
+                              new Promise<void>((res, rej) => {
+                                removeSliceFromFolder.mutate(
+                                  { folderId, sliceId: slice.id },
+                                  { onSuccess: () => res(), onError: rej }
+                                )
+                              })
+                            )
+                          }
+                        }
+                      }
+                      try {
+                        await Promise.all(removals)
+                      } catch (e) {
+                        reject(e)
+                        return
+                      }
+                    }
+                    setSelectedSampleIds(new Set())
+                    setShowMoveModal(false)
+                    resolve()
+                  },
+                  onError: reject,
+                }
+              )
+            })
+          }}
+          onCreateFolder={async (name, collectionId) => {
+            return new Promise((resolve, reject) => {
+              createFolder.mutate(
+                { name, collectionId: collectionId ?? undefined },
+                { onSuccess: resolve, onError: reject }
+              )
+            })
+          }}
+          onCancel={() => setShowMoveModal(false)}
+        />
+      )}
     </div>
   )
 }

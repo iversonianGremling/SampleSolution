@@ -1,7 +1,7 @@
 import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs/promises'
-import { ensureDownloadTool } from './downloadTools.js'
+import { ensureDownloadTool, spawnTool } from './downloadTools.js'
 
 const DATA_DIR = process.env.DATA_DIR || './data'
 
@@ -165,7 +165,7 @@ export async function downloadSpotifyTrack(trackId: string): Promise<string> {
       'WARNING',
     ]
 
-    const proc = spawn('spotdl', args)
+    const proc = spawnTool('spotdl', args)
     let stderr = ''
 
     proc.stderr.on('data', (data) => {

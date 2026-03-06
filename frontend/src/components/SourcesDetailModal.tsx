@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Play, Pause, Heart, Download, X, Plus, ChevronDown, Edit2, Check, Scissors, Search, ChevronLeft, ChevronRight, Sparkles, Activity, Disc3 } from 'lucide-react'
 import type { SliceWithTrackExtended, Tag, Folder, AudioFeatures } from '../types'
-import { getSliceDownloadUrl, updateTrack } from '../api/client'
+import { getSliceDownloadUrl, getSlicePlaybackUrl, getSimilarSlices, getSliceAudioFeatures, updateTrack, getTrackPeaks } from '../api/client'
 import { InstrumentIcon } from './InstrumentIcon'
 import { freqToPitchDisplay } from '../utils/musicTheory'
 import { SliceWaveform, type SliceWaveformRef } from './SliceWaveform'
@@ -53,9 +53,9 @@ interface SimilarSample {
   name: string
   filePath: string
   similarity: number
-  track: {
-    title: string
-  }
+  track?: {
+    title?: string
+  } | null
 }
 
 function SimilarSamplesSection({
@@ -75,12 +75,12 @@ function SimilarSamplesSection({
   const { data: similarSamples, isLoading } = useQuery<SimilarSample[]>({
     queryKey: ['similar-samples', sampleId],
     queryFn: async () => {
-      const res = await fetch(`/api/slices/${sampleId}/similar?limit=6`)
-      if (!res.ok) {
-        if (res.status === 404) return []
+      try {
+        return await getSimilarSlices(sampleId, 6)
+      } catch (error: any) {
+        if (error?.response?.status === 404) return []
         throw new Error('Failed to fetch similar samples')
       }
-      return res.json()
     },
   })
 
@@ -92,12 +92,14 @@ function SimilarSamplesSection({
     return Number.isFinite(candidateId) && candidateId !== currentSampleId
   })
 
-  const handleMouseEnter = (similarSampleId: number) => {
+  const handleMouseEnter = (similarSampleId: number, similarFilePath?: string | null) => {
     setHoveredSample(similarSampleId)
     if (audioRef.current) {
       audioRef.current.pause()
     }
-    audioRef.current = new Audio(getSliceDownloadUrl(similarSampleId))
+    const playbackUrl =
+      getSlicePlaybackUrl({ id: similarSampleId, filePath: similarFilePath || null }) || getSliceDownloadUrl(similarSampleId)
+    audioRef.current = new Audio(playbackUrl)
     audioRef.current.volume = 0.5
     audioRef.current.play().catch(() => {
       // Ignore play errors (e.g., user hasn't interacted with page yet)
@@ -153,7 +155,7 @@ function SimilarSamplesSection({
             <button
               type="button"
               key={sampleIdNum}
-              onMouseEnter={() => handleMouseEnter(sampleIdNum)}
+              onMouseEnter={() => handleMouseEnter(sampleIdNum, sample.filePath)}
               onMouseLeave={handleMouseLeave}
               onClick={() => onSelectSample?.(sampleIdNum)}
               className={`group relative p-3 rounded-lg border transition-all ${
@@ -185,7 +187,7 @@ function SimilarSamplesSection({
                 </div>
               </div>
               <div className="text-[10px] text-slate-500 truncate text-left">
-                {sample.track.title}
+                {sample.track?.title || 'Unknown source'}
               </div>
             </button>
           )
@@ -270,13 +272,20 @@ export function SourcesDetailModal({
   const tagButtonRef = useRef<HTMLButtonElement>(null)
   const folderButtonRef = useRef<HTMLButtonElement>(null)
 
+  // Fetch precomputed peaks for waveform rendering (avoids AudioContext decode on Windows)
+  const { data: peaksData } = useQuery<number[]>({
+    queryKey: ['trackPeaks', sample?.trackId],
+    queryFn: () => getTrackPeaks(sample!.trackId),
+    enabled: !!sample,
+    staleTime: Infinity,
+  })
+
   // Fetch audio features for the advanced tab
   const { data: audioFeatures } = useQuery<AudioFeatures>({
     queryKey: ['audioFeatures', sample?.id],
     queryFn: async () => {
-      const res = await fetch(`/api/slices/${sample?.id}/features`)
-      if (!res.ok) throw new Error('Failed to fetch audio features')
-      return res.json()
+      if (!sample?.id) throw new Error('No sample selected')
+      return getSliceAudioFeatures(sample.id)
     },
     enabled: !!sample && activeTab === 'advanced',
   })
@@ -335,6 +344,7 @@ export function SourcesDetailModal({
   if (!sample) {
     return null
   }
+  const sampleTags = Array.isArray(sample.tags) ? sample.tags : []
 
   const formatDuration = (startTime: number, endTime: number) => {
     const duration = endTime - startTime
@@ -414,7 +424,7 @@ export function SourcesDetailModal({
     setIsFolderDropdownOpen(!isFolderDropdownOpen)
   }
 
-  const availableTags = allTags.filter(t => !sample.tags.some(st => st.id === t.id))
+  const availableTags = allTags.filter(t => !sampleTags.some(st => st.id === t.id))
   const availableFolders = folders.filter(c => !sample.folderIds.includes(c.id))
 
   // Filter tags and folders based on search query
@@ -511,6 +521,7 @@ export function SourcesDetailModal({
               ref={waveformRef}
               sliceId={sample.id}
               height={80}
+              peaksData={peaksData}
               onReady={() => setIsWaveformReady(true)}
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
@@ -716,7 +727,7 @@ export function SourcesDetailModal({
             <div>
               <label className="text-sm font-medium text-slate-400 block mb-2">Instruments</label>
               <div className="flex flex-wrap gap-2">
-                {sample.tags.map(tag => (
+                {sampleTags.map(tag => (
                   <span
                     key={tag.id}
                     onClick={() => {

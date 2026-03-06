@@ -109,8 +109,8 @@ export const updateTrack = (id: number, data: {
 
 export const getTrackAudioUrl = (id: number) => `${getApiBaseUrl()}/tracks/${id}/audio`
 
-export const getTrackPeaks = (id: number) =>
-  api.get<number[]>(`/tracks/${id}/peaks`).then((r) => r.data)
+export const getTrackPeaks = (id: number, n?: number) =>
+  api.get<number[]>(`/tracks/${id}/peaks`, n ? { params: { n } } : undefined).then((r) => r.data)
 
 // Slices
 export const getAllSlices = () =>
@@ -121,6 +121,20 @@ export const getSliceCount = () =>
 
 export const getSlices = (trackId: number) =>
   api.get<Slice[]>(`/tracks/${trackId}/slices`).then((r) => r.data)
+
+export const getSimilarSlices = (sliceId: number, limit = 6) =>
+  api
+    .get<Array<{
+      id: number
+      name: string
+      filePath: string
+      similarity: number
+      track: { title: string }
+    }>>(`/slices/${sliceId}/similar`, { params: { limit } })
+    .then((r) => r.data)
+
+export const getSliceAudioFeatures = (sliceId: number) =>
+  api.get<AudioFeatures>(`/slices/${sliceId}/features`).then((r) => r.data)
 
 export const createSlice = (
   trackId: number,
@@ -145,6 +159,76 @@ export const deleteSlice = (id: number, deleteSource = false) =>
   api.delete(`/slices/${id}`, { params: { deleteSource } }).then((r) => r.data)
 
 export const getSliceDownloadUrl = (id: number) => `${getApiBaseUrl()}/slices/${id}/download`
+
+type SlicePlaybackUrlInput = {
+  id?: number | null
+  filePath?: string | null
+  absolutePath?: string | null
+  pathDisplay?: string | null
+  uri?: string | null
+  track?: {
+    originalPath?: string | null
+    fullPathHint?: string | null
+  } | null
+}
+
+function toElectronFileUrl(rawValue: string | null | undefined): string | null {
+  if (!rawValue) return null
+  const trimmed = rawValue.trim()
+  if (!trimmed) return null
+
+  // Already a URL we can load directly.
+  if (/^(https?|file|blob|data):/i.test(trimmed)) {
+    return trimmed
+  }
+
+  let normalized = trimmed.replace(/\\/g, '/')
+
+  // Windows absolute path can be serialized as /C:/... in some DB rows.
+  if (/^\/[A-Za-z]:\//.test(normalized)) {
+    normalized = normalized.slice(1)
+  }
+
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    return `file:///${encodeURI(normalized)}`
+  }
+
+  // UNC share path (\\server\share\file.wav)
+  if (normalized.startsWith('//')) {
+    return `file:${encodeURI(normalized)}`
+  }
+
+  // POSIX absolute path
+  if (normalized.startsWith('/')) {
+    return `file://${encodeURI(normalized)}`
+  }
+
+  return null
+}
+
+export function getSlicePlaybackUrl(slice: SlicePlaybackUrlInput): string | null {
+  if (typeof window !== 'undefined' && window.electron?.isElectron) {
+    const localCandidates = [
+      slice.uri,
+      slice.absolutePath,
+      slice.filePath,
+      slice.pathDisplay,
+      slice.track?.originalPath,
+      slice.track?.fullPathHint,
+    ]
+
+    for (const candidate of localCandidates) {
+      const resolved = toElectronFileUrl(candidate)
+      if (resolved) return resolved
+    }
+  }
+
+  if (slice.id != null) {
+    return getSliceDownloadUrl(slice.id)
+  }
+
+  return null
+}
 
 export interface PersistLabRenderPayload {
   mode: 'copy' | 'overwrite'

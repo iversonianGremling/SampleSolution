@@ -59,7 +59,10 @@ describe('TrackList', () => {
       expect(screen.getByText('Test Track 1')).toBeInTheDocument()
     })
 
-    await user.click(screen.getByText('Test Track 1'))
+    // Click the track thumbnail, which bubbles to the outer row (clicking the title
+    // opens inline edit and stops propagation)
+    const thumbnail = screen.getByAltText('Test Track 1')
+    await user.click(thumbnail)
 
     expect(mockOnSelectTrack).toHaveBeenCalledWith(
       expect.objectContaining({ id: 1, title: 'Test Track 1' })
@@ -73,8 +76,8 @@ describe('TrackList', () => {
       expect(screen.getByText('Test Track 1')).toBeInTheDocument()
     })
 
-    // The selected track should have the selected class
-    const trackElement = screen.getByText('Test Track 1').closest('div[class*="cursor-pointer"]')
+    // The selected track row (outer container) should have the selected class
+    const trackElement = screen.getByAltText('Test Track 1').closest('div[class*="cursor-pointer"]')
     expect(trackElement).toHaveClass('bg-indigo-900/30')
   })
 

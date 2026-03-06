@@ -485,8 +485,11 @@ const AUDIO_ANALYSIS_MAX_CONCURRENT = parsePositiveInteger(
 const DEFAULT_NATIVE_THREAD_LIMIT = String(
   parsePositiveInteger(process.env.AUDIO_ANALYSIS_NATIVE_THREAD_LIMIT, 1)
 )
+// Prefer DATA_DIR (set by Electron main to userData/backend-data) so the log
+// lands in a writable directory on all platforms, including packaged Windows
+// where cwd() is the read-only installation directory.
 const AUDIO_ANALYSIS_DEBUG_LOG_FILE = process.env.AUDIO_ANALYSIS_DEBUG_LOG_FILE
-  || path.resolve(process.cwd(), 'data', 'audio-analysis-debug.log')
+  || path.resolve(process.env.DATA_DIR || process.cwd(), 'audio-analysis-debug.log')
 const AUDIO_ANALYSIS_DEBUG_FILE_ENABLED = process.env.AUDIO_ANALYSIS_DEBUG_LOG_ENABLED !== '0'
 const AUDIO_ANALYSIS_PYTHON_STEP_DEBUG = process.env.AUDIO_ANALYSIS_PYTHON_STEP_DEBUG
   ?? (AUDIO_ANALYSIS_DEBUG_FILE_ENABLED ? '1' : '0')
@@ -631,6 +634,16 @@ function getOrCreateWorker(mode: AnalysisAttemptMode): Promise<WorkerState> {
       destroyWorker('ready timeout')
       reject(new Error('Worker failed to become ready within timeout'))
     }, WORKER_READY_TIMEOUT_MS)
+    let startupSettled = false
+    const failStartup = (reason: string) => {
+      if (startupSettled) return
+      startupSettled = true
+      clearTimeout(readyTimer)
+      if (workerState === state) {
+        destroyWorker(reason)
+      }
+      reject(new Error(`Worker startup failed: ${reason}`))
+    }
 
     rl.on('line', (line) => {
       let parsed: any
@@ -643,6 +656,7 @@ function getOrCreateWorker(mode: AnalysisAttemptMode): Promise<WorkerState> {
 
       // Ready signal
       if (parsed.status === 'ready') {
+        startupSettled = true
         clearTimeout(readyTimer)
         state.ready = true
         writeAudioAnalysisDebugLog('[worker] ready')
@@ -684,6 +698,10 @@ function getOrCreateWorker(mode: AnalysisAttemptMode): Promise<WorkerState> {
 
     proc.on('close', (code, signal) => {
       writeAudioAnalysisDebugLog(`[worker] closed code=${code} signal=${signal}`)
+      if (!state.ready) {
+        failStartup(`process exited code=${code} signal=${signal}`)
+        return
+      }
       if (workerState === state) {
         destroyWorker(`process exited code=${code} signal=${signal}`)
       }
@@ -691,6 +709,10 @@ function getOrCreateWorker(mode: AnalysisAttemptMode): Promise<WorkerState> {
 
     proc.on('error', (err) => {
       writeAudioAnalysisDebugLog(`[worker] process error: ${err.message}`)
+      if (!state.ready) {
+        failStartup(`process error: ${err.message}`)
+        return
+      }
       clearTimeout(readyTimer)
       if (workerState === state) {
         destroyWorker(`process error: ${err.message}`)

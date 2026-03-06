@@ -3,7 +3,13 @@ import multer from 'multer'
 import path from 'path'
 import fs from 'fs/promises'
 import { db, schema } from '../db/index.js'
-import { getAudioDuration, getAudioFileMetadata, FFMPEG_BIN, type AudioFileMetadata } from '../services/ffmpeg.js'
+import {
+  generatePeaks,
+  getAudioDuration,
+  getAudioFileMetadata,
+  FFMPEG_BIN,
+  type AudioFileMetadata,
+} from '../services/ffmpeg.js'
 import {
   analyzeAudioFeatures,
   buildSamplePathHint,
@@ -81,6 +87,7 @@ router.get('/import/analysis-status', (_req, res) => {
 const DATA_DIR = process.env.DATA_DIR || './data'
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads')
 const SLICES_DIR = path.join(DATA_DIR, 'slices')
+const PEAKS_DIR = path.join(DATA_DIR, 'peaks')
 const USE_REFERENCE_IMPORTS = process.env.LOCAL_IMPORT_MODE === 'reference'
 const TRACK_IMPORT_FILENAME_TAG_LIMIT = Math.max(
   0,
@@ -89,6 +96,19 @@ const TRACK_IMPORT_FILENAME_TAG_LIMIT = Math.max(
 
 // Supported audio formats
 const SUPPORTED_FORMATS = ['.wav', '.mp3', '.flac', '.aiff', '.ogg', '.m4a']
+
+async function buildTrackPeaks(audioPath: string, trackKey: string): Promise<string | null> {
+  try {
+    await fs.mkdir(PEAKS_DIR, { recursive: true })
+    const sanitizedKey = trackKey.replace(/[^a-zA-Z0-9_-]/g, '_')
+    const peaksPath = path.join(PEAKS_DIR, `${sanitizedKey}.json`)
+    await generatePeaks(audioPath, peaksPath)
+    return peaksPath
+  } catch (error) {
+    console.error(`[import] Failed to generate peaks for ${trackKey}:`, error)
+    return null
+  }
+}
 
 function normalizeRelativePath(value: string): string {
   return value.replace(/\\/g, '/')
@@ -607,6 +627,7 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
 
     // Create a virtual track for this local import
     const localId = `local:${uuidv4()}`
+    const peaksPath = await buildTrackPeaks(sourcePath, localId)
     const [track] = await db
       .insert(schema.tracks)
       .values({
@@ -616,6 +637,7 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
         thumbnailUrl: '', // No thumbnail for local files
         duration,
         audioPath: sourcePath,
+        peaksPath,
         status: 'ready',
         artist: trackMetadata.artist,
         album: trackMetadata.album,
@@ -809,6 +831,7 @@ router.post('/import/files', upload.array('files'), async (req, res) => {
 
       // Create a virtual track
       const localId = `local:${uuidv4()}`
+      const peaksPath = await buildTrackPeaks(sourcePath, localId)
       const [track] = await db
         .insert(schema.tracks)
         .values({
@@ -818,6 +841,7 @@ router.post('/import/files', upload.array('files'), async (req, res) => {
           thumbnailUrl: '',
           duration,
           audioPath: sourcePath,
+          peaksPath,
           status: 'ready',
           artist: trackMetadata.artist,
           album: trackMetadata.album,
@@ -983,6 +1007,7 @@ router.post('/import/folder', async (req, res) => {
 
         // Create virtual track
         const localId = `local:${uuidv4()}`
+        const peaksPath = await buildTrackPeaks(filePath, localId)
         const [track] = await db
           .insert(schema.tracks)
           .values({
@@ -992,6 +1017,7 @@ router.post('/import/folder', async (req, res) => {
             thumbnailUrl: '',
             duration,
             audioPath: filePath, // Keep original path
+            peaksPath,
             status: 'ready',
             artist: trackMetadata.artist,
             album: trackMetadata.album,

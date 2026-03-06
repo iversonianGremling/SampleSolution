@@ -1,0 +1,101 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  font-size: 14px;
+  font-family: "Actor", "Segoe UI", sans-serif;
+}
+
+.v1_3 {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  opacity: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.v1_4 {
+  width: 52%;
+  color: rgba(255, 255, 255, 0.95);
+  position: absolute;
+  top: 2%;
+  right: 2%;
+  font-family: Actor;
+  font-size: clamp(52px, 8vw, 96px);
+  font-weight: 400;
+  letter-spacing: 2px;
+  line-height: 0.95;
+  text-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
+  opacity: 1;
+  text-align: right;
+}
+
+.v2_12 {
+  width: 34%;
+  color: rgba(255, 255, 255, 1);
+  position: absolute;
+  top: 54%;
+  left: 2%;
+  font-family: Afacad;
+  font-weight: 400;
+  font-size: clamp(34px, 5.4vw, 64px);
+  line-height: 0.9;
+  text-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
+  opacity: 1;
+  text-align: left;
+}
+
+.v2_13 {
+  width: 31%;
+  color: rgba(255, 255, 255, 0.95);
+  position: absolute;
+  top: 40%;
+  right: 2%;
+  font-family: Advent Pro;
+  font-weight: 400;
+  font-size: clamp(24px, 3.8vw, 48px);
+  line-height: 1;
+  text-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
+  opacity: 1;
+  text-align: right;
+}
+
+.v2_14 {
+  width: auto;
+  color: rgba(255, 255, 255, 0.56);
+  position: absolute;
+  top: 56%;
+  right: 2%;
+  font-family: Alumni Sans Pinstripe;
+  font-weight: 400;
+  font-size: clamp(28px, 4.5vw, 48px);
+  text-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
+  opacity: 1;
+  text-align: right;
+}
+
+.v2_15 {
+  width: 48%;
+  color: rgba(255, 255, 255, 0.46);
+  position: absolute;
+  top: 3%;
+  left: 1.5%;
+  font-family: Aksara Bali Galang;
+  font-weight: 400;
+  font-size: clamp(22px, 3.6vw, 48px);
+  letter-spacing: 1px;
+  text-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
+  opacity: 1;
+  text-align: left;
+}

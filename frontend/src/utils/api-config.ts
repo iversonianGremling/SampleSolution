@@ -10,7 +10,11 @@ const ELECTRON_API_STORAGE_KEY = 'electron.apiBaseUrl';
 const DEFAULT_ELECTRON_DEV_API_BASE = `http://localhost:${runtimeConfig.ports.devBackend}/api`;
 const DEFAULT_ELECTRON_PROD_API_BASE = `http://127.0.0.1:${runtimeConfig.ports.prodBackend}/api`;
 
-function ensureApiBasePath(rawValue: string | null | undefined): string | null {
+function ensureApiBasePath(
+  rawValue: string | null | undefined,
+  options: { allowRelative?: boolean } = {},
+): string | null {
+  const allowRelative = options.allowRelative ?? true;
   if (!rawValue) return null;
 
   const trimmed = rawValue.trim();
@@ -18,6 +22,7 @@ function ensureApiBasePath(rawValue: string | null | undefined): string | null {
 
   // Preserve relative API roots such as /api.
   if (trimmed.startsWith('/')) {
+    if (!allowRelative) return null;
     const normalized = trimmed.replace(/\/+$/, '');
     if (!normalized) return DEFAULT_WEB_API_BASE;
     return normalized.endsWith('/api') ? normalized : `${normalized}/api`;
@@ -36,7 +41,9 @@ function ensureApiBasePath(rawValue: string | null | undefined): string | null {
 }
 
 function getElectronConfiguredApiBase(): string | null {
-  return ensureApiBasePath(localStorage.getItem(ELECTRON_API_STORAGE_KEY));
+  // In packaged Electron, relative values like /api resolve to file:// URLs.
+  // Require absolute http(s) here and fall back to Electron defaults otherwise.
+  return ensureApiBasePath(localStorage.getItem(ELECTRON_API_STORAGE_KEY), { allowRelative: false });
 }
 
 function getWebConfiguredApiBase(): string | null {
@@ -80,7 +87,9 @@ export function getApiBaseUrl(): string {
  * Set a custom API base URL (for Electron settings)
  */
 export function setApiBaseUrl(url: string): void {
-  const normalized = ensureApiBasePath(url);
+  const normalized = isElectron()
+    ? ensureApiBasePath(url, { allowRelative: false })
+    : ensureApiBasePath(url);
   if (!normalized) return;
   localStorage.setItem(ELECTRON_API_STORAGE_KEY, normalized);
   window.location.reload(); // Reload to apply new URL

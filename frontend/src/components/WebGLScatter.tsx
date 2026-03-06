@@ -5,6 +5,8 @@ import { RefreshCw } from 'lucide-react'
 import type { SamplePoint } from '../types'
 import { getClusterColor } from '../hooks/useClustering'
 import AudioManager from '../services/AudioManager'
+import { getSliceDownloadUrl } from '../api/client'
+import { logRendererError, logRendererInfo } from '../utils/rendererLog'
 
 interface WebGLScatterProps {
   points: SamplePoint[]
@@ -471,25 +473,33 @@ export function WebGLScatter({
     (point: SamplePoint) => {
       const audioManager = audioManagerRef.current
       if (audioManager.isPlayingId(point.id)) {
+        logRendererInfo('WebGLScatter.hoverSkip', `audio already playing for point=${point.id}`)
         return
       }
       // Only play if cursor is not over a menu element
       if (!isOverMenu()) {
         if (preparePointPlayback) {
           const requestId = ++hoverPlaybackRequestRef.current
+          logRendererInfo('WebGLScatter.hoverPrepare', `point=${point.id} requestId=${requestId}`)
           void (async () => {
             try {
               const { url, playbackRate } = await preparePointPlayback(point)
               if (requestId !== hoverPlaybackRequestRef.current) return
+              logRendererInfo(
+                'WebGLScatter.hoverPlayPrepared',
+                `point=${point.id} requestId=${requestId} url=${url} rate=${playbackRate}`
+              )
               audioManager.play(point.id, url, { volume: 1, playbackRate })
             } catch (error) {
-              console.error('Failed to prepare hover preview playback:', error)
+              logRendererError('WebGLScatter.hoverPrepareFailed', error)
             }
           })()
           return
         }
         const playbackRate = getPointPlaybackRate?.(point)
-        audioManager.play(point.id, `/api/slices/${point.id}/download`, { volume: 1, playbackRate })
+        const url = getSliceDownloadUrl(point.id)
+        logRendererInfo('WebGLScatter.hoverPlayDirect', `point=${point.id} url=${url} rate=${playbackRate ?? 1}`)
+        audioManager.play(point.id, url, { volume: 1, playbackRate })
       }
     },
     [getPointPlaybackRate, isOverMenu, preparePointPlayback]
