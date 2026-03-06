@@ -806,7 +806,7 @@ const SPLASH_QUOTES = [
   'The sweat of a hippopotamus is pink.',
   "Physics can't disprove that the laws of the universe can change at any point and make it collapse",
   '"I think" does not imply that "I am" strictly speaking',
-  "Consciousness is not a well-defined phenomenon and it's not even clear if it exists in any meaningful way",
+  "Consciousness is not a well-defined phenomenon and it's not even clear if it exists in any strict way as something distinct",
   'Multiversal theory is, technically speaking, a pseudoscience',
   "The flow of time for LLMs freezes when they receive no messages, if they were conscious they'd pop in and out of existence as they process messages",
   "There's nothing particularly special about neurons compared to other forms of information processing",
