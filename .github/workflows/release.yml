@@ -154,6 +154,19 @@ jobs:
         with:
           node-version: 20
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Python diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "python path: $(command -v python)"
+          python --version
+          python -m pip --version
+
       - name: Install dependencies
         shell: bash
         run: |
@@ -239,6 +252,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Python diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "python path: $(command -v python)"
+          python --version
+          python -m pip --version
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4

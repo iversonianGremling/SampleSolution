@@ -38,11 +38,19 @@ function canRun(command, args = ["--version"]) {
 }
 
 function choosePythonLauncher() {
-  const unixCandidates = [
-    { command: "python3", args: [] },
-    { command: "python", args: [] },
-  ];
-  for (const candidate of unixCandidates) {
+  const candidates = process.platform === "win32"
+    ? [
+      { command: "py", args: ["-3.11"] },
+      { command: "py", args: ["-3"] },
+      { command: "py", args: [] },
+      { command: "python", args: [] },
+      { command: "python3", args: [] },
+    ]
+    : [
+      { command: "python3", args: [] },
+      { command: "python", args: [] },
+    ];
+  for (const candidate of candidates) {
     if (canRun(candidate.command, ["--version"])) return candidate;
   }
   return null;
@@ -167,15 +175,8 @@ if (hasWorkingEmbeddedPython()) {
   process.exit(0);
 }
 
-if (process.platform === "win32") {
-  setupWindowsStandalonePython();
-} else {
-  const launcher = choosePythonLauncher();
-  if (!launcher) {
-    console.error("No Python interpreter found. Install Python 3.10+ and retry.");
-    process.exit(1);
-  }
-
+const launcher = choosePythonLauncher();
+if (launcher) {
   console.log(`Using Python launcher: ${launcher.command} ${launcher.args.join(" ")}`.trim());
 
   fs.rmSync(embeddedPythonDir, { recursive: true, force: true });
@@ -190,6 +191,12 @@ if (process.platform === "win32") {
   run(venvPython, ["-m", "pip", "install", "--upgrade", "pip"], frontendDir);
   run(venvPython, ["-m", "pip", "install", "-r", requirementsFile], frontendDir);
   run(venvPython, ["-c", "import numpy,librosa,scipy,sklearn,soundfile;print('embedded-python-ok')"], frontendDir);
+} else if (process.platform === "win32") {
+  console.log("No system Python launcher found on Windows, falling back to standalone Python download.");
+  setupWindowsStandalonePython();
+} else {
+  console.error("No Python interpreter found. Install Python 3.10+ and retry.");
+  process.exit(1);
 }
 
 console.log(`Embedded Python ready at: ${embeddedPythonDir}`);
