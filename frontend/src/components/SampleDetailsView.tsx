@@ -78,6 +78,27 @@ const PITCH_ALGORITHM_OPTIONS: Array<{ value: TunePlaybackMode; label: string }>
   { value: 'hq', label: 'HQ' },
 ]
 const NOTE_OPTIONS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
+const MIN_PLAYBACK_SPEED = 0.25
+const MAX_PLAYBACK_SPEED = 4
+const PLAYBACK_SPEED_SLIDER_MIN = -1
+const PLAYBACK_SPEED_SLIDER_MAX = 1
+const PLAYBACK_SPEED_SLIDER_STEP = 0.01
+
+function clampPlaybackSpeed(value: number): number {
+  if (!Number.isFinite(value)) return 1
+  return Math.max(MIN_PLAYBACK_SPEED, Math.min(MAX_PLAYBACK_SPEED, value))
+}
+
+function speedToSliderValue(speed: number): number {
+  const clampedSpeed = clampPlaybackSpeed(speed)
+  const rawValue = Math.log(clampedSpeed) / Math.log(4)
+  return Math.max(PLAYBACK_SPEED_SLIDER_MIN, Math.min(PLAYBACK_SPEED_SLIDER_MAX, rawValue))
+}
+
+function sliderValueToSpeed(value: number): number {
+  const clampedValue = Math.max(PLAYBACK_SPEED_SLIDER_MIN, Math.min(PLAYBACK_SPEED_SLIDER_MAX, value))
+  return clampPlaybackSpeed(Math.pow(4, clampedValue))
+}
 
 function normalizeTagName(value: string | null | undefined): string {
   return (value || '').trim().toLowerCase()
@@ -337,6 +358,9 @@ export function SampleDetailsView({
   const [editingInstrumentTagId, setEditingInstrumentTagId] = useState<number | null>(null)
   const [replacementInstrumentTagId, setReplacementInstrumentTagId] = useState<number | ''>('')
   const [manualPitch, setManualPitch] = useState(externalPitch)
+  const [playbackSpeed, setPlaybackSpeed] = useState(1)
+  const [isEditingPlaybackSpeed, setIsEditingPlaybackSpeed] = useState(false)
+  const [playbackSpeedDraft, setPlaybackSpeedDraft] = useState('1.00')
   const [hasManualPitchOverride, setHasManualPitchOverride] = useState(false)
   const [pitchAlgorithm, setPitchAlgorithm] = useState<TunePlaybackMode>(() => getTunePlaybackMode())
   const [preserveFormants, setPreserveFormants] = useState<boolean>(() => getTunePreserveFormants())
@@ -361,6 +385,39 @@ export function SampleDetailsView({
     if (markAsManual) {
       setHasManualPitchOverride(Math.abs(clamped - externalPitch) > 0.01)
     }
+  }
+
+  const updatePlaybackSpeed = (next: number) => {
+    const clamped = clampPlaybackSpeed(next)
+    setPlaybackSpeed(clamped)
+    setPlaybackSpeedDraft(clamped.toFixed(2))
+  }
+
+  const beginPlaybackSpeedEdit = () => {
+    setPlaybackSpeedDraft(playbackSpeed.toFixed(2))
+    setIsEditingPlaybackSpeed(true)
+  }
+
+  const commitPlaybackSpeedEdit = () => {
+    const parsed = Number.parseFloat(playbackSpeedDraft.trim())
+    if (Number.isFinite(parsed)) {
+      const clamped = clampPlaybackSpeed(parsed)
+      setPlaybackSpeed(clamped)
+      setPlaybackSpeedDraft(clamped.toFixed(2))
+    } else {
+      setPlaybackSpeedDraft(playbackSpeed.toFixed(2))
+    }
+    setIsEditingPlaybackSpeed(false)
+  }
+
+  const cancelPlaybackSpeedEdit = () => {
+    setPlaybackSpeedDraft(playbackSpeed.toFixed(2))
+    setIsEditingPlaybackSpeed(false)
+  }
+
+  const resetPlaybackSpeed = () => {
+    updatePlaybackSpeed(1)
+    setIsEditingPlaybackSpeed(false)
   }
 
   const handlePitchAlgorithmChange = (mode: TunePlaybackMode) => {
@@ -408,7 +465,12 @@ export function SampleDetailsView({
     }
 
     setIsPreparingWaveform(true)
-    const mode: TunePlaybackMode = pitchAlgorithm
+    // Tape pitch uses playbackRate, which conflicts with independent speed control.
+    // When speed is adjusted, force rendered pitch mode so speed can preserve pitch.
+    const mode: TunePlaybackMode =
+      Math.abs(playbackSpeed - 1) > 0.0001 && pitchAlgorithm === 'tape'
+        ? 'granular'
+        : pitchAlgorithm
 
     void (async () => {
       try {
@@ -419,9 +481,9 @@ export function SampleDetailsView({
           defaultSourceUrl,
           {
             // Keep sample details responsive/stable in Electron:
-            // render short preview in background and play immediate tape fallback.
+            // render a short preview and play the rendered result for non-tape modes.
             allowHqPreview: false,
-            immediateFallbackToTape: true,
+            immediateFallbackToTape: false,
             renderFullSample: false,
             maxRenderSeconds: 6,
             preserveFormants: mode !== 'tape' && preserveFormants,
@@ -451,7 +513,7 @@ export function SampleDetailsView({
     return () => {
       cancelled = true
     }
-  }, [sample, sample?.id, manualPitch, pitchAlgorithm, preserveFormants, setPreparedWaveform])
+  }, [sample, sample?.id, manualPitch, pitchAlgorithm, playbackSpeed, preserveFormants, setPreparedWaveform])
 
   useEffect(() => {
     return () => {
@@ -496,6 +558,7 @@ export function SampleDetailsView({
     setInstrumentToAddId('')
     setEditingInstrumentTagId(null)
     setReplacementInstrumentTagId('')
+    setIsEditingPlaybackSpeed(false)
     setManualPitch(externalPitch)
     setHasManualPitchOverride(false)
     if (waveformRef.current) {
@@ -514,6 +577,9 @@ export function SampleDetailsView({
   }
 
   const samplePlaybackUrl = getSliceDownloadUrl(sample.id)
+  const speedSliderValue = speedToSliderValue(playbackSpeed)
+  const isPlaybackSpeedDefault = Math.abs(playbackSpeed - 1) <= 0.0001
+  const preserveSpeedPitch = Math.abs(waveformPlaybackSemitones) <= 0.0001
 
   const handlePlayPause = async () => {
     if (!waveformRef.current) return
@@ -829,6 +895,8 @@ export function SampleDetailsView({
                 sourceUrl={waveformSourceUrl || samplePlaybackUrl}
                 height={70}
                 pitchSemitones={waveformPlaybackSemitones}
+                speedMultiplier={playbackSpeed}
+                preservePitch={preserveSpeedPitch}
                 peaksData={peaksData}
                 onReady={() => setIsWaveformReady(true)}
                 onPlay={() => setIsPlaying(true)}
@@ -836,7 +904,7 @@ export function SampleDetailsView({
                 onFinish={() => setIsPlaying(false)}
               />
               {/* Playback controls */}
-              <div className="flex items-center gap-2 mt-2">
+              <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
                 <button
                   onClick={handlePlayPause}
                   disabled={!isWaveformReady || isPreparingWaveform}
@@ -844,9 +912,72 @@ export function SampleDetailsView({
                 >
                   {isPlaying ? <Pause size={14} style={{ color: '#ffffff' }} /> : <Play size={14} className="ml-0.5" style={{ color: '#ffffff' }} />}
                 </button>
-                <div className="text-xs text-slate-400">
-                  {isPreparingWaveform ? 'Preparing...' : `${duration.toFixed(2)}s`}
+                <div className="min-w-0">
+                  <div className="mx-auto w-full max-w-[220px] sm:max-w-[240px]">
+                    <input
+                      type="range"
+                      value={speedSliderValue}
+                      step={PLAYBACK_SPEED_SLIDER_STEP}
+                      min={PLAYBACK_SPEED_SLIDER_MIN}
+                      max={PLAYBACK_SPEED_SLIDER_MAX}
+                      onChange={(event) => {
+                        const sliderValue = Number.parseFloat(event.target.value)
+                        if (!Number.isNaN(sliderValue)) {
+                          updatePlaybackSpeed(sliderValueToSpeed(sliderValue))
+                        }
+                        if (isEditingPlaybackSpeed) {
+                          setIsEditingPlaybackSpeed(false)
+                        }
+                      }}
+                      onDoubleClick={resetPlaybackSpeed}
+                      className="h-1 w-full cursor-pointer accent-accent-primary"
+                      title="Playback speed (double-click to reset)"
+                    />
+                    <div className="mt-0.5 grid grid-cols-3 items-center text-[10px] text-slate-500">
+                      <span className="justify-self-start">0.25x</span>
+                      <div className="justify-self-center flex items-center gap-1">
+                        {isEditingPlaybackSpeed ? (
+                          <input
+                            type="text"
+                            value={playbackSpeedDraft}
+                            onChange={(event) => setPlaybackSpeedDraft(event.target.value)}
+                            onBlur={commitPlaybackSpeedEdit}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') commitPlaybackSpeedEdit()
+                              if (event.key === 'Escape') cancelPlaybackSpeedEdit()
+                            }}
+                            className="w-14 rounded border border-accent-primary/60 bg-surface-base px-1 py-0.5 text-center text-[10px] font-mono text-text-primary focus:outline-none focus:border-accent-primary"
+                            aria-label="Edit playback speed"
+                            autoFocus
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={beginPlaybackSpeedEdit}
+                            className="rounded border border-surface-border bg-surface-base px-1.5 py-0.5 text-[10px] font-mono text-text-primary hover:border-surface-overlay hover:text-white transition-colors"
+                            title="Click to edit speed"
+                          >
+                            {playbackSpeed.toFixed(2)}x
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={resetPlaybackSpeed}
+                          disabled={isPlaybackSpeedDefault}
+                          className="rounded border border-surface-border bg-surface-base px-1.5 py-0.5 text-[10px] font-semibold text-text-muted hover:border-surface-overlay hover:text-white transition-colors disabled:cursor-default disabled:opacity-40"
+                          title="Reset playback speed to 1x"
+                          aria-label="Reset playback speed to 1x"
+                        >
+                          x
+                        </button>
+                      </div>
+                      <span className="justify-self-end">4.00x</span>
+                    </div>
+                  </div>
                 </div>
+                <span className="text-[10px] text-slate-500 whitespace-nowrap">
+                  {isPreparingWaveform ? 'Preparing...' : `${duration.toFixed(2)}s`}
+                </span>
               </div>
 
               {/* Pitch control */}

@@ -15,9 +15,37 @@ const TOTAL_BARS = MAX_VISIBLE_BARS + 2 * OFFSCREEN_BARS
 
 const MIN_ZOOM = 1.0
 const ZOOM_SENSITIVITY = 0.003
+const MIN_PLAYBACK_RATE = 0.25
+const MAX_PLAYBACK_RATE = 4
 
 /** Duration of the fade-in for bars entering from the scroll edge (ms) */
 const EDGE_FADE_MS = 220
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
+const getPlaybackRate = (pitchSemitones: number, speedMultiplier: number) => {
+  const safeSpeedMultiplier = Number.isFinite(speedMultiplier) ? speedMultiplier : 1
+  const pitchPlaybackRate = Math.pow(2, pitchSemitones / 12)
+  return clamp(pitchPlaybackRate * safeSpeedMultiplier, MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE)
+}
+
+const setPitchPreservation = (audio: HTMLAudioElement, preservePitch: boolean) => {
+  const media = audio as HTMLAudioElement & {
+    preservesPitch?: boolean
+    mozPreservesPitch?: boolean
+    webkitPreservesPitch?: boolean
+  }
+
+  if (typeof media.preservesPitch === 'boolean') {
+    media.preservesPitch = preservePitch
+  }
+  if (typeof media.mozPreservesPitch === 'boolean') {
+    media.mozPreservesPitch = preservePitch
+  }
+  if (typeof media.webkitPreservesPitch === 'boolean') {
+    media.webkitPreservesPitch = preservePitch
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,6 +53,8 @@ export interface UseCustomWaveformOptions {
   sourceUrl?: string
   sliceId: number
   pitchSemitones?: number
+  speedMultiplier?: number
+  preservePitch?: boolean
   waveColor?: string
   progressColor?: string
   cursorColor?: string
@@ -111,6 +141,8 @@ export function useCustomWaveform({
   sourceUrl,
   sliceId,
   pitchSemitones = 0,
+  speedMultiplier = 1,
+  preservePitch = true,
   waveColor    = '#6366f1',
   progressColor = '#818cf8',
   cursorColor  = '#ffffff',
@@ -379,24 +411,26 @@ export function useCustomWaveform({
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
-    audio.playbackRate = Math.pow(2, pitchSemitones / 12)
-  }, [pitchSemitones])
+    setPitchPreservation(audio, preservePitch)
+    audio.playbackRate = getPlaybackRate(pitchSemitones, speedMultiplier)
+  }, [pitchSemitones, preservePitch, speedMultiplier])
 
   // ── Audio source ───────────────────────────────────────────────────────────
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
+    setPitchPreservation(audio, preservePitch)
     const url = sourceUrl || getSliceDownloadUrl(sliceId)
     audio.pause()
     audio.currentTime = 0
-    audio.playbackRate = Math.pow(2, pitchSemitones / 12)
+    audio.playbackRate = getPlaybackRate(pitchSemitones, speedMultiplier)
     audio.src = url
     audio.load()
     zoomRef.current   = MIN_ZOOM
     scrollRef.current = 0
     setIsAudioReady(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sliceId, sourceUrl])
+  }, [preservePitch, sliceId, sourceUrl])
 
   // ── Waveform peaks fetch ────────────────────────────────────────────────────
   //

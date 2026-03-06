@@ -8,6 +8,8 @@ interface SliceWaveformProps {
   sourceUrl?: string
   height?: number
   pitchSemitones?: number
+  speedMultiplier?: number
+  preservePitch?: boolean
   /** Kept for API compatibility; the visualizer decodes audio directly. */
   peaksData?: number[]
   onReady?: () => void
@@ -25,7 +27,7 @@ export interface SliceWaveformRef {
 }
 
 export const SliceWaveform = forwardRef<SliceWaveformRef, SliceWaveformProps>(
-  ({ sliceId, sourceUrl, height = 80, pitchSemitones = 0, onReady, onPlay, onPause, onFinish }, ref) => {
+  ({ sliceId, sourceUrl, height = 80, pitchSemitones = 0, speedMultiplier = 1, preservePitch = true, onReady, onPlay, onPause, onFinish }, ref) => {
     const didRetryRef = useRef(false)
     const [audioError, setAudioError] = useState<string | null>(null)
     const [isDragging, setIsDragging] = useState(false)
@@ -52,6 +54,8 @@ export const SliceWaveform = forwardRef<SliceWaveformRef, SliceWaveformProps>(
       sliceId,
       sourceUrl,
       pitchSemitones,
+      speedMultiplier,
+      preservePitch,
       waveColor: '#6366f1',
       progressColor: '#818cf8',
       cursorColor: '#ffffff',

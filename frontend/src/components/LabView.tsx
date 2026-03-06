@@ -550,17 +550,30 @@ export function LabView({ selectedSample: propSelectedSample }: LabViewProps) {
       if (!engine) throw new Error('Audio engine not initialized.')
       if (!selectedSample) throw new Error('Drop a sample into the Lab to begin.')
 
-      const url = getSliceDownloadUrl(selectedSample.id)
-      const playDuration = await engine.playFromUrl(
-        url,
-        selectedSample.startTime,
-        selectedSample.endTime,
-        settings,
-        () => {
-          setIsPreviewing(false)
-          stopPlayheadAnimation()
-        },
-      )
+      const handleEnded = () => {
+        setIsPreviewing(false)
+        stopPlayheadAnimation()
+      }
+
+      let playDuration: number
+
+      // Match Sample Details pitch/formant behavior: use decoded-buffer path for non-tape modes.
+      if (settings.pitchMode !== 'tape') {
+        const decoded = await withSelectedBuffer()
+        playDuration = await engine.play(decoded, settings, handleEnded)
+      } else {
+        const sliceDurationSeconds = Math.max(0, selectedSample.endTime - selectedSample.startTime)
+        if (sliceDurationSeconds <= 0) throw new Error('Selected sample has no playable duration.')
+        const url = getSliceDownloadUrl(selectedSample.id)
+        playDuration = await engine.playFromUrl(
+          url,
+          0,
+          sliceDurationSeconds,
+          settings,
+          handleEnded,
+        )
+      }
+
       setIsPreparingPreview(false)
       setIsPreviewing(true)
       playStartRef.current = engine.getContextTime()

@@ -166,6 +166,17 @@ const clamp = (value: number, min: number, max: number) => {
   return Math.max(min, Math.min(max, value))
 }
 
+const getMediaElementPreviewRate = (settings: LabSettings) => {
+  const pitchRate = clamp(Math.pow(2, settings.pitchSemitones / 12), 0.25, 4)
+  if (settings.pitchMode === 'tape') {
+    return pitchRate
+  }
+
+  // URL-based preview cannot run realtime pitch shifters.
+  // Approximate non-tape pitch by coupling it with tempo in playbackRate.
+  return clamp(clamp(settings.tempo, 0.25, 4) * pitchRate, 0.25, 4)
+}
+
 const yieldToMainThread = async () => {
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
 }
@@ -1303,10 +1314,7 @@ export class LabAudioEngine {
     }
 
     if (this.activeMediaElement) {
-      this.activeMediaElement.playbackRate =
-        settings.pitchMode === 'tape'
-          ? clamp(Math.pow(2, settings.pitchSemitones / 12), 0.25, 4)
-          : clamp(settings.tempo, 0.25, 4)
+      this.activeMediaElement.playbackRate = getMediaElementPreviewRate(settings)
     }
   }
 
@@ -1364,10 +1372,7 @@ export class LabAudioEngine {
 
     const trimmed = trimBufferFromOffset(source, settings.offset)
     const pitchRatio = Math.pow(2, settings.pitchSemitones / 12)
-    const needsPitchShift = Math.abs(settings.pitchSemitones) > 0.001
-    const needsTempoChange = Math.abs(settings.tempo - 1) > 0.001
-    const shouldUseRealtimePitchShifter =
-      settings.pitchMode !== 'tape' && (needsPitchShift || needsTempoChange)
+    const shouldUseRealtimePitchShifter = settings.pitchMode !== 'tape'
 
     const chain = this.createRealtimeFxChain(settings)
     this.activeChain = chain
@@ -1432,7 +1437,7 @@ export class LabAudioEngine {
    * Play a slice from a URL using MediaElementAudioSourceNode.
    * Avoids AudioContext.decodeAudioData — safe on Windows/Electron.
    * Supports tape-mode pitch (via audio.playbackRate) and the full FX chain.
-   * HQ/granular pitch shift is approximated via tempo playback rate.
+   * HQ/granular pitch shift is approximated via playbackRate coupling.
    */
   async playFromUrl(
     url: string,
@@ -1446,10 +1451,7 @@ export class LabAudioEngine {
 
     const offset = clamp(settings.offset, 0, Math.max(0, sliceEnd - sliceStart - 0.0001))
     const effectiveStart = sliceStart + offset
-    const effectiveRate =
-      settings.pitchMode === 'tape'
-        ? clamp(Math.pow(2, settings.pitchSemitones / 12), 0.25, 4)
-        : clamp(settings.tempo, 0.25, 4)
+    const effectiveRate = getMediaElementPreviewRate(settings)
     const playbackDuration = (sliceEnd - effectiveStart) / effectiveRate
 
     const chain = this.createRealtimeFxChain(settings)
