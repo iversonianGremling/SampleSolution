@@ -1,6 +1,8 @@
 # Sample Solution
 
-A practical audio sample management and analysis platform for music producers and sound designers. Import your library, slice audio quickly, auto-analyze features, and organize everything with tags, folders, and collections. It also works as a webapp (be careful with space, it will effectively duplicate your sample library).
+<img width="977" height="425" alt="sample_solution" src="https://github.com/user-attachments/assets/b02e0d9d-5d83-46e2-8068-4487c53a4abc" />
+
+A practical audio sample management and analysis platform for music producers and sound designers. Import your library, slice audio quickly, auto-analyze features, and organize everything with tags, folders, and collections. It also works as a webapp (be careful with space, it will effectively duplicate your sample library). Free and open source.
 
 > **Legal Note**: Ensure you have appropriate rights to any content in your library. Use this tool responsibly and in accordance with copyright and intellectual property laws.
 
@@ -33,6 +35,7 @@ A practical audio sample management and analysis platform for music producers an
   - Accessibility options (theme/font/font size)
   - Re-analysis of the whole library with concurrency support
 - **Future Features**
+  - Setting global BPM (should be here soon)
   - General debugging
   - Incremental backup system with local options, sync options for google drive, nextcloud and other methods
   - Better sample slicing capabilities
@@ -83,13 +86,53 @@ Output directory: `frontend/release/`
 
 ## Screenshots
 
-- `[ Screenshot placeholder 1 ]`
-- `[ Screenshot placeholder 2 ]`
-- `[ Screenshot placeholder 3 ]`
+<p align="center">
+  <img width="1904" height="913" alt="image" src="https://github.com/user-attachments/assets/c9c39303-0230-4748-964a-b4055b4fc7c4" />
+  <br/>
+  <em>Sources panel on the left with "card view" on the center, filter by instrument on the bottom and sample details on the right panel</em>
+</p>
 
-## Demo Video
+<p align="center">
+  <img width="1731" height="830" alt="image" src="https://github.com/user-attachments/assets/3fe1b161-9ed1-4966-8544-51d4b802f039" />
+  <br/>
+  <em>List view on the main panel, left panel contracted (all panels can be contracted or resized), bottom panel showing dimension filters and the right panel showing the drum rack</em>
+</p>
 
-- `[ Video placeholder: app walkthrough ]`
+<p align="center">
+  <img width="1904" height="913" alt="image" src="https://github.com/user-attachments/assets/ddfa2457-dd74-459e-b4f4-b2a90954434d" />
+  <br/>
+  <em>Space view on the main panel, features filter on the bottom and lab view on the right panel</em>
+</p>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/1b655979-ffcd-4620-8318-6aff8c63d757" />
+  <br/>
+  <em>Advanced filtering actions</em>
+</p>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/ee58cdab-31da-4176-8873-3ed180aacf9f" />
+  <br/>
+  <em>Bulk rename actions used for naming convention. Also supports file conversion</em>
+</p>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/1ed9b28f-0a23-48f4-a3fb-c45ec8508622" />
+  <br/>
+  <em>Duplicates view with smart rules to choose which samples to pick</em>
+</p>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/a7376ba4-8a5f-4db3-8390-8297b2054ad6" />
+  <br/>
+  <em>Slice view on a track from a link</em>
+</p>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/21a490f7-0745-4d45-8ff4-52340ed9fd34" />
+  <br/>
+  <em>Accessibility features: 150% font size + light mode + openDyslexic font so everyone can enjoy Sample Solution</em>
+</p>
 
 ## Troubleshooting (Very Limited)
 
