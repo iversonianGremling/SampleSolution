@@ -1,280 +1,69 @@
 # Sample Solution
 
-
-WARNING: If you intend to contribute to this project there's still a lot of AI slop everywhere. I'm commited to cleaning the code up manually but it'd be irresponsible on my part to not acknowledge this to anyone willing to use it. At the moment of writing this (3/1/2026) the versions that work are: docker compose on linux, electron on linux (still have to test if it passes without having the dependencies installed). The windows electron version seems to work with dependency issues. Thank you for your understanding.
-
-A practical audio sample management and analysis platform for music producers and sound designers. Import your library, slice audio quickly, auto-analyze features, and organize everything with tags, folders, and collections. Works as a webapp, running experiments for a desktop app (electron)
-
-<img width="1929" height="994" alt="image" src="https://github.com/user-attachments/assets/aee09211-d6c7-42ee-86c3-ffb8dedf7015" />
-
+A practical audio sample management and analysis platform for music producers and sound designers. Import your library, slice audio quickly, auto-analyze features, and organize everything with tags, folders, and collections. It also works as a webapp (be careful with space, it will effectively duplicate your sample library).
 
 > **Legal Note**: Ensure you have appropriate rights to any content in your library. Use this tool responsibly and in accordance with copyright and intellectual property laws.
 
----
+## Download Releases
 
-## Project Status
-
-| Area | Status | Notes |
-|------|--------|-------|
-| Web app (frontend + backend) | Stable | Main development path |
-| Docker deployment | Stable | Recommended quick start |
-| Electron desktop mode | Works, limited testing | Usable desktop path, needs more QA |
-| Sample Space view | Functional but needs extra tweaking | Useful for discovery, still being tuned |
-| Server/client architecture variants | Experimental | Possible, not fully documented |
-
----
-
-## GitHub Automation (Updates + Releases)
-
-This repository includes GitHub Actions workflows for update monitoring and release automation.
-
-### Check for repo updates
-- Workflow: `.github/workflows/check-updates.yml`
-- Triggers:
-  - Manual (`workflow_dispatch`)
-  - Daily schedule at `09:00 UTC`
-- What it reports:
-  - Latest release tag (`v*`)
-  - Commit count since latest release
-  - Whether unreleased updates exist
-- Optional manual mode:
-  - Set `fail_if_unreleased=true` to fail the run when unreleased commits are found
-
-### Automatic dependency update checks
-- Config: `.github/dependabot.yml`
-- Checks weekly for:
-  - `backend` npm dependencies
-  - `frontend` npm dependencies
-  - GitHub Actions version updates
-- Dependabot opens PRs with labels so updates are easy to review.
-
-### Enforce version consistency in PRs
-- Workflow: `.github/workflows/version-consistency.yml`
-- Triggers:
-  - Pull requests
-  - Pushes to `main`
-- What it validates:
-  - `VERSION` exists and contains valid semver
-  - `VERSION`, `backend/package.json`, and `frontend/package.json` all match
-
-### Create named releases from GitHub Actions
-- Workflow: `.github/workflows/release.yml`
-- Trigger: Manual (`workflow_dispatch`)
-- Inputs:
-  - `release_name`: optional custom name shown in GitHub Releases
-  - `new_features`: optional changelog list (one item per line)
-  - `bugfixes`: optional changelog list (one item per line)
-  - `draft` / `prerelease`
-- Default release naming:
-  - Uses `Release vX.Y.Z - <CODENAME>` when a root `CODENAME` file is present
-  - Falls back to `Release vX.Y.Z` if `CODENAME` is missing/empty
-- What it does automatically:
-  1. Validates `VERSION`, `backend/package*.json`, and `frontend/package*.json` are aligned
-  2. Creates and pushes tag `vX.Y.Z` for the checked-in version
-  3. Builds desktop artifacts on GitHub Actions for:
-     - Linux (`AppImage`, `.deb`)
-     - Windows (`.exe` installer + portable)
-     - macOS (`.dmg`, `.zip`) when runner/platform supports
-  4. Creates the GitHub Release with:
-     - `Download Links` grouped by Windows/macOS/Linux
-     - `Changelog` with `New Features` and `Bugfixes` from workflow inputs
-     - Uploaded binaries
-
-Version bumps should be committed via normal PR flow before running the release workflow.
-
-If branch protection blocks pushes from `github-actions[bot]`, allow workflow pushes or use a release branch flow.
-
-### End-user downloads (non-technical)
-- Go to the GitHub Releases page and download:
-  - Windows: `sample-solution-setup-...exe` (recommended)
-  - macOS: `sample-solution-...-mac.dmg`
-  - Linux: `sample-solution-...AppImage` (or `.deb` for Debian/Ubuntu)
-- Ignore developer/update metadata files if you see them elsewhere:
-  - `*.blockmap`
-  - `*-builder-debug.yml`
-  - `Source code (zip/tar.gz)` unless you are building from source
-
----
+- Latest release: https://github.com/iversonianGremling/SampleSolution/releases/latest
+- All releases: https://github.com/iversonianGremling/SampleSolution/releases
+- Linux artifacts include: `.AppImage`, `.deb`
+- Windows artifacts include: installer `.exe`, portable `.exe`
+- macOS artifacts include: `.dmg`, `.zip` (not tested yet, contributions are appreciated, even if vibe-coded)
 
 ## What It Does
 
-### Import
-- **Import Local Files**: Add individual audio files directly to your library
-- **Batch Folder Import**: Import full folder structures
-- **Source Organization**: Browse and manage by source/folder, create and manage folders/tags/collections efficiently through several tools
-- **Drum Rack**: To play around with your samples
-- **Batch download and analysis**
+- **Import / Sources**
+  - Import local files, folders, links, and playlists
+  - Choose import destination strategy (existing destination, single new collection, split by first subfolder)
+  - Manage collections/folders and run advanced category management
+- **Main Panel**
+  - Browse samples in Card, List, or XO-like Space view
+  - Search, sort, preview, and open sample details
+  - Jump into similar-sample mode for discovery workflows
+- **Filters**
+  - Filter by tags, instruments, one-shot/loop, dimensions, and standard features
+  - Use note/scale, envelope, and date filters
+  - Use advanced rule builder, bulk rename/convert, and duplicate detection
+- **More features**
+  - Right panel showing sample details, a drum rack, and lab for trying out effects.
+  - Send samples to Drum Rack, use sequencer/global FX, and render edits from Lab
+- **Settings**
+  - Accessibility options (theme/font/font size)
+  - Re-analysis of the whole library with concurrency support
+- **Future Features**
+  - General debugging
+  - Incremental backup system with local options, sync options for google drive, nextcloud and other methods
+  - Better sample slicing capabilities
+  - Better support for self hosting
 
-### Slice & Analyze
-- **Waveform Editor**
-  - Drag-to-select and create slices
-  - Zoom + minimap navigation
-  - Real-time playback
-- **Automatic Audio Analysis**
-  - 15+ features per sample (spectral, temporal, perceptual)
-  - Includes centroid, RMS, tempo cues, attack-related metrics, and more
-  - Runs when slices are created
+## If you want to run it on docker or build it
 
-### Organize
-- **AI-Assisted Tagging** using audio + naming context
-- **Collections** with flexible grouping and hierarchy
-- **Advanced Filtering** by tags, duration, source, collections, and metadata
-- **Full-Text Search** across sample metadata
+### Docker
 
-### Explore
-- **3 sample views**:
-  - **Cards** (visual browsing)
-  - **List** (dense, practical workflow)
-  - **Space** (XO-like similarity/discovery view)
-
----
-## Screenshots
-### 🌌 Space View
-<img width="707" height="784" alt="image" src="https://github.com/user-attachments/assets/22d024d6-f8a6-480a-bc42-def89a530a8c" />
-
-
-> **XO-like "Space View"** — A visual map for exploring your sample library.
-
----
-
-### 🎵 Slice View
-<img width="901" height="842" alt="image" src="https://github.com/user-attachments/assets/6c3cfa4c-3c06-46e3-9929-d700cce59838" />
-
-
-> **Slice View** for a royalty-free song on YouTube.
-
----
-
-### 📦 Organized depending on source
-<img width="706" height="515" alt="image" src="https://github.com/user-attachments/assets/665531c4-ec49-46d5-925c-5b4f8ff4a79f" />
-
-
-> Samples are neatly organized inside containers depending on their origin.
-
----
-
-### 🔍 Advanced Filtering
-<img width="1189" height="784" alt="image" src="https://github.com/user-attachments/assets/65b88063-6a84-44a6-a6ec-7f16d476d4ab" />
-
-
-> Detailed filtering options to narrow down specific sounds.
-
----
-
-### ⚙️ Granular Sample Management
-<img width="973" height="845" alt="image" src="https://github.com/user-attachments/assets/b91b65ec-c004-474d-a10a-290db55082de" />
-
-
-> **Commit-based Workflow:** Advanced control for moving samples between categories. 
-> *Example: Moving samples in the `Kicks` folder (excluding `Snares`) tagged with `808` to `Kicks > 808s`. Changes are staged as commits for review and confirmation.*
-
----
-
-### 🥁 Drum Rack & Sequencer
-<img width="1040" height="743" alt="image" src="https://github.com/user-attachments/assets/85170792-d1d8-4590-8868-7266cfd1adc6" />
-
-> Integrated drum rack with a simple sequencer for rapid testing.
-
----
-
-### 📥 Import & Settings
-<img width="1032" height="779" alt="image" src="https://github.com/user-attachments/assets/73e41eb3-fd32-45c2-9ef0-3c47edace276" />
-
-<img width="1041" height="904" alt="image" src="https://github.com/user-attachments/assets/e6a4b1f4-76a4-4c53-aa29-f3a765f5f589" />
-
-
-> **Import Page:** Flexible options for bringing in new libraries.
-> **Settings:** Deep customization options for the application environment.
-
----
-## Run Options
-
-### 1) Docker (Recommended)
-
-#### Requirements
-- Docker + Docker Compose
-- Optional: NVIDIA GPU + NVIDIA Container Toolkit (for GPU-accelerated Ollama)
-- Optional: Google account (OAuth features)
-
-#### Quick start
 ```bash
-docker-compose up -d
+docker compose up -d --build
 ```
 
-Optional GPU mode:
+GPU mode (optional):
+
 ```bash
-docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 ```
 
-Optional downloader tool toggles (set in `.env`):
-```bash
-# Build-time image contents (requires rebuild)
-INSTALL_YTDLP=1
-INSTALL_SPOTDL=1
+App URLs:
+- Frontend: `http://localhost:3000`
+- Backend: `http://localhost:4000`
 
-# Runtime lazy install on first use
-AUTO_INSTALL_DOWNLOAD_TOOLS=0
-AUTO_INSTALL_YTDLP=0
-AUTO_INSTALL_SPOTDL=0
+### Electron
 
-# Ollama endpoints
-OLLAMA_HOST=http://ollama:11434
-OLLAMA_MODEL=llama3.2:3b
-OLLAMA_ANALYZER_HOST=http://ollama-analyzer:11434
-OLLAMA_ANALYZER_MODEL=${OLLAMA_MODEL}
-OLLAMA_CPU_HOST=http://ollama:11434
-OLLAMA_CPU_MODEL=${OLLAMA_MODEL}
-
-# Tag review fallback chain + retry policy
-OLLAMA_TAG_REVIEW_TARGET_CHAIN=analyzer,primary,cpu
-OLLAMA_TAG_REVIEW_RETRIES_PER_TARGET=1
-OLLAMA_TAG_REVIEW_RETRY_DELAY_MS=200
-
-# Hard-disable Spotify import path at backend runtime
-ENABLE_SPOTIFY_IMPORT=1
-
-# Spotify OAuth / API credentials (required for Spotify playlist import)
-SPOTIFY_CLIENT_ID=your-spotify-client-id
-SPOTIFY_CLIENT_SECRET=your-spotify-client-secret
-BACKEND_URL=http://localhost:4000
-
-# Frontend build flags (requires rebuild)
-# Optional override if building frontend manually
-VITE_ENABLE_SPOTIFY_IMPORT=1
-VITE_SHOW_DOWNLOAD_TOOLS_UI=0
-# Optional: Stripe donation payment link for header Donate button
-VITE_STRIPE_DONATION_URL=https://donate.stripe.com/your-payment-link
-```
-
-Access:
-- Frontend: http://localhost:3000
-- Backend: http://localhost:4000
-
-Detailed setup and environment config: [SETUP.md](SETUP.md)
-
-### 2) Local Development (without Docker)
-
-**Backend**
-```bash
-cd backend
-npm install
-npm run dev
-```
-
-**Frontend**
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-### 3) Electron Desktop (limited testing)
-
-Use this if you want desktop mode while still running backend separately.
+Development mode (backend + electron UI):
 
 ```bash
 # terminal 1
 cd backend
+npm install
 npm run dev
 
 # terminal 2
@@ -283,89 +72,63 @@ npm install
 npm run dev:electron
 ```
 
-More details: [frontend/ELECTRON.md](frontend/ELECTRON.md)
+Build desktop release artifacts:
 
----
-
-## How to Build the Electron Version
-
-If you want distributable desktop builds:
-
-### Standard Electron package
 ```bash
 cd frontend
-npm install
 npm run build:electron
 ```
 
-Artifacts are generated in:
-- `frontend/release/`
+Output directory: `frontend/release/`
 
-Typical targets:
-- Linux: `.AppImage`, `.deb`
-- Windows: installer + portable
-- macOS: `.dmg`, `.zip`
+## Screenshots
 
-### Standalone build with embedded backend/Python (advanced)
-```bash
-cd frontend
-./build-standalone.sh
-```
+- `[ Screenshot placeholder 1 ]`
+- `[ Screenshot placeholder 2 ]`
+- `[ Screenshot placeholder 3 ]`
 
-This path is intended for distribution and has more moving parts. See [frontend/BUILD.md](frontend/BUILD.md) for full details.
+## Demo Video
 
----
+- `[ Video placeholder: app walkthrough ]`
 
-## Typical Workflow
+## Troubleshooting (Very Limited)
 
-1. Import files/folders in **Sources**
-2. Open **Editing** to create slices
-3. Let analysis run automatically
-4. Tag and organize into collections
-5. Browse in Cards/List/Space depending on task
+These notes are minimal and low-scope.
 
----
+- **Release/Electron users**
+  - If Electron dev fails to start, clear Vite cache in `frontend/node_modules/.vite` and retry. Just delete whatever is on that folder.
+- **Docker users**
+  - If ports are busy run on the terminal: `fuser -k 3000/tcp` and `fuser -k 4000/tcp`
+  - If OAuth features fail, verify backend env values for provider credentials and callback URLs.
+- **Source/dev users**
+  - TensorFlow startup warnings are often informational.
 
-## Roadmap / TODO
+## Roadmap
 
-- [ ] Improve metadata import (e.g., artist and additional file metadata columns)
-- [ ] Validate folder import substructure behavior across all paths
-- [ ] Expand Electron QA across Linux/macOS/Windows
-- [ ] Validate export and backup flows more thoroughly
-- [ ] Continue tuning Space View placement/weighting and clustering quality
+- [ ] Debugging
+- [ ] Testing release on Mac
+- [ ] Refactoring the code to reduce the amount of AI slop
+- [ ] Add extra features
 
----
+## For Developers/Contributors
 
-## Troubleshooting
+### WARNING
 
-**Port issues:**
-```bash
-fuser -k 4000/tcp
-fuser -k 3000/tcp
-```
+As of **March 6, 2026**, parts of this codebase still contain AI-generated output that has not been fully cleaned up yet.
+- Some areas are solid, others need manual refactoring and stricter review
+- Expect inconsistent naming/structure in parts of the project
+- Contributions that improve clarity, tests, and maintainability are welcome but I don't think it's responsible for me to ask for them
 
-**OAuth errors:** verify credentials in backend `.env` and provider app setup (Google and/or Spotify).
+Current practical status:
+- Docker on Linux is the most reliable path
+- Electron on Linux works
+- Electron on Windows works but seems more error prone
 
-**TensorFlow warnings on startup:** often informational CPU optimization logs.
-
-See [SETUP.md](SETUP.md) for deeper troubleshooting.
-
----
-
-## Responsible Use
-
-- Verify ownership/rights for all imported or downloaded source material
-- Respect copyright and platform terms of service
-- Use only content you own, have licensed, or that is legally permitted for your use case
-
-The developers are not responsible for misuse.
-
----
+`SETUP.md` is currently legacy and not the primary onboarding document.
 
 ## Tech Stack
 
-- **Frontend**: React 18 + TypeScript, Vite, Tailwind CSS, WaveSurfer.js, Pixi.js
+- **Frontend**: React 18 + TypeScript, Vite, Tailwind CSS
 - **Backend**: Node.js + Express, TypeScript, SQLite (Drizzle ORM)
-- **Audio Analysis**: TensorFlow.js, Python (Essentia + Librosa), Meyda
-- **Visualization**: UMAP/t-SNE and clustering for similarity exploration
+- **Audio Analysis**: TensorFlow.js + Python tools (Essentia/Librosa)
 - **Packaging/Deploy**: Docker Compose + Electron
