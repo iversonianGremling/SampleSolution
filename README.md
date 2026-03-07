@@ -42,7 +42,7 @@ A practical audio sample management and analysis platform for music producers an
   - Better support for self hosting
 
 ## Screenshots
-*Big images, be patient*
+*Big images, please, be patient while they load :)*
 
 <p align="center">
   <img width="1904" height="913" alt="image" src="https://github.com/user-attachments/assets/c9c39303-0230-4748-964a-b4055b4fc7c4" />
