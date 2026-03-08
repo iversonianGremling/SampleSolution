@@ -21,9 +21,16 @@ import {
 } from '../services/audioAnalysis.js'
 import { v4 as uuidv4 } from 'uuid'
 import { and, eq, isNotNull, sql } from 'drizzle-orm'
+import {
+  startFolderImportJob,
+  cancelImportJob,
+  resumeImportJob,
+  getImportJobStatus,
+  listImportJobs,
+} from '../services/folderImportJob.js'
 
 const router = Router()
-router.use(json())
+router.use(json({ limit: '500mb' }))
 
 // Simple queue to serialize audio analysis (prevents resource exhaustion)
 class AnalysisQueue {
@@ -294,32 +301,6 @@ function resolveImportPathMetadata(
     folderPath: normalizeFilesystemPath(rootCandidate),
     relativePath: normalizeRelativePath(relativePath),
   }
-}
-
-async function collectAudioFilesRecursively(rootDir: string): Promise<string[]> {
-  const files: string[] = []
-
-  async function walk(currentDir: string) {
-    const entries = await fs.readdir(currentDir, { withFileTypes: true })
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name)
-      if (entry.isDirectory()) {
-        await walk(fullPath)
-        continue
-      }
-
-      if (!entry.isFile()) continue
-
-      const ext = path.extname(entry.name).toLowerCase()
-      if (SUPPORTED_FORMATS.includes(ext)) {
-        files.push(fullPath)
-      }
-    }
-  }
-
-  await walk(rootDir)
-  files.sort((a, b) => a.localeCompare(b))
-  return files
 }
 
 function toTrackMetadata(sourceMetadata: AudioFileMetadata | null) {
@@ -956,7 +937,7 @@ router.post('/import/files', upload.array('files'), async (req, res) => {
   })
 })
 
-// Import from folder path (server-side)
+// Import from folder path (server-side) — async chunked job
 router.post('/import/folder', async (req, res) => {
   const { folderPath } = req.body as {
     folderPath: string
@@ -970,160 +951,51 @@ router.post('/import/folder', async (req, res) => {
   }
 
   try {
-    // Check if folder exists
     const stat = await fs.stat(folderPath)
     if (!stat.isDirectory()) {
       return res.status(400).json({ error: 'Path is not a directory' })
     }
 
-    const folderRootPath = path.resolve(folderPath)
-
-    // Scan folder recursively for audio files and preserve subdirectories.
-    const audioFiles = await collectAudioFilesRecursively(folderRootPath)
-
-    if (audioFiles.length === 0) {
-      return res.status(400).json({ error: 'No supported audio files found in folder' })
-    }
-
-    const results: { filename: string; success: boolean; sliceId?: number; error?: string }[] = []
-
-    for (const filePath of audioFiles) {
-      try {
-        const originalName = path.basename(filePath)
-        const relativePath = normalizeRelativePath(path.relative(folderRootPath, filePath))
-        const baseName = path.basename(originalName, path.extname(originalName))
-
-        // Get audio duration
-        let duration = 0
-        try {
-          duration = await getAudioDuration(filePath)
-        } catch (err) {
-          console.error('Failed to get audio duration:', err)
-        }
-
-        const sourceMetadata = await getAudioFileMetadata(filePath).catch(() => null)
-        const trackMetadata = toTrackMetadata(sourceMetadata)
-        const trackTitle = trackMetadata.title ?? baseName
-
-        // Create virtual track
-        const localId = `local:${uuidv4()}`
-        const peaksPath = await buildTrackPeaks(filePath, localId)
-        const [track] = await db
-          .insert(schema.tracks)
-          .values({
-            youtubeId: localId,
-            title: trackTitle,
-            description: `Imported from folder: ${folderRootPath}`,
-            thumbnailUrl: '',
-            duration,
-            audioPath: filePath, // Keep original path
-            peaksPath,
-            status: 'ready',
-            artist: trackMetadata.artist,
-            album: trackMetadata.album,
-            year: trackMetadata.year,
-            albumArtist: trackMetadata.albumArtist,
-            genre: trackMetadata.genre,
-            composer: trackMetadata.composer,
-            trackNumber: trackMetadata.trackNumber,
-            discNumber: trackMetadata.discNumber,
-            trackComment: trackMetadata.trackComment,
-            musicalKey: trackMetadata.musicalKey,
-            tagBpm: trackMetadata.tagBpm,
-            isrc: trackMetadata.isrc,
-            metadataRaw: trackMetadata.metadataRaw,
-            source: 'local',
-            originalPath: filePath, // Store full original file path
-            folderPath: folderRootPath, // Store the folder used for import
-            relativePath, // Preserve structure relative to imported folder root
-            fullPathHint: filePath,
-          })
-          .returning()
-
-        let slicePath = filePath
-        if (!USE_REFERENCE_IMPORTS) {
-          await fs.mkdir(SLICES_DIR, { recursive: true })
-          const sliceFileName = `${localId.replace(':', '_')}_slice.mp3`
-          slicePath = path.join(SLICES_DIR, sliceFileName)
-
-          const ext = path.extname(originalName).toLowerCase()
-          if (ext === '.mp3') {
-            await fs.copyFile(filePath, slicePath)
-          } else {
-            const { exec } = await import('child_process')
-            const { promisify } = await import('util')
-            const execAsync = promisify(exec)
-            try {
-              await execAsync(`"${FFMPEG_BIN}" -i "${filePath}" -acodec libmp3lame -q:a 2 "${slicePath}" -y`, {
-                timeout: 30000,
-              })
-            } catch (ffErr) {
-              // Clean up partial file
-              await fs.unlink(slicePath).catch(() => {})
-              throw new Error(`Audio conversion failed: ${ffErr instanceof Error ? ffErr.message : String(ffErr)}`)
-            }
-          }
-        }
-
-        const [slice] = await db
-          .insert(schema.slices)
-          .values({
-            trackId: track.id,
-            name: baseName,
-            startTime: 0,
-            endTime: duration,
-            filePath: slicePath,
-          })
-          .returning()
-
-        if (importType !== 'sample') {
-          // For sample imports, defer to full analysis + reviewed-tag replacement so the
-          // tag outcome matches batch re-analysis behavior.
-          try {
-            await seedFilenameTagsForSlice({
-              sliceId: slice.id,
-              filename: originalName,
-              folderPath: folderRootPath,
-              relativePath,
-            })
-          } catch (err) {
-            console.error('Filename tagging failed:', err)
-          }
-        }
-
-        // If importing as sample, automatically analyze audio features (queued)
-        if (importType === 'sample') {
-          analysisQueue.add(async () => {
-            try {
-              await autoTagSlice(slice.id, slicePath)
-            } catch (err) {
-              console.error('Background audio analysis failed:', err)
-            }
-          })
-        }
-
-        results.push({ filename: relativePath || originalName, success: true, sliceId: slice.id })
-      } catch (error) {
-        console.error(`Error importing ${filePath}:`, error)
-        results.push({
-          filename: normalizeRelativePath(path.relative(folderRootPath, filePath)) || path.basename(filePath),
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        })
-      }
-    }
-
-    res.json({
-      folderPath: folderRootPath,
-      total: audioFiles.length,
-      successful: results.filter((r) => r.success).length,
-      failed: results.filter((r) => !r.success).length,
-      results,
-    })
+    const jobId = startFolderImportJob(path.resolve(folderPath), importType)
+    res.status(202).json({ jobId })
   } catch (error) {
-    console.error('Error importing folder:', error)
-    res.status(500).json({ error: 'Failed to import folder' })
+    console.error('Error starting folder import:', error)
+    res.status(500).json({ error: 'Failed to start folder import' })
   }
+})
+
+// Get all import jobs
+router.get('/import/jobs', (_req, res) => {
+  const activeOnly = _req.query.active === 'true'
+  const jobs = listImportJobs(activeOnly)
+  res.json(jobs)
+})
+
+// Get status of a specific import job
+router.get('/import/jobs/:id/status', (req, res) => {
+  const status = getImportJobStatus(req.params.id)
+  if (!status) {
+    return res.status(404).json({ error: 'Import job not found' })
+  }
+  res.json(status)
+})
+
+// Cancel an import job
+router.post('/import/jobs/:id/cancel', (req, res) => {
+  const success = cancelImportJob(req.params.id)
+  if (!success) {
+    return res.status(404).json({ error: 'Import job not found or already finished' })
+  }
+  res.json({ success: true })
+})
+
+// Resume a failed/cancelled import job
+router.post('/import/jobs/:id/resume', (req, res) => {
+  const newJobId = resumeImportJob(req.params.id)
+  if (!newJobId) {
+    return res.status(400).json({ error: 'Job cannot be resumed (not found or not in error/cancelled state)' })
+  }
+  res.status(202).json({ jobId: newJobId })
 })
 
 // Browse directories (server-side)

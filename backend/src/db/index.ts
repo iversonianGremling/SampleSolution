@@ -680,6 +680,26 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_backup_logs_created_at ON backup_logs(created_at);
   `)
 
+  // Migration: Create import_jobs table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS import_jobs (
+      id TEXT PRIMARY KEY,
+      folder_path TEXT NOT NULL,
+      import_type TEXT NOT NULL,
+      phase TEXT NOT NULL,
+      discovered_count INTEGER NOT NULL DEFAULT 0,
+      registered_count INTEGER NOT NULL DEFAULT 0,
+      analyzed_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      total_count INTEGER,
+      last_processed_path TEXT,
+      error TEXT,
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_import_jobs_phase ON import_jobs(phase);
+  `)
+
   // Migration: Add uri column to tracks
   const tracksUriCols = sqlite.pragma('table_info(tracks)') as Array<{ name: string }>
   const hasUri = tracksUriCols.some(col => col.name === 'uri')

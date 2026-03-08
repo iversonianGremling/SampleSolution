@@ -666,6 +666,61 @@ export function useImportFolder() {
   })
 }
 
+export function useImportJob(jobId: string | null) {
+  const queryClient = useQueryClient()
+  return useQuery({
+    queryKey: ['importJob', jobId],
+    queryFn: async () => {
+      const status = await api.getImportJobStatus(jobId!)
+      // Invalidate data caches when job has active progress
+      if (status.phase === 'importing' || status.phase === 'analyzing' || status.phase === 'done') {
+        queryClient.invalidateQueries({ queryKey: ['tracks'] })
+        queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+        queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+        queryClient.invalidateQueries({ queryKey: ['sourceTree'] })
+      }
+      return status
+    },
+    enabled: !!jobId,
+    refetchInterval: (query) => {
+      const data = query.state.data
+      if (!data) return 2000
+      if (['done', 'cancelled', 'error'].includes(data.phase)) return false
+      return 2000
+    },
+  })
+}
+
+export function useImportJobs(activeOnly = false) {
+  return useQuery({
+    queryKey: ['importJobs', { activeOnly }],
+    queryFn: () => api.getImportJobs(activeOnly),
+    refetchInterval: activeOnly ? 5000 : false,
+  })
+}
+
+export function useCancelImportJob() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.cancelImportJob,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['importJob'] })
+      queryClient.invalidateQueries({ queryKey: ['importJobs'] })
+    },
+  })
+}
+
+export function useResumeImportJob() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.resumeImportJob,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['importJob'] })
+      queryClient.invalidateQueries({ queryKey: ['importJobs'] })
+    },
+  })
+}
+
 export function useCreateImportedFolder() {
   const queryClient = useQueryClient()
   return useMutation({

@@ -249,6 +249,24 @@ export const syncConfigs = sqliteTable('sync_configs', {
     .$defaultFn(() => new Date().toISOString()),
 })
 
+export const importJobs = sqliteTable('import_jobs', {
+  id: text('id').primaryKey(),           // UUID
+  folderPath: text('folder_path').notNull(),
+  importType: text('import_type', { enum: ['sample', 'track'] }).notNull(),
+  phase: text('phase', {
+    enum: ['scanning', 'importing', 'analyzing', 'done', 'cancelled', 'error'],
+  }).notNull(),
+  discoveredCount: integer('discovered_count').notNull().default(0),
+  registeredCount: integer('registered_count').notNull().default(0),
+  analyzedCount: integer('analyzed_count').notNull().default(0),
+  failedCount: integer('failed_count').notNull().default(0),
+  totalCount: integer('total_count'),    // null until scan complete
+  lastProcessedPath: text('last_processed_path'), // for resume
+  error: text('error'),
+  createdAt: integer('created_at'),
+  updatedAt: integer('updated_at'),
+})
+
 export const reanalysisLogs = sqliteTable('reanalysis_logs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   sliceId: integer('slice_id')

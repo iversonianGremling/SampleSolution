@@ -665,6 +665,26 @@ export interface FolderImportResult extends BatchImportResult {
   folderPath: string
 }
 
+export interface FolderImportJobResponse {
+  jobId: string
+}
+
+export interface ImportJobStatus {
+  id: string
+  folderPath: string
+  importType: 'sample' | 'track'
+  phase: 'scanning' | 'importing' | 'analyzing' | 'done' | 'cancelled' | 'error'
+  discoveredCount: number
+  registeredCount: number
+  analyzedCount: number
+  failedCount: number
+  totalCount: number | null
+  lastProcessedPath: string | null
+  error: string | null
+  createdAt: number | null
+  updatedAt: number | null
+}
+
 export type LocalImportSourceKind = ImportSourceKind
 
 export interface LocalImportProgressOptions {
@@ -793,36 +813,30 @@ export const importLocalFiles = async (
 export const importFolder = (
   folderPath: string,
   importType?: 'sample' | 'track',
-  analysisLevel?: 'advanced',
+  _analysisLevel?: 'advanced',
   _allowAiTagging?: boolean,
-) => {
+): Promise<FolderImportJobResponse> => {
   const resolvedImportType = importType ?? 'sample'
-  const progress = startImportProgress({
-    sourceKind: 'folder',
-    importType: resolvedImportType,
-    totalFiles: null,
-  })
-  progress.markProcessing()
 
   return api
-    .post<FolderImportResult>('/import/folder', {
+    .post<FolderImportJobResponse>('/import/folder', {
       folderPath,
       importType: resolvedImportType,
-      analysisLevel,
     })
-    .then((r) => {
-      progress.complete({
-        total: r.data.total,
-        successful: r.data.successful,
-        failed: r.data.failed,
-      })
-      return r.data
-    })
-    .catch((error) => {
-      progress.fail(error)
-      throw error
-    })
+    .then((r) => r.data)
 }
+
+export const getImportJobStatus = (jobId: string) =>
+  api.get<ImportJobStatus>(`/import/jobs/${jobId}/status`).then((r) => r.data)
+
+export const getImportJobs = (activeOnly = false) =>
+  api.get<ImportJobStatus[]>('/import/jobs', { params: activeOnly ? { active: 'true' } : {} }).then((r) => r.data)
+
+export const cancelImportJob = (jobId: string) =>
+  api.post<{ success: boolean }>(`/import/jobs/${jobId}/cancel`).then((r) => r.data)
+
+export const resumeImportJob = (jobId: string) =>
+  api.post<FolderImportJobResponse>(`/import/jobs/${jobId}/resume`).then((r) => r.data)
 
 export const getImportAnalysisStatus = () =>
   api.get<ImportAnalysisStatus>('/import/analysis-status').then((r) => r.data)

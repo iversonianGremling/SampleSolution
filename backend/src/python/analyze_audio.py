@@ -12,6 +12,7 @@ import numpy as np
 import os
 import re
 import hashlib
+import gc
 
 warnings.filterwarnings('ignore')
 
@@ -2503,6 +2504,8 @@ def worker_loop():
                     response = {"id": req_id, "result": result}
                 except Exception as e:
                     response = {"id": req_id, "error": str(e)}
+                finally:
+                    gc.collect()
 
                 sys.stdout.write(json.dumps(response) + "\n")
                 sys.stdout.flush()
@@ -2560,6 +2563,8 @@ def main():
     except Exception as e:
         print(json.dumps({"error": str(e)}))
         sys.exit(1)
+    finally:
+        gc.collect()
 
 
 if __name__ == '__main__':
