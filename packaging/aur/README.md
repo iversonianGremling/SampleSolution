@@ -29,7 +29,7 @@ Optional flags:
 If the release has multiple Linux assets, pick an exact one:
 
 ```bash
-./packaging/aur/update-pkgbuild.sh --version 0.1.0 --asset linux-Sample-Extractor-0.1.0.AppImage
+./packaging/aur/update-pkgbuild.sh --version 0.1.0 --asset linux-Sample-Solution-0.1.0.AppImage
 ```
 
 ## Manual SHA256 calculation

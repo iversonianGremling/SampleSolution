@@ -13,7 +13,7 @@ options=('!strip')
 
 _repo_owner='iversonianGremling'
 _repo_name='SampleSolution'
-_asset_name='linux-Sample-Extractor-0.1.0.AppImage'
+_asset_name='linux-Sample-Solution-0.1.0.AppImage'
 
 source=("sample-solution-${pkgver}.AppImage::https://github.com/${_repo_owner}/${_repo_name}/releases/download/v${pkgver}/${_asset_name}")
 sha256sums=('SKIP')

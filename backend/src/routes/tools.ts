@@ -166,7 +166,7 @@ function resolveFrontendProjectDir(): string | null {
       }
 
       const looksLikeFrontendProject =
-        packageJson.name === 'sample-extractor-frontend' ||
+        packageJson.name === 'sample-solution-frontend' ||
         typeof packageJson.scripts?.['dev:electron'] === 'string'
 
       if (looksLikeFrontendProject) {

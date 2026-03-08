@@ -825,7 +825,7 @@ const SPLASH_QUOTES = [
 const _appStartMs = Date.now();
 
 app.whenReady().then(async () => {
-  console.log('=== Sample Extractor Starting ===');
+  console.log('=== Sample Solution Starting ===');
   console.log('Chrome:', process.versions.chrome);
   console.log('Node:', process.versions.node);
   console.log('Electron:', process.versions.electron);

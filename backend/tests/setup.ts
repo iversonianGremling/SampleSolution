@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 
 // Test data directory - unique per test run
-export const TEST_DATA_DIR = '/tmp/sample-extractor-test-' + process.pid
+export const TEST_DATA_DIR = '/tmp/sample-solution-test-' + process.pid
 
 // Set environment variables before any imports
 process.env.DATA_DIR = TEST_DATA_DIR

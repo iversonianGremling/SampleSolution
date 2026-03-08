@@ -80,5 +80,5 @@ echo "Total size:"
 du -sh release/
 echo ""
 echo "To run the app:"
-echo "  ./release/Sample-Extractor-*.AppImage"
+echo "  ./release/Sample-Solution-*.AppImage"
 echo ""

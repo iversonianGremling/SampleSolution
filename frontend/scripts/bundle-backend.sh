@@ -44,7 +44,7 @@ echo ""
 echo "📝 Creating package.json..."
 cat > "$BUNDLE_DIR/package.json" << 'EOF'
 {
-  "name": "sample-extractor-backend-embedded",
+  "name": "sample-solution-backend-embedded",
   "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",

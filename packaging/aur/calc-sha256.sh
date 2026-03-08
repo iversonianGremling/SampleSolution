@@ -8,8 +8,8 @@ Usage:
   ./packaging/aur/calc-sha256.sh <https-url>
 
 Examples:
-  ./packaging/aur/calc-sha256.sh ./release/Sample-Extractor-0.1.0.AppImage
-  ./packaging/aur/calc-sha256.sh https://github.com/OWNER/REPO/releases/download/v0.1.0/linux-Sample-Extractor-0.1.0.AppImage
+  ./packaging/aur/calc-sha256.sh ./release/Sample-Solution-0.1.0.AppImage
+  ./packaging/aur/calc-sha256.sh https://github.com/OWNER/REPO/releases/download/v0.1.0/linux-Sample-Solution-0.1.0.AppImage
 EOF
 }
 

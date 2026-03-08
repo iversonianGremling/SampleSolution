@@ -10,7 +10,7 @@ pkgbase = sample-solution-bin
 	provides = sample-solution
 	conflicts = sample-solution
 	options = !strip
-	source = sample-solution-0.1.0.AppImage::https://github.com/iversonianGremling/SampleSolution/releases/download/v0.1.0/linux-Sample-Extractor-0.1.0.AppImage
+	source = sample-solution-0.1.0.AppImage::https://github.com/iversonianGremling/SampleSolution/releases/download/v0.1.0/linux-Sample-Solution-0.1.0.AppImage
 	sha256sums = SKIP
 
 pkgname = sample-solution-bin
