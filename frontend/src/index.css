@@ -341,6 +341,15 @@
   animation: chevronNotify 600ms ease-in-out 2;
 }
 
+/* ─── Onboarding Highlight ────────────────────────────── */
+
+.onboarding-target-highlight {
+  box-shadow:
+    0 0 0 1px rgba(196, 181, 253, 0.62),
+    0 0 0 4px rgba(139, 92, 246, 0.14),
+    0 0 18px rgba(139, 92, 246, 0.26);
+}
+
 /* ─── Mini Drum Rack Enter ─────────────────────────────── */
 
 .mini-rack-enter {

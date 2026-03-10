@@ -2,8 +2,10 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { RefreshCw, AlertCircle, CheckCircle2, Copy, Link2, FolderOpen, ChevronDown, ChevronUp } from 'lucide-react'
 import * as api from '../api/client'
 import { useQuery, useQueryClient, useMutation, useQueries } from '@tanstack/react-query'
+import { AnalysisProgressPanel } from './AnalysisProgressPanel'
 import { BackupPanel } from './BackupPanel'
 import { useAppDialog } from '../hooks/useAppDialog'
+import { getAnalysisJobErrorMessage, useAnalysisJobControls } from '../hooks/useAnalysisJob'
 import { AnalysisWarningAlertContent } from './AnalysisWarningAlertContent'
 import {
   useAccessibility,
@@ -16,10 +18,14 @@ import {
   SPOTDL_INTEGRATION_EVENT,
   SPOTDL_INTEGRATION_STORAGE_KEY,
 } from '../utils/spotdlIntegration'
+import {
+  ANALYSIS_CONCURRENCY_STORAGE_KEY,
+  DEFAULT_ANALYSIS_CONCURRENCY,
+  MAX_ANALYSIS_CONCURRENCY,
+  formatAnalysisJobLabel,
+} from '../utils/analysisPreferences'
 import { formatReanalyzeEtaLabel } from '../utils/reanalyzeEta'
 
-const MAX_REANALYZE_CONCURRENCY = 10
-const DEFAULT_REANALYZE_CONCURRENCY = 2
 const FONT_SCALE_MIDPOINT_PERCENT = Math.round((MIN_FONT_SCALE_PERCENT + MAX_FONT_SCALE_PERCENT) / 2)
 
 // Calibrated from local benchmark on 13th Gen Intel Core i9-13900H:
@@ -41,8 +47,8 @@ const REANALYZE_HIGH_PROCESS_WARNING_THRESHOLD = 7
 const shownReanalyzeWarningJobIds = new Set<string>()
 
 const clampReanalyzeConcurrency = (value: number): number => {
-  if (!Number.isFinite(value)) return DEFAULT_REANALYZE_CONCURRENCY
-  return Math.min(MAX_REANALYZE_CONCURRENCY, Math.max(1, Math.round(value)))
+  if (!Number.isFinite(value)) return DEFAULT_ANALYSIS_CONCURRENCY
+  return Math.min(MAX_ANALYSIS_CONCURRENCY, Math.max(1, Math.round(value)))
 }
 
 const detectBrowserCpuThreads = (): number => {
@@ -234,7 +240,7 @@ const recommendConcurrencyForCpu = (sampleCount: number, cpuThreads: number): nu
     1,
     Math.floor((safeCpuThreads * REANALYZE_RECOMMENDED_CONCURRENCY_CPU_LOAD_TARGET) / REANALYZE_REFERENCE_CORES_PER_WORKER),
   )
-  return Math.min(MAX_REANALYZE_CONCURRENCY, safeSampleCount, maxWorkersByCpu)
+  return Math.min(MAX_ANALYSIS_CONCURRENCY, safeSampleCount, maxWorkersByCpu)
 }
 
 const estimateReanalyzeUsage = (effectiveParallelism: number, cpuThreads: number): ReanalyzeUsageEstimate => {
@@ -3650,8 +3656,8 @@ export function SourcesSettings() {
   const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now())
   const [concurrency, setConcurrency] = useState(() => {
     const detectedThreads = detectBrowserCpuThreads()
-    const cpuDefault = recommendConcurrencyForCpu(MAX_REANALYZE_CONCURRENCY, detectedThreads)
-    const saved = localStorage.getItem('analysis-concurrency')
+    const cpuDefault = recommendConcurrencyForCpu(MAX_ANALYSIS_CONCURRENCY, detectedThreads)
+    const saved = localStorage.getItem(ANALYSIS_CONCURRENCY_STORAGE_KEY)
     const parsed = saved ? Number.parseInt(saved, 10) : cpuDefault
     return clampReanalyzeConcurrency(parsed)
   })
@@ -3669,6 +3675,7 @@ export function SourcesSettings() {
   } = useAccessibility()
 
   const queryClient = useQueryClient()
+  const { startAnalysisJob, cancelAnalysisJob } = useAnalysisJobControls()
   const previousReanalyzeStatusRef = useRef<api.BatchReanalyzeJobState | null>(null)
   const { data: librarySampleCount, refetch: refetchSliceCount } = useQuery<number>({
     queryKey: ['slice-count'],
@@ -3700,10 +3707,7 @@ export function SourcesSettings() {
   const reanalyzeParallelism = reanalyzeJobStatus?.concurrency ?? concurrency
   const statusNote = reanalyzeJobStatus?.statusNote ?? null
   const error = reanalyzeActionError ?? reanalyzeJobStatus?.error ?? null
-  const hasReanalyzeReachedCompletion =
-    isReanalyzing &&
-    !isStoppingReanalyze &&
-    reanalyzeProgressPercent >= 100
+  const reanalyzeJobLabel = reanalyzeJobStatus?.jobLabel || formatAnalysisJobLabel({ mode: 'library' })
 
   const reanalyzeElapsedMs = useMemo(() => {
     const startedAt = reanalyzeJobStatus?.startedAt ? new Date(reanalyzeJobStatus.startedAt).getTime() : Number.NaN
@@ -3817,7 +3821,7 @@ export function SourcesSettings() {
   ])
 
   useEffect(() => {
-    localStorage.setItem('analysis-concurrency', String(concurrency))
+    localStorage.setItem(ANALYSIS_CONCURRENCY_STORAGE_KEY, String(concurrency))
   }, [concurrency])
 
   useEffect(() => {
@@ -3906,17 +3910,15 @@ export function SourcesSettings() {
     setIsStoppingReanalyzeRequest(false)
 
     try {
-      const startResult = await api.startBatchReanalyzeSamples(
-        undefined,
-        'advanced',
-        safeConcurrency,
+      await startAnalysisJob({
+        concurrency: safeConcurrency,
         includeFilenameTags,
         allowAiTagging,
-      )
-      queryClient.setQueryData(['batch-reanalyze-status'], startResult.status)
+        jobLabel: formatAnalysisJobLabel({ mode: 'library' }),
+      })
       await refetchReanalyzeStatus()
     } catch (error) {
-      setReanalyzeActionError(getApiErrorMessage(error, 'Failed to start re-analysis'))
+      setReanalyzeActionError(getAnalysisJobErrorMessage(error, 'Failed to start analysis'))
     }
   }
 
@@ -3926,11 +3928,10 @@ export function SourcesSettings() {
     setReanalyzeActionError(null)
     void (async () => {
       try {
-        const cancelResult = await api.cancelBatchReanalyze()
-        queryClient.setQueryData(['batch-reanalyze-status'], cancelResult.status)
+        await cancelAnalysisJob()
       } catch (error) {
         setIsStoppingReanalyzeRequest(false)
-        setReanalyzeActionError(getApiErrorMessage(error, 'Failed to stop re-analysis'))
+        setReanalyzeActionError(getAnalysisJobErrorMessage(error, 'Failed to stop analysis'))
       } finally {
         await refetchReanalyzeStatus().catch(() => undefined)
       }
@@ -4059,7 +4060,7 @@ export function SourcesSettings() {
               <input
                 type="range"
                 min={1}
-                max={MAX_REANALYZE_CONCURRENCY}
+                max={MAX_ANALYSIS_CONCURRENCY}
                 step={1}
                 value={concurrency}
                 onChange={(e) => setConcurrency(clampReanalyzeConcurrency(Number.parseInt(e.target.value, 10)))}
@@ -4152,70 +4153,33 @@ export function SourcesSettings() {
               </details>
             )}
 
-            {isReanalyzing && !hasReanalyzeReachedCompletion && (
-              <div className="rounded-lg border border-accent-primary/30 bg-accent-primary/10 p-3">
-                <div className="flex items-start gap-2.5">
-                  <RefreshCw size={16} className="mt-0.5 flex-shrink-0 animate-spin text-accent-primary" />
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-white">
-                      Analyzing {reanalyzeTotal ?? '...'} samples • {formatProcessCountLabel(reanalyzeParallelism)} • {formatElapsedTime(reanalyzeElapsedMs)}{reanalyzeEtaLabel ? ` • ETA ${reanalyzeEtaLabel}` : ''}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-slate-300">
-                      {isStoppingReanalyze
-                        ? 'Stopping analysis and terminating workers...'
-                        : `Running advanced feature extraction and tag refresh. It might seem frozen, it's normal.`}
-                    </div>
-                    <div className="mt-2 flex items-center justify-between text-[11px] text-slate-300">
-                      <span>
-                        Processed {reanalyzeProcessed}/{reanalyzeTotal ?? '...'} (analyzed {reanalyzeAnalyzed}, failed {reanalyzeFailed})
-                      </span>
-                      <span className="font-mono text-slate-100">
-                        {reanalyzeProgressPercent}%{reanalyzeEtaLabel ? ` • ETA ${reanalyzeEtaLabel}` : ''}
-                      </span>
-                    </div>
-                    <div className="mt-1 h-1.5 overflow-hidden rounded bg-surface-base/80">
-                      <div
-                        className={`h-full transition-[width] duration-300 ${
-                          isStoppingReanalyze ? 'bg-amber-400' : 'bg-accent-primary'
-                        }`}
-                        style={{ width: `${Math.max(0, Math.min(100, reanalyzeProgressPercent))}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
+            {reanalyzeJobStatus && (
+              isReanalyzing ||
+              reanalyzeStatus ||
+              reanalyzeJobStatus.status === 'canceled' ||
+              reanalyzeJobStatus.status === 'failed'
+            ) && (
+              <AnalysisProgressPanel
+                jobLabel={reanalyzeJobLabel}
+                status={reanalyzeJobStatus.status}
+                stage={reanalyzeJobStatus.stage}
+                isActive={isReanalyzing}
+                isStopping={isStoppingReanalyze}
+                total={reanalyzeTotal}
+                processed={reanalyzeProcessed}
+                analyzed={reanalyzeAnalyzed}
+                failed={reanalyzeFailed}
+                progressPercent={reanalyzeProgressPercent}
+                parallelism={reanalyzeParallelism}
+                elapsedMs={reanalyzeElapsedMs}
+                etaLabel={reanalyzeEtaLabel}
+                statusNote={statusNote}
+                error={reanalyzeJobStatus.error}
+                onStop={isReanalyzing ? handleStopReanalyze : undefined}
+              />
             )}
 
-            {hasReanalyzeReachedCompletion && (
-              <div className="rounded-md border border-green-500/30 bg-green-500/10 px-3 py-1.5">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 size={14} className="text-green-400" />
-                  <span className="text-[11px] text-green-300">Library successfully analyzed</span>
-                </div>
-              </div>
-            )}
-
-            {!isReanalyzing && reanalyzeStatus && (
-              <div className="rounded-lg border border-surface-border bg-surface-base p-2.5">
-                <div className="flex items-center gap-2 text-[12px]">
-                  <CheckCircle2 size={14} className="flex-shrink-0 text-green-400" />
-                  <span className="text-slate-100">
-                    {reanalyzeJobStatus?.status === 'canceled' ? 'Stopped' : 'Complete'}: {reanalyzeStatus.analyzed} analyzed, {reanalyzeStatus.failed} failed (of {reanalyzeStatus.total}).
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {statusNote && reanalyzeJobStatus?.status === 'canceled' && (
-              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5">
-                <div className="flex items-center gap-2 text-[12px]">
-                  <AlertCircle size={14} className="flex-shrink-0 text-amber-400" />
-                  <span className="text-amber-300">{statusNote}</span>
-                </div>
-              </div>
-            )}
-
-            {error && (
+            {error && reanalyzeJobStatus?.status !== 'failed' && (
               <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-2.5">
                 <div className="flex items-center gap-2 text-[12px]">
                   <AlertCircle size={14} className="flex-shrink-0 text-red-400" />

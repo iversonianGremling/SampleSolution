@@ -614,11 +614,13 @@ export function useImportLocalFile() {
       file,
       importType,
       allowAiTagging,
+      deferSampleAnalysis,
     }: {
       file: File
       importType?: 'sample' | 'track'
       allowAiTagging?: boolean
-    }) => api.importLocalFile(file, importType, undefined, allowAiTagging),
+      deferSampleAnalysis?: boolean
+    }) => api.importLocalFile(file, importType, undefined, allowAiTagging, { deferSampleAnalysis }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
@@ -634,12 +636,14 @@ export function useImportLocalFiles() {
       importType,
       allowAiTagging,
       sourceKind,
+      deferSampleAnalysis,
     }: {
       files: File[]
       importType?: 'sample' | 'track'
       allowAiTagging?: boolean
       sourceKind?: api.LocalImportSourceKind
-    }) => api.importLocalFiles(files, importType, undefined, allowAiTagging, { sourceKind }),
+      deferSampleAnalysis?: boolean
+    }) => api.importLocalFiles(files, importType, undefined, allowAiTagging, { sourceKind, deferSampleAnalysis }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
@@ -660,6 +664,7 @@ export function useImportFolder() {
       allowAiTagging?: boolean
     }) => api.importFolder(folderPath, importType, undefined, allowAiTagging),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['importJobs'] })
       queryClient.invalidateQueries({ queryKey: ['tracks'] })
       queryClient.invalidateQueries({ queryKey: ['allSlices'] })
     },
@@ -695,7 +700,10 @@ export function useImportJobs(activeOnly = false) {
   return useQuery({
     queryKey: ['importJobs', { activeOnly }],
     queryFn: () => api.getImportJobs(activeOnly),
-    refetchInterval: activeOnly ? 5000 : false,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: activeOnly ? 2000 : false,
+    refetchIntervalInBackground: activeOnly,
   })
 }
 

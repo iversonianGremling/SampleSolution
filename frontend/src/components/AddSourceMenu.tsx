@@ -13,22 +13,33 @@ import {
   Youtube,
 } from 'lucide-react'
 import type { Collection, Folder, ImportResult } from '../types'
-import { getCollections, getFolders, getGoogleAuthUrl, getSpotifyAuthUrl } from '../api/client'
+import {
+  getBatchReanalyzeStatus,
+  getCollections,
+  getFolders,
+  getGoogleAuthUrl,
+  getSpotifyAuthUrl,
+} from '../api/client'
 import {
   useAuthStatus,
   useBatchAddSlicesToFolder,
   useCreateCollection,
   useCreateFolder,
-  useImportLinks,
   useImportLocalFiles,
+  useImportLinks,
   useImportSoundCloud,
   useImportSpotify,
   usePlaylists,
   useSpotifyPlaylists,
   useSpotifyStatus,
 } from '../hooks/useTracks'
+import { getAnalysisJobErrorMessage, useAnalysisJobControls } from '../hooks/useAnalysisJob'
 import { useToast } from '../contexts/ToastContext'
-import { ImportDestinationPrompt, type ImportDestinationChoice } from './ImportDestinationPrompt'
+import {
+  ImportDestinationPrompt,
+  type ImportAnalysisParallelismSupport,
+  type ImportDestinationChoice,
+} from './ImportDestinationPrompt'
 import {
   isSpotdlIntegrationEnabled,
   SPOTDL_INTEGRATION_EVENT,
@@ -39,12 +50,19 @@ import {
   buildCollectionSubdivisionGroups,
   getDefaultCollectionNameForFolderImport,
 } from '../utils/importCollectionStrategy'
+import {
+  ANALYSIS_CONCURRENCY_STORAGE_KEY,
+  getStoredAnalysisConcurrency,
+  formatAnalysisJobLabel,
+} from '../utils/analysisPreferences'
 
 type ActiveModal = 'link' | 'playlist' | null
 type PlaylistTab = 'youtube' | 'spotify'
 
 interface AddSourceMenuProps {
   onOpenLibraryImport?: () => void
+  isHighlighted?: boolean
+  onHighlightAcknowledged?: () => void
 }
 
 const AUDIO_FILE_REGEX = /\.(wav|mp3|flac|aiff|ogg|m4a)$/i
@@ -194,6 +212,13 @@ function getErrorMessage(error: unknown): string {
   return 'Import failed'
 }
 
+function clampImportAnalysisConcurrency(value: number, maxConcurrency: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return Math.max(1, Math.min(maxConcurrency, Math.round(fallback)))
+  }
+  return Math.max(1, Math.min(maxConcurrency, Math.round(value)))
+}
+
 function ImportResultPanel({ result }: { result: ImportResult }) {
   return (
     <div className="mt-4 rounded-lg border border-surface-border bg-surface-overlay/40 p-3 text-xs space-y-2">
@@ -252,7 +277,11 @@ function PlaylistRow({
   )
 }
 
-export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: AddSourceMenuProps) {
+export function AddSourceMenu({
+  onOpenLibraryImport: _onOpenLibraryImport,
+  isHighlighted = false,
+  onHighlightAcknowledged,
+}: AddSourceMenuProps) {
   const { showToast } = useToast()
   const queryClient = useQueryClient()
   const [isMenuOpen, setIsMenuOpen] = useState(false)
@@ -278,6 +307,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
   const folderInputRef = useRef<HTMLInputElement | null>(null)
 
   const importLocalFiles = useImportLocalFiles()
+  const { startAnalysisJob } = useAnalysisJobControls()
   const batchAddSlicesToFolder = useBatchAddSlicesToFolder()
   const createCollection = useCreateCollection()
   const createFolder = useCreateFolder()
@@ -313,6 +343,34 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
     () => new Map((destinationFolders as Folder[]).map((folder) => [folder.id, folder])),
     [destinationFolders],
   )
+  const { data: batchReanalyzeStatus } = useQuery({
+    queryKey: ['batch-reanalyze-status'],
+    queryFn: getBatchReanalyzeStatus,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+  const analysisParallelismSupport = useMemo<ImportAnalysisParallelismSupport | null>(() => {
+    const capabilities = batchReanalyzeStatus?.capabilities
+    if (!capabilities?.supportsConcurrencySelection) return null
+
+    const maxConcurrency = Math.max(1, Math.round(capabilities.maxConcurrency))
+    const defaultConcurrency = clampImportAnalysisConcurrency(
+      capabilities.defaultConcurrency,
+      maxConcurrency,
+      1,
+    )
+
+    return {
+      maxConcurrency,
+      defaultConcurrency,
+      initialConcurrency: clampImportAnalysisConcurrency(
+        getStoredAnalysisConcurrency(defaultConcurrency),
+        maxConcurrency,
+        defaultConcurrency,
+      ),
+    }
+  }, [batchReanalyzeStatus?.capabilities])
 
   const isAnyImportPending =
     importLocalFiles.isPending ||
@@ -370,6 +428,20 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
       window.removeEventListener('scroll', handleViewportChange, true)
     }
   }, [isMenuOpen, updateMenuPosition])
+
+  useEffect(() => {
+    if (!isHighlighted) return
+
+    const frameId = window.requestAnimationFrame(() => {
+      triggerRef.current?.scrollIntoView({
+        block: 'center',
+        inline: 'nearest',
+        behavior: 'smooth',
+      })
+    })
+
+    return () => window.cancelAnimationFrame(frameId)
+  }, [isHighlighted])
 
   useEffect(() => {
     const onSpotdlChanged = (event: Event) => {
@@ -451,6 +523,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
     bypassParentFolder,
     collectionMode,
     newCollectionName,
+    analysisConcurrency,
   }: {
     files: File[]
     destinationFolderId: number | null
@@ -462,6 +535,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
     bypassParentFolder: boolean
     collectionMode: ImportDestinationChoice['collectionMode']
     newCollectionName: string | null
+    analysisConcurrency: number | null
   }) => {
     let assignedCount = 0
     let createdSubfolderCount = 0
@@ -471,7 +545,12 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
     let assignmentCollectionName: string | null = null
 
     try {
-      const result = await importLocalFiles.mutateAsync({ files, importType, sourceKind })
+      const result = await importLocalFiles.mutateAsync({
+        files,
+        importType,
+        sourceKind,
+        deferSampleAnalysis: importType === 'sample',
+      })
       const successfulImports = result.results
         .map((entry, index) =>
           entry.success && typeof entry.sliceId === 'number'
@@ -499,6 +578,9 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
         effectiveDestinationCollectionId = createdCollection.id
         effectiveDestinationFolder = null
       }
+
+      let analysisStarted = false
+      let analysisStartError: string | null = null
 
       if (importedSliceIds.length > 0) {
         try {
@@ -629,6 +711,22 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
                   : `Imported files but failed to place them in the selected folder: ${getErrorMessage(assignmentError)}`,
           })
         }
+
+        if (importType === 'sample') {
+          try {
+            await startAnalysisJob({
+              sliceIds: importedSliceIds,
+              concurrency: analysisConcurrency ?? undefined,
+              jobLabel: formatAnalysisJobLabel({
+                mode: sourceKind === 'folder' ? 'import-folder' : 'import-files',
+                count: importedSliceIds.length,
+              }),
+            })
+            analysisStarted = true
+          } catch (error) {
+            analysisStartError = getAnalysisJobErrorMessage(error, 'Imported files, but failed to start analysis.')
+          }
+        }
       }
 
       if (result.successful > 0) {
@@ -650,9 +748,15 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
             : ` Added ${assignedCount} to "${destinationFolderName}".`
         }
 
+        const analysisText = analysisStarted
+          ? ' Analysis started in the background.'
+          : analysisStartError
+            ? ` ${analysisStartError}`
+            : ''
+
         showToast({
-          kind: 'success',
-          message: `Imported ${result.successful} ${result.successful === 1 ? 'file' : 'files'}.${assignmentText}`,
+          kind: analysisStartError ? 'warning' : 'success',
+          message: `Imported ${result.successful} ${result.successful === 1 ? 'file' : 'files'}.${assignmentText}${analysisText}`,
         })
       }
 
@@ -684,7 +788,10 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
       return
     }
 
-    if (shouldPromptForDestination(sourceKind, audioFiles.length)) {
+    if (
+      shouldPromptForDestination(sourceKind, audioFiles.length) ||
+      (importType === 'sample' && analysisParallelismSupport !== null)
+    ) {
       setPendingImportRequest({ files: audioFiles, sourceKind, importType })
       return
     }
@@ -700,6 +807,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
       bypassParentFolder: false,
       collectionMode: 'existing',
       newCollectionName: null,
+      analysisConcurrency: null,
     })
   }
 
@@ -739,6 +847,12 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
     if (!pendingImportRequest) return
     const request = pendingImportRequest
     setPendingImportRequest(null)
+    if (choice.importType === 'sample' && typeof choice.analysisConcurrency === 'number') {
+      window.localStorage.setItem(
+        ANALYSIS_CONCURRENCY_STORAGE_KEY,
+        String(choice.analysisConcurrency),
+      )
+    }
     void executeLocalImport({
       files: request.files,
       destinationFolderId: choice.folderId,
@@ -750,6 +864,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
       bypassParentFolder: choice.bypassParentFolder,
       collectionMode: choice.collectionMode,
       newCollectionName: choice.newCollectionName,
+      analysisConcurrency: choice.analysisConcurrency,
     })
   }
 
@@ -1283,6 +1398,7 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
         importCount={pendingImportRequest.files.length}
         sourceFiles={pendingImportRequest.files}
         initialImportType={pendingImportRequest.importType}
+        analysisParallelismSupport={analysisParallelismSupport}
         folders={destinationFolders as Folder[]}
         collections={destinationCollections as Collection[]}
         isLoading={isDestinationFoldersLoading || isDestinationCollectionsLoading}
@@ -1312,9 +1428,16 @@ export function AddSourceMenu({ onOpenLibraryImport: _onOpenLibraryImport }: Add
         <button
           ref={triggerRef}
           type="button"
-          onClick={() => setIsMenuOpen((open) => !open)}
+          onClick={() => {
+            onHighlightAcknowledged?.()
+            setIsMenuOpen((open) => !open)
+          }}
           data-tour="add-source-button"
-          className="w-full min-h-6 px-1.5 py-0.5 text-[12px] rounded-sm transition-colors flex items-center gap-1.5 text-text-secondary hover:text-text-primary hover:bg-surface-overlay"
+          className={`flex w-full min-h-6 items-center gap-1.5 rounded-sm border px-1.5 py-0.5 text-[12px] transition-colors ${
+            isHighlighted
+              ? 'onboarding-target-highlight border-violet-400/70 bg-violet-500/18 text-violet-100 hover:bg-violet-500/24'
+              : 'border-transparent text-text-secondary hover:bg-surface-overlay hover:text-text-primary'
+          }`}
         >
           <Plus size={14} />
           <span className="text-left">Add source</span>

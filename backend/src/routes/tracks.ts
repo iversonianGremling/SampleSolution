@@ -6,6 +6,12 @@ import { db, schema } from '../db/index.js'
 import { getVideoInfo, extractVideoId } from '../services/ytdlp.js'
 import { processTrack } from '../services/processor.js'
 import { generatePeaks } from '../services/ffmpeg.js'
+import {
+  DEFAULT_TRACK_PEAK_COUNT,
+  ensureTrackPeaks,
+  getTrackPeaksArtifactPaths,
+  pruneOrphanedTrackPeaks,
+} from '../services/peaks.js'
 
 const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
@@ -278,12 +284,17 @@ function buildFolderTree(folderEntries: FolderCountEntry[]): FolderNode[] {
 
 type TrackRow = typeof schema.tracks.$inferSelect
 
-async function deleteTrackWithManagedAssets(track: TrackRow): Promise<void> {
+async function deleteTrackWithManagedAssets(
+  track: TrackRow,
+  options: { pruneOrphans?: boolean } = {}
+): Promise<void> {
+  const shouldPruneOrphans = options.pruneOrphans ?? true
+
   if (track.audioPath) {
     await unlinkManagedPath(track.audioPath)
   }
-  if (track.peaksPath) {
-    await unlinkManagedPath(track.peaksPath)
+  for (const peaksPath of getTrackPeaksArtifactPaths(DATA_DIR, track.youtubeId, track.peaksPath)) {
+    await unlinkManagedPath(peaksPath)
   }
 
   const trackSlices = await db
@@ -298,6 +309,10 @@ async function deleteTrackWithManagedAssets(track: TrackRow): Promise<void> {
   }
 
   await db.delete(schema.tracks).where(eq(schema.tracks.id, track.id))
+
+  if (shouldPruneOrphans) {
+    await pruneOrphanedTrackPeaks(DATA_DIR)
+  }
 }
 
 // GET /api/sources/tree - Returns hierarchical source tree
@@ -541,7 +556,11 @@ router.delete('/sources', async (req, res) => {
     }
 
     for (const track of tracksToDelete) {
-      await deleteTrackWithManagedAssets(track)
+      await deleteTrackWithManagedAssets(track, { pruneOrphans: false })
+    }
+
+    if (tracksToDelete.length > 0) {
+      await pruneOrphanedTrackPeaks(DATA_DIR)
     }
 
     res.json({
@@ -774,15 +793,15 @@ router.get('/:id/audio', async (req, res) => {
 
 // Get waveform peaks
 // ?n=<count> requests a specific number of peaks (default 800, max 20000).
-// High-resolution requests are generated on-the-fly and not cached (only the
-// default 800-peak file is persisted on disk).
+// High-resolution requests are generated on-the-fly and not cached.
+// The default preview is persisted in a compact binary cache on disk.
 router.get('/:id/peaks', async (req, res) => {
   const id = parseInt(req.params.id)
   const requestedN = parseInt(String(req.query.n || ''), 10)
   const numPeaks = Number.isFinite(requestedN) && requestedN > 0
     ? Math.min(requestedN, 200000)
-    : 800
-  const isCustomResolution = numPeaks !== 800
+    : DEFAULT_TRACK_PEAK_COUNT
+  const isCustomResolution = numPeaks !== DEFAULT_TRACK_PEAK_COUNT
 
   try {
     const track = await db
@@ -799,35 +818,17 @@ router.get('/:id/peaks', async (req, res) => {
 
     // For custom resolution requests, generate peaks on-the-fly (no caching).
     if (isCustomResolution && existingTrack.audioPath) {
-      const peaks = await generatePeaks(existingTrack.audioPath, null as unknown as string, numPeaks)
+      const peaks = await generatePeaks(existingTrack.audioPath, null, numPeaks)
       return res.json(peaks)
     }
 
-    let peaksPath = existingTrack.peaksPath
-
-    if (!peaksPath && existingTrack.audioPath) {
-      const peaksDir = path.join(DATA_DIR, 'peaks')
-      await fs.mkdir(peaksDir, { recursive: true })
-      const fileSafeId = String(existingTrack.youtubeId || `track_${existingTrack.id}`).replace(/[^a-zA-Z0-9_-]/g, '_')
-      const generatedPeaksPath = path.join(peaksDir, `${fileSafeId}.json`)
-      await generatePeaks(existingTrack.audioPath, generatedPeaksPath)
-
-      const [updatedTrack] = await db
-        .update(schema.tracks)
-        .set({ peaksPath: generatedPeaksPath })
-        .where(eq(schema.tracks.id, existingTrack.id))
-        .returning({ peaksPath: schema.tracks.peaksPath })
-
-      peaksPath = updatedTrack?.peaksPath ?? generatedPeaksPath
-    }
-
-    if (!peaksPath) {
-      return res.status(404).json({ error: 'Peaks not found' })
-    }
-
-    const peaks = JSON.parse(await fs.readFile(peaksPath, 'utf-8'))
+    const { peaks } = await ensureTrackPeaks(existingTrack, DATA_DIR)
     res.json(peaks)
   } catch (error) {
+    const code = error && typeof error === 'object' ? (error as { code?: string }).code : undefined
+    if (code === 'PEAKS_NOT_FOUND') {
+      return res.status(404).json({ error: 'Peaks not found' })
+    }
     console.error('Error fetching peaks:', error)
     res.status(500).json({ error: 'Failed to fetch peaks' })
   }

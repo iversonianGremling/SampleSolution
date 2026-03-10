@@ -1,9 +1,54 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import request from 'supertest'
 import fs from 'fs'
 import path from 'path'
 import type { Express } from 'express'
 import { resetDatabase, TEST_DATA_DIR, getAppDb } from './setup.js'
+import { getAudioFileMetadata } from '../src/services/ffmpeg.js'
+
+vi.mock('../src/services/ffmpeg.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/services/ffmpeg.js')>('../src/services/ffmpeg.js')
+
+  return {
+    ...actual,
+    convertAudioFile: vi.fn().mockImplementation(async (inputPath: string, outputPath: string) => {
+      fs.copyFileSync(inputPath, outputPath)
+      return outputPath
+    }),
+    extractSlice: vi.fn().mockResolvedValue('/tmp/slice.mp3'),
+    generateBidirectionalPeaks: vi.fn().mockResolvedValue({
+      tops: [0.5],
+      bots: [0.25],
+    }),
+    generatePeaks: vi.fn().mockResolvedValue([0.5, 0.7]),
+    getAudioDuration: vi.fn().mockResolvedValue(180),
+    getAudioFileMetadata: vi.fn().mockImplementation(async (inputPath: string) => {
+      const extension = path.extname(inputPath).replace(/^\./, '').toLowerCase() || 'mp3'
+      return {
+        sampleRate: 44100,
+        bitDepth: 16,
+        channels: 2,
+        format: extension,
+        modifiedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        title: null,
+        artist: null,
+        album: null,
+        albumArtist: null,
+        genre: null,
+        composer: null,
+        trackNumber: null,
+        discNumber: null,
+        trackComment: null,
+        musicalKey: null,
+        tagBpm: null,
+        isrc: null,
+        year: null,
+        metadataRaw: null,
+      }
+    }),
+  }
+})
 
 async function createZipArchiveFromDirectory(sourceDir: string, zipPath: string, rootName: string): Promise<void> {
   const archiver = (await import('archiver')).default
@@ -20,6 +65,25 @@ async function createZipArchiveFromDirectory(sourceDir: string, zipPath: string,
   })
 }
 
+async function waitForImportJob(app: Express, jobId: string): Promise<void> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const res = await request(app).get(`/api/import/jobs/${jobId}/status`)
+    expect(res.status).toBe(200)
+
+    if (res.body.phase === 'done') {
+      return
+    }
+
+    if (res.body.phase === 'error' || res.body.phase === 'cancelled') {
+      throw new Error(`Import job ${jobId} ended in phase ${res.body.phase}: ${res.body.error ?? 'unknown error'}`)
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+
+  throw new Error(`Timed out waiting for import job ${jobId}`)
+}
+
 describe('Import API', () => {
   let app: Express
 
@@ -27,6 +91,7 @@ describe('Import API', () => {
     resetDatabase()
     const { createApp } = await import('../src/app.js')
     app = createApp({ dataDir: TEST_DATA_DIR })
+    vi.mocked(getAudioFileMetadata).mockClear()
   })
 
   it('returns method guidance for GET /api/import/files', async () => {
@@ -144,6 +209,194 @@ describe('Import API', () => {
     const uploadsAfter = fs.existsSync(uploadsDir) ? fs.readdirSync(uploadsDir) : []
     expect(slicesAfter).toEqual(slicesBefore)
     expect(uploadsAfter).toEqual(uploadsBefore)
+  })
+
+  it('imports MP3 metadata into existing track columns for single-file imports', async () => {
+    const sourcePath = path.join(TEST_DATA_DIR, 'tagged-single.mp3')
+    fs.writeFileSync(sourcePath, 'fake-mp3')
+
+    vi.mocked(getAudioFileMetadata).mockResolvedValueOnce({
+      sampleRate: 44100,
+      bitDepth: 16,
+      channels: 2,
+      format: 'mp3',
+      modifiedAt: '2024-01-02T03:04:05.000Z',
+      createdAt: '2024-01-02T03:04:05.000Z',
+      title: 'Tagged Title',
+      artist: 'Tagged Artist',
+      album: 'Tagged Album',
+      albumArtist: 'Tagged Album Artist',
+      genre: 'Tagged Genre',
+      composer: 'Tagged Composer',
+      trackNumber: 7,
+      discNumber: 2,
+      trackComment: 'Tagged Comment',
+      musicalKey: 'Fm',
+      tagBpm: 128,
+      isrc: 'USABC2400001',
+      year: 2024,
+      metadataRaw: JSON.stringify({ formatTags: { title: 'Tagged Title' } }),
+    })
+
+    const res = await request(app)
+      .post('/api/import/file?importType=track')
+      .send({ absolutePath: sourcePath })
+
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+
+    const db = await getAppDb()
+    const trackRow = db.prepare(`
+      SELECT
+        title,
+        artist,
+        album,
+        year,
+        album_artist AS albumArtist,
+        genre,
+        composer,
+        track_number AS trackNumber,
+        disc_number AS discNumber,
+        track_comment AS trackComment,
+        musical_key AS musicalKey,
+        tag_bpm AS tagBpm,
+        isrc,
+        metadata_raw AS metadataRaw
+      FROM tracks
+      ORDER BY id DESC
+      LIMIT 1
+    `).get() as {
+      title: string
+      artist: string | null
+      album: string | null
+      year: number | null
+      albumArtist: string | null
+      genre: string | null
+      composer: string | null
+      trackNumber: number | null
+      discNumber: number | null
+      trackComment: string | null
+      musicalKey: string | null
+      tagBpm: number | null
+      isrc: string | null
+      metadataRaw: string | null
+    }
+
+    expect(trackRow).toEqual({
+      title: 'Tagged Title',
+      artist: 'Tagged Artist',
+      album: 'Tagged Album',
+      year: 2024,
+      albumArtist: 'Tagged Album Artist',
+      genre: 'Tagged Genre',
+      composer: 'Tagged Composer',
+      trackNumber: 7,
+      discNumber: 2,
+      trackComment: 'Tagged Comment',
+      musicalKey: 'Fm',
+      tagBpm: 128,
+      isrc: 'USABC2400001',
+      metadataRaw: JSON.stringify({ formatTags: { title: 'Tagged Title' } }),
+    })
+  })
+
+  it('imports MP3 metadata into existing track columns for folder imports', async () => {
+    const importRoot = path.join(TEST_DATA_DIR, 'tagged-folder')
+    const sourcePath = path.join(importRoot, 'tagged-folder-track.mp3')
+    fs.mkdirSync(importRoot, { recursive: true })
+    fs.writeFileSync(sourcePath, 'fake-mp3')
+
+    vi.mocked(getAudioFileMetadata).mockResolvedValueOnce({
+      sampleRate: 44100,
+      bitDepth: 24,
+      channels: 2,
+      format: 'mp3',
+      modifiedAt: '2024-02-03T04:05:06.000Z',
+      createdAt: '2024-02-03T04:05:06.000Z',
+      title: 'Folder Tagged Title',
+      artist: 'Folder Tagged Artist',
+      album: 'Folder Tagged Album',
+      albumArtist: 'Folder Album Artist',
+      genre: 'Breakbeat',
+      composer: 'Folder Composer',
+      trackNumber: 3,
+      discNumber: 1,
+      trackComment: 'Folder Comment',
+      musicalKey: 'Am',
+      tagBpm: 174,
+      isrc: 'USABC2400002',
+      year: 2023,
+      metadataRaw: JSON.stringify({ formatTags: { title: 'Folder Tagged Title' } }),
+    })
+
+    const res = await request(app)
+      .post('/api/import/folder')
+      .send({ folderPath: importRoot, importType: 'track' })
+
+    expect(res.status).toBe(202)
+    expect(typeof res.body.jobId).toBe('string')
+
+    await waitForImportJob(app, res.body.jobId)
+
+    const db = await getAppDb()
+    const trackRow = db.prepare(`
+      SELECT
+        title,
+        artist,
+        album,
+        year,
+        album_artist AS albumArtist,
+        genre,
+        composer,
+        track_number AS trackNumber,
+        disc_number AS discNumber,
+        track_comment AS trackComment,
+        musical_key AS musicalKey,
+        tag_bpm AS tagBpm,
+        isrc,
+        metadata_raw AS metadataRaw,
+        folder_path AS folderPath,
+        relative_path AS relativePath
+      FROM tracks
+      ORDER BY id DESC
+      LIMIT 1
+    `).get() as {
+      title: string
+      artist: string | null
+      album: string | null
+      year: number | null
+      albumArtist: string | null
+      genre: string | null
+      composer: string | null
+      trackNumber: number | null
+      discNumber: number | null
+      trackComment: string | null
+      musicalKey: string | null
+      tagBpm: number | null
+      isrc: string | null
+      metadataRaw: string | null
+      folderPath: string | null
+      relativePath: string | null
+    }
+
+    expect(trackRow).toEqual({
+      title: 'Folder Tagged Title',
+      artist: 'Folder Tagged Artist',
+      album: 'Folder Tagged Album',
+      year: 2023,
+      albumArtist: 'Folder Album Artist',
+      genre: 'Breakbeat',
+      composer: 'Folder Composer',
+      trackNumber: 3,
+      discNumber: 1,
+      trackComment: 'Folder Comment',
+      musicalKey: 'Am',
+      tagBpm: 174,
+      isrc: 'USABC2400002',
+      metadataRaw: JSON.stringify({ formatTags: { title: 'Folder Tagged Title' } }),
+      folderPath: importRoot,
+      relativePath: 'tagged-folder-track.mp3',
+    })
   })
 
   it('creates a folder inside an imported source root and exposes it in sources tree', async () => {

@@ -13,11 +13,18 @@ export interface ImportDestinationChoice {
   folderId: number | null
   collectionId: number | null
   importType: ImportType
+  analysisConcurrency: number | null
   structureMode: ImportStructureMode
   bypassParentFolder: boolean
   collectionMode: ImportCollectionMode
   newCollectionName: string | null
   destinationFolder: Pick<Folder, 'id' | 'name' | 'collectionId' | 'parentId'> | null
+}
+
+export interface ImportAnalysisParallelismSupport {
+  defaultConcurrency: number
+  maxConcurrency: number
+  initialConcurrency: number
 }
 
 interface ImportDestinationPromptProps {
@@ -31,6 +38,7 @@ interface ImportDestinationPromptProps {
   isSubmitting?: boolean
   initialImportType?: ImportType
   showImportTypeSelector?: boolean
+  analysisParallelismSupport?: ImportAnalysisParallelismSupport | null
   onCancel: () => void
   onConfirm: (choice: ImportDestinationChoice) => void
 }
@@ -91,6 +99,13 @@ const FALLBACK_IMPORT_COLLECTION_NAME = 'Imported Files'
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   return 'Request failed'
+}
+
+function clampImportAnalysisConcurrency(value: number, maxConcurrency: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return Math.max(1, Math.min(maxConcurrency, Math.round(fallback)))
+  }
+  return Math.max(1, Math.min(maxConcurrency, Math.round(value)))
 }
 
 function mergeById<T extends { id: number }>(base: T[], added: T[]): T[] {
@@ -373,6 +388,7 @@ export function ImportDestinationPrompt({
   isSubmitting = false,
   initialImportType = 'sample',
   showImportTypeSelector = true,
+  analysisParallelismSupport = null,
   onCancel,
   onConfirm,
 }: ImportDestinationPromptProps) {
@@ -380,10 +396,22 @@ export function ImportDestinationPrompt({
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null)
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null)
   const [selectedImportType, setSelectedImportType] = useState<ImportType>(initialImportType)
+  const [analysisConcurrency, setAnalysisConcurrency] = useState<number | null>(() => {
+    if (!analysisParallelismSupport) return null
+    return clampImportAnalysisConcurrency(
+      analysisParallelismSupport.initialConcurrency,
+      analysisParallelismSupport.maxConcurrency,
+      analysisParallelismSupport.defaultConcurrency,
+    )
+  })
   const [structureMode, setStructureMode] = useState<ImportStructureMode>('flatten')
   const [bypassParentFolder, setBypassParentFolder] = useState(false)
-  const [collectionMode, setCollectionMode] = useState<ImportCollectionMode>('existing')
-  const [newImportCollectionName, setNewImportCollectionName] = useState('')
+  const [collectionMode, setCollectionMode] = useState<ImportCollectionMode>(() =>
+    sourceKind === 'folder' ? 'new-collection' : 'existing'
+  )
+  const [newImportCollectionName, setNewImportCollectionName] = useState(() =>
+    sourceKind === 'folder' ? getDefaultCollectionNameForFolderImport(sourceFiles) || '' : ''
+  )
   const [createdCollections, setCreatedCollections] = useState<Collection[]>([])
   const [createdFolders, setCreatedFolders] = useState<Folder[]>([])
   const [showCreateCollection, setShowCreateCollection] = useState(false)
@@ -401,9 +429,18 @@ export function ImportDestinationPrompt({
     setSelectedFolderId(null)
     setSelectedCollectionId(null)
     setSelectedImportType(initialImportType)
+    setAnalysisConcurrency(
+      analysisParallelismSupport
+        ? clampImportAnalysisConcurrency(
+            analysisParallelismSupport.initialConcurrency,
+            analysisParallelismSupport.maxConcurrency,
+            analysisParallelismSupport.defaultConcurrency,
+          )
+        : null,
+    )
     setStructureMode(sourceKind === 'folder' ? 'preserve' : 'flatten')
     setBypassParentFolder(false)
-    setCollectionMode('existing')
+    setCollectionMode(sourceKind === 'folder' ? 'new-collection' : 'existing')
     setNewImportCollectionName(sourceKind === 'folder' ? getDefaultCollectionNameForFolderImport(sourceFiles) || '' : '')
     setCreatedCollections([])
     setCreatedFolders([])
@@ -412,7 +449,7 @@ export function ImportDestinationPrompt({
     setFolderCreationTarget(null)
     setNewFolderName('')
     setCreationError(null)
-  }, [initialImportType, isOpen, sourceFiles, sourceKind])
+  }, [analysisParallelismSupport, initialImportType, isOpen, sourceFiles, sourceKind])
 
   const mergedCollections = useMemo(
     () =>
@@ -487,6 +524,16 @@ export function ImportDestinationPrompt({
   const autoFlatDestinationFolderName = `Imported ${new Date().toISOString().slice(0, 10)}`
   const hasAutoCollectionDestination = sourceKind === 'folder' && collectionMode !== 'existing'
   const isBypassParentFolderDisabled = sourceKind === 'folder' && collectionMode === 'split-by-folder'
+  const resolvedAnalysisConcurrency = analysisParallelismSupport
+    ? clampImportAnalysisConcurrency(
+        analysisConcurrency ?? analysisParallelismSupport.initialConcurrency,
+        analysisParallelismSupport.maxConcurrency,
+        analysisParallelismSupport.defaultConcurrency,
+      )
+    : null
+  const shouldShowAnalysisParallelism = Boolean(
+    analysisParallelismSupport && selectedImportType === 'sample',
+  )
   const shouldAssignAtCollectionRoot =
     sourceKind === 'folder' && structureMode === 'preserve'
   const hasDestinationSelection =
@@ -575,6 +622,10 @@ export function ImportDestinationPrompt({
           ? selectedCollectionId
           : null,
       importType: selectedImportType,
+      analysisConcurrency:
+        selectedImportType === 'sample' && analysisParallelismSupport
+          ? resolvedAnalysisConcurrency
+          : null,
       structureMode: sourceKind === 'folder' ? structureMode : 'flatten',
       bypassParentFolder:
         sourceKind === 'folder' && structureMode === 'preserve' && collectionMode !== 'split-by-folder'
@@ -788,23 +839,53 @@ export function ImportDestinationPrompt({
             </div>
           )}
 
+          {shouldShowAnalysisParallelism && analysisParallelismSupport && resolvedAnalysisConcurrency !== null && (
+            <div
+              className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3"
+              data-tour="import-analysis-parallelism"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-semibold text-white">Analysis parallelism</div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    Run more workers to analyze imported samples faster when your machine can handle it.
+                  </div>
+                </div>
+                <span className="text-[11px] font-mono text-slate-200">
+                  {resolvedAnalysisConcurrency} {resolvedAnalysisConcurrency === 1 ? 'worker' : 'workers'}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={analysisParallelismSupport.maxConcurrency}
+                step={1}
+                value={resolvedAnalysisConcurrency}
+                onChange={(event) =>
+                  setAnalysisConcurrency(
+                    clampImportAnalysisConcurrency(
+                      Number.parseInt(event.target.value, 10),
+                      analysisParallelismSupport.maxConcurrency,
+                      analysisParallelismSupport.defaultConcurrency,
+                    ),
+                  )}
+                className="mt-3 h-1 w-full accent-accent-primary"
+              />
+              <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+                <span>1</span>
+                <span>{Math.max(1, Math.ceil(analysisParallelismSupport.maxConcurrency / 2))}</span>
+                <span>{analysisParallelismSupport.maxConcurrency}</span>
+              </div>
+              <div className="mt-1 text-[10px] text-slate-400">
+                Backend default: {analysisParallelismSupport.defaultConcurrency} {analysisParallelismSupport.defaultConcurrency === 1 ? 'worker' : 'workers'}.
+              </div>
+            </div>
+          )}
+
           {sourceKind === 'folder' && (
             <div className="rounded-lg border border-surface-border bg-surface-overlay/20 p-3" data-tour="import-collection-strategy">
               <div className="text-xs font-semibold text-white">Collection strategy</div>
               <div className="mt-2 space-y-1.5">
-                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-surface-border bg-surface-overlay/30 px-2 py-1.5 text-xs text-slate-200 transition-colors hover:bg-surface-overlay">
-                  <input
-                    type="radio"
-                    name="importDestinationCollectionMode"
-                    checked={collectionMode === 'existing'}
-                    onChange={() => {
-                      setCollectionMode('existing')
-                      setCreationError(null)
-                    }}
-                    className="mt-0.5 h-3.5 w-3.5"
-                  />
-                  <span>Assign into an existing collection or folder</span>
-                </label>
                 <label
                   className="flex cursor-pointer items-start gap-2 rounded-md border border-surface-border bg-surface-overlay/30 px-2 py-1.5 text-xs text-slate-200 transition-colors hover:bg-surface-overlay"
                   data-tour="import-collection-mode-new"
@@ -843,6 +924,22 @@ export function ImportDestinationPrompt({
                     className="mt-0.5 h-3.5 w-3.5"
                   />
                   <span>Create a collection for each first source subfolder</span>
+                </label>
+                <label
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-surface-border bg-surface-overlay/30 px-2 py-1.5 text-xs text-slate-200 transition-colors hover:bg-surface-overlay"
+                  data-tour="import-collection-mode-existing"
+                >
+                  <input
+                    type="radio"
+                    name="importDestinationCollectionMode"
+                    checked={collectionMode === 'existing'}
+                    onChange={() => {
+                      setCollectionMode('existing')
+                      setCreationError(null)
+                    }}
+                    className="mt-0.5 h-3.5 w-3.5"
+                  />
+                  <span>Assign into an existing collection or folder</span>
                 </label>
               </div>
 

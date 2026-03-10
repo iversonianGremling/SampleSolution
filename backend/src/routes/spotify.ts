@@ -1,5 +1,4 @@
 import { Router } from 'express'
-import path from 'path'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import {
@@ -11,7 +10,8 @@ import {
   getSpotifyAlbumTracks,
   downloadSpotifyTrack,
 } from '../services/spotdl.js'
-import { generatePeaks, getAudioDuration } from '../services/ffmpeg.js'
+import { getAudioDuration } from '../services/ffmpeg.js'
+import { generateAndStoreTrackPeaks } from '../services/peaks.js'
 
 const router = Router()
 
@@ -261,8 +261,6 @@ router.post('/import', async (req, res) => {
 })
 
 async function processSpotifyTrack(trackId: string, dbId: string) {
-  const peaksDir = path.join(DATA_DIR, 'peaks')
-
   try {
     await db
       .update(schema.tracks)
@@ -272,8 +270,7 @@ async function processSpotifyTrack(trackId: string, dbId: string) {
     const audioPath = await downloadSpotifyTrack(trackId)
     const duration = await getAudioDuration(audioPath)
 
-    const peaksPath = path.join(peaksDir, `${dbId}.json`)
-    await generatePeaks(audioPath, peaksPath)
+    const peaksPath = await generateAndStoreTrackPeaks(audioPath, DATA_DIR, dbId)
 
     await db
       .update(schema.tracks)

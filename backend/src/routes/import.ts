@@ -4,12 +4,12 @@ import path from 'path'
 import fs from 'fs/promises'
 import { db, schema } from '../db/index.js'
 import {
-  generatePeaks,
   getAudioDuration,
   getAudioFileMetadata,
   FFMPEG_BIN,
   type AudioFileMetadata,
 } from '../services/ffmpeg.js'
+import { generateAndStoreTrackPeaks } from '../services/peaks.js'
 import {
   analyzeAudioFeatures,
   buildSamplePathHint,
@@ -94,7 +94,6 @@ router.get('/import/analysis-status', (_req, res) => {
 const DATA_DIR = process.env.DATA_DIR || './data'
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads')
 const SLICES_DIR = path.join(DATA_DIR, 'slices')
-const PEAKS_DIR = path.join(DATA_DIR, 'peaks')
 const USE_REFERENCE_IMPORTS = process.env.LOCAL_IMPORT_MODE === 'reference'
 const TRACK_IMPORT_FILENAME_TAG_LIMIT = Math.max(
   0,
@@ -106,11 +105,7 @@ const SUPPORTED_FORMATS = ['.wav', '.mp3', '.flac', '.aiff', '.ogg', '.m4a']
 
 async function buildTrackPeaks(audioPath: string, trackKey: string): Promise<string | null> {
   try {
-    await fs.mkdir(PEAKS_DIR, { recursive: true })
-    const sanitizedKey = trackKey.replace(/[^a-zA-Z0-9_-]/g, '_')
-    const peaksPath = path.join(PEAKS_DIR, `${sanitizedKey}.json`)
-    await generatePeaks(audioPath, peaksPath)
-    return peaksPath
+    return await generateAndStoreTrackPeaks(audioPath, DATA_DIR, trackKey)
   } catch (error) {
     console.error(`[import] Failed to generate peaks for ${trackKey}:`, error)
     return null
@@ -235,6 +230,12 @@ function resolveImportType(rawValue: unknown): 'sample' | 'track' {
   const normalized = rawValue.trim().toLowerCase()
   if (normalized === 'track') return 'track'
   return 'sample'
+}
+
+function resolveDeferAnalysis(rawValue: unknown): boolean {
+  if (typeof rawValue !== 'string') return false
+  const normalized = rawValue.trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
 
 function logIgnoredAllowAiTagging(rawValue: unknown, routePath: string): void {
@@ -567,6 +568,7 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
 
   try {
     const importType = resolveImportType(req.query?.importType)
+    const deferAnalysis = resolveDeferAnalysis(req.query?.deferAnalysis)
     logIgnoredAllowAiTagging(req.query?.allowAiTagging, '/import/file')
     let originalName = ''
     let baseName = ''
@@ -694,7 +696,7 @@ router.post('/import/file', upload.single('file'), async (req, res) => {
     }
 
     // If importing as sample, automatically analyze audio features (queued)
-    if (importType === 'sample') {
+    if (importType === 'sample' && !deferAnalysis) {
       analysisQueue.add(async () => {
         try {
           await autoTagSlice(slice.id, slicePath)
@@ -747,6 +749,7 @@ router.post('/import/files', upload.array('files'), async (req, res) => {
   const absolutePaths = parseBodyStringArray(req.body?.absolutePaths)
   const referencePaths = parseBodyStringArray(req.body?.referencePaths)
   const importType = resolveImportType(req.query?.importType)
+  const deferAnalysis = resolveDeferAnalysis(req.query?.deferAnalysis)
   logIgnoredAllowAiTagging(req.query?.allowAiTagging, '/import/files')
 
   console.log('[import/files] importType from query:', importType)
@@ -897,7 +900,7 @@ router.post('/import/files', upload.array('files'), async (req, res) => {
       }
 
       // If importing as sample, automatically analyze audio features (queued)
-      if (importType === 'sample') {
+      if (importType === 'sample' && !deferAnalysis) {
         analysisQueue.add(async () => {
           try {
             await autoTagSlice(slice.id, slicePath)

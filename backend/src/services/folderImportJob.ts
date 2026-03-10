@@ -5,12 +5,12 @@ import { eq, sql } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { walkAudioFiles } from './fileWalker.js'
 import {
-  generatePeaks,
   getAudioDuration,
   getAudioFileMetadata,
   FFMPEG_BIN,
   type AudioFileMetadata,
 } from './ffmpeg.js'
+import { generateAndStoreTrackPeaks } from './peaks.js'
 import {
   analyzeAudioFeatures,
   buildSamplePathHint,
@@ -23,7 +23,6 @@ import {
 
 const DATA_DIR = process.env.DATA_DIR || './data'
 const SLICES_DIR = path.join(DATA_DIR, 'slices')
-const PEAKS_DIR = path.join(DATA_DIR, 'peaks')
 const USE_REFERENCE_IMPORTS = process.env.LOCAL_IMPORT_MODE === 'reference'
 const TRACK_IMPORT_FILENAME_TAG_LIMIT = Math.max(
   0,
@@ -77,11 +76,7 @@ function toTrackMetadata(sourceMetadata: AudioFileMetadata | null) {
 
 async function buildTrackPeaks(audioPath: string, trackKey: string): Promise<string | null> {
   try {
-    await fs.mkdir(PEAKS_DIR, { recursive: true })
-    const sanitizedKey = trackKey.replace(/[^a-zA-Z0-9_-]/g, '_')
-    const peaksPath = path.join(PEAKS_DIR, `${sanitizedKey}.json`)
-    await generatePeaks(audioPath, peaksPath)
-    return peaksPath
+    return await generateAndStoreTrackPeaks(audioPath, DATA_DIR, trackKey)
   } catch (error) {
     console.error(`[importJob] Failed to generate peaks for ${trackKey}:`, error)
     return null

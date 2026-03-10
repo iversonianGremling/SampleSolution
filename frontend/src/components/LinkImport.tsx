@@ -31,6 +31,8 @@ import {
   useUpdateYtdlp,
   useUpdateSpotdl,
 } from '../hooks/useTracks'
+import { getAnalysisJobErrorMessage, useAnalysisJobControls } from '../hooks/useAnalysisJob'
+import { useToast } from '../contexts/ToastContext'
 import { getCollections, getFolders, getSpotifyAuthUrl } from '../api/client'
 import type { Collection, Folder, ImportResult } from '../types'
 import type { BatchImportResult } from '../api/client'
@@ -46,6 +48,7 @@ import {
   buildCollectionSubdivisionGroups,
   getDefaultCollectionNameForFolderImport,
 } from '../utils/importCollectionStrategy'
+import { formatAnalysisJobLabel } from '../utils/analysisPreferences'
 
 type ImportMode = 'youtube' | 'spotify' | 'soundcloud' | 'local' | 'folder'
 type LocalImportSourceKind = 'files' | 'folder'
@@ -550,6 +553,7 @@ function BatchResultDisplay({ result }: { result: BatchImportResult }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function LinkImport({ onTracksAdded }: LinkImportProps) {
+  const { showToast } = useToast()
   const [mode, setMode] = useState<ImportMode>('youtube')
   const [text, setText] = useState('')
   const [result, setResult] = useState<ImportResult | null>(null)
@@ -569,6 +573,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
 
   const importLinks = useImportLinks()
   const importLocalFiles = useImportLocalFiles()
+  const { startAnalysisJob } = useAnalysisJobControls()
   const batchAddSlicesToFolder = useBatchAddSlicesToFolder()
   const createCollection = useCreateCollection()
   const createFolder = useCreateFolder()
@@ -695,7 +700,12 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
   }) => {
     if (files.length === 0) return
 
-    const res = await importLocalFiles.mutateAsync({ files, importType, sourceKind })
+    const res = await importLocalFiles.mutateAsync({
+      files,
+      importType,
+      sourceKind,
+      deferSampleAnalysis: importType === 'sample',
+    })
 
     if (sourceKind === 'folder') {
       setFolderResult(res)
@@ -710,6 +720,7 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
           : null)
       .filter((entry): entry is { sliceId: number; file: File } => entry !== null)
     const importedSliceIds = successfulImports.map((entry) => entry.sliceId)
+    let analysisStartError: string | null = null
     if (importedSliceIds.length > 0) {
       const shouldPreserveStructure = sourceKind === 'folder' && structureMode === 'preserve'
       const effectiveBypassParentFolder =
@@ -830,10 +841,30 @@ export function LinkImport({ onTracksAdded }: LinkImportProps) {
           }
         }
       }
+
+      if (importType === 'sample') {
+        try {
+          await startAnalysisJob({
+            sliceIds: importedSliceIds,
+            jobLabel: formatAnalysisJobLabel({
+              mode: sourceKind === 'folder' ? 'import-folder' : 'import-files',
+              count: importedSliceIds.length,
+            }),
+          })
+        } catch (error) {
+          analysisStartError = getAnalysisJobErrorMessage(error, 'Imported files, but failed to start analysis.')
+        }
+      }
     }
 
     if (res.successful > 0) {
       onTracksAdded()
+      if (analysisStartError) {
+        showToast({
+          kind: 'warning',
+          message: analysisStartError,
+        })
+      }
     }
   }
 

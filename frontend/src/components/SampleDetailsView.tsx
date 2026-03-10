@@ -23,7 +23,6 @@ import {
   getSimilarSlices,
   getSliceAudioFeatures,
   deleteSlice,
-  batchReanalyzeSamples,
   getTrackPeaks,
   type UpdateSlicePayload,
 } from '../api/client'
@@ -34,6 +33,7 @@ import { DrumRackPadPicker } from './DrumRackPadPicker'
 import { ConfirmModal } from './ConfirmModal'
 import { SampleTypeIcon } from './SampleTypeIcon'
 import { useAppDialog } from '../hooks/useAppDialog'
+import { getAnalysisJobErrorMessage, useAnalysisJobControls } from '../hooks/useAnalysisJob'
 import { prepareTunePreviewPlayback } from '../services/tunePreviewAudio'
 import { logRendererError, logRendererInfo } from '../utils/rendererLog'
 import {
@@ -48,6 +48,7 @@ import {
   normalizeEnvelopeTypeForEdit,
   type EnvelopeTypeValue,
 } from '../constants/envelopeTypes'
+import { formatAnalysisJobLabel } from '../utils/analysisPreferences'
 
 interface SampleDetailsViewProps {
   sample: SliceWithTrackExtended | null
@@ -339,6 +340,7 @@ export function SampleDetailsView({
   onTuneToNote,
 }: SampleDetailsViewProps) {
   const { alert: showAlert, dialogNode } = useAppDialog()
+  const { startAnalysisJob } = useAnalysisJobControls()
   const [isPlaying, setIsPlaying] = useState(false)
   const [isWaveformReady, setIsWaveformReady] = useState(false)
   const [activeTab, setActiveTab] = useState<'details' | 'advanced'>('details')
@@ -602,11 +604,19 @@ export function SampleDetailsView({
     if (!sample) return
     try {
       setIsAnalyzing(true)
-      await batchReanalyzeSamples([sample.id])
-      queryClient.invalidateQueries({ queryKey: ['slices'] })
-      queryClient.invalidateQueries({ queryKey: ['audioFeatures', sample.id] })
+      await startAnalysisJob({
+        sliceIds: [sample.id],
+        jobLabel: formatAnalysisJobLabel({
+          mode: 'single',
+          sampleName: sample.name,
+        }),
+      })
     } catch (error) {
-      console.error('Failed to analyze sample:', error)
+      await showAlert({
+        title: 'Analysis Failed',
+        message: getAnalysisJobErrorMessage(error, 'Failed to start sample analysis.'),
+        isDestructive: true,
+      })
     } finally {
       setIsAnalyzing(false)
     }

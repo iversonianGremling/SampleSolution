@@ -346,7 +346,7 @@ export async function generateBidirectionalPeaks(
 
 export async function generatePeaks(
   inputPath: string,
-  outputPath: string | null,
+  outputPath: string | null = null,
   numPeaks: number = 800
 ): Promise<number[]> {
   return new Promise((resolve, reject) => {

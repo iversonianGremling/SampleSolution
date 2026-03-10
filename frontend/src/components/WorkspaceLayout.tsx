@@ -29,6 +29,10 @@ interface WorkspaceLayoutProps {
   onTuneToNote: (note: string | null) => void
   samplePlayMode: PlayMode
   sampleLoopEnabled: boolean
+  isAddSourceHighlighted?: boolean
+  onAddSourceHighlightAcknowledged?: () => void
+  onHighlightHelpMenu?: () => void
+  onOpenSourcesAndHighlightImport?: () => void
 }
 
 export function WorkspaceLayout({
@@ -37,6 +41,10 @@ export function WorkspaceLayout({
   onTuneToNote,
   samplePlayMode,
   sampleLoopEnabled,
+  isAddSourceHighlighted = false,
+  onAddSourceHighlightAcknowledged,
+  onHighlightHelpMenu,
+  onOpenSourcesAndHighlightImport,
 }: WorkspaceLayoutProps) {
   const { showToast } = useToast()
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('details')
@@ -174,6 +182,10 @@ export function WorkspaceLayout({
           onTuneToNote={onTuneToNote}
           playMode={samplePlayMode}
           loopEnabled={sampleLoopEnabled}
+          isAddSourceHighlighted={isAddSourceHighlighted}
+          onAddSourceHighlightAcknowledged={onAddSourceHighlightAcknowledged}
+          onHighlightHelpMenu={onHighlightHelpMenu}
+          onOpenSourcesAndHighlightImport={onOpenSourcesAndHighlightImport}
           bulkRenameMode={isBulkRenameMode}
           bulkRenameRules={bulkRenameRules}
           onBulkRenameRulesChange={setBulkRenameRules}

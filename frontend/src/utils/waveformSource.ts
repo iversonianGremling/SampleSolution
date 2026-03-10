@@ -86,26 +86,168 @@ export async function checkWaveformSourceAccessible(
   })
 }
 
-/** Maximum number of bars rendered per canvas, regardless of canvas width or zoom level. */
+/** @deprecated No longer used for bar rendering; kept for any external references. */
 export const MAX_BARS = 800
 
-/**
- * Fraction of the viewport width pre-rendered on each side as an overscan buffer.
- * e.g. 0.2 means 20% extra bars are computed and stored beyond each canvas edge so
- * that panning reveals pre-faded bars rather than popping them in.
- */
+/** @deprecated No longer used for bar rendering; kept for any external references. */
 export const OVERSCAN_FACTOR = 0.2
 
+// ─── Shared drawing helpers ───────────────────────────────────────────────────
+
 /**
- * Draw waveform bars for a specific viewport window of a longer peaks array.
+ * Build a smooth closed Path2D representing the waveform shape.
+ * topYs and botYs are y-coordinates for the top and bottom envelope.
+ * Uses midpoint quadratic bezier for smooth curves without overshoot.
+ */
+function buildWaveformPath(
+  topYs: Float32Array | number[],
+  botYs: Float32Array | number[],
+  xs: Float32Array | number[],
+): Path2D {
+  const n = topYs.length
+  const path = new Path2D()
+  if (n === 0) return path
+
+  if (n === 1) {
+    path.moveTo(xs[0], topYs[0])
+    path.lineTo(xs[0], botYs[0])
+    return path
+  }
+
+  // Top edge: left → right
+  path.moveTo(xs[0], topYs[0])
+  for (let i = 0; i < n - 1; i++) {
+    const mx = (xs[i] + xs[i + 1]) / 2
+    const my = (topYs[i] + topYs[i + 1]) / 2
+    path.quadraticCurveTo(xs[i], topYs[i], mx, my)
+  }
+  path.lineTo(xs[n - 1], topYs[n - 1])
+
+  // Bottom edge: right → left
+  path.lineTo(xs[n - 1], botYs[n - 1])
+  for (let i = n - 1; i > 0; i--) {
+    const mx = (xs[i] + xs[i - 1]) / 2
+    const my = (botYs[i] + botYs[i - 1]) / 2
+    path.quadraticCurveTo(xs[i], botYs[i], mx, my)
+  }
+  path.lineTo(xs[0], botYs[0])
+  path.closePath()
+
+  return path
+}
+
+/**
+ * Fill a waveform path using canvas clipping for a smooth progress split.
+ * Progress color fills the played region; wave color fills the unplayed region.
+ * The playhead cursor is drawn as a crisp 1.5px line.
+ */
+function fillPathProgress(
+  ctx: CanvasRenderingContext2D,
+  path: Path2D,
+  w: number,
+  h: number,
+  progressX: number,
+  waveColor: string,
+  progressColor: string,
+  cursorColor: string,
+): void {
+  // Played region (left of playhead)
+  if (progressX > 0) {
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(0, 0, Math.min(progressX, w), h)
+    ctx.clip()
+    ctx.fillStyle = progressColor
+    ctx.fill(path)
+    ctx.restore()
+  }
+
+  // Unplayed region (right of playhead)
+  if (progressX < w) {
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(Math.max(0, progressX), 0, w, h)
+    ctx.clip()
+    ctx.fillStyle = waveColor
+    ctx.fill(path)
+    ctx.restore()
+  }
+
+  // Cursor line
+  if (progressX > 0 && progressX < w) {
+    ctx.fillStyle = cursorColor
+    ctx.fillRect(Math.round(progressX) - 0.5, 0, 1.5, h)
+  }
+}
+
+// ─── Public drawing functions ─────────────────────────────────────────────────
+
+/**
+ * Draw a smooth continuous waveform onto a Canvas element.
+ * Uses a filled polygon with bezier smoothing and clip-based progress coloring
+ * for a perfectly smooth playhead indicator with no per-bar stepping.
  *
- * Renders exactly MAX_BARS bars across the visible viewport, downsampling when zoomed
- * out and interpolating when zoomed in. Overscan extends the peak lookup range by
- * overscanFactor on each side so barOpacities are pre-warmed for adjacent bars —
- * those overscan bars are tracked in the opacities array but never drawn.
+ * barWidth and barGap are accepted for API compatibility but ignored.
+ */
+export function drawWaveformBars(
+  canvas: HTMLCanvasElement,
+  peaks: number[],
+  currentTime: number,
+  duration: number,
+  opts: {
+    waveColor?: string
+    progressColor?: string
+    cursorColor?: string
+    barWidth?: number
+    barGap?: number
+    maxBars?: number
+  } = {}
+): void {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  const {
+    waveColor = '#4f46e5',
+    progressColor = '#818cf8',
+    cursorColor = '#f59e0b',
+  } = opts
+
+  const w = canvas.width
+  const h = canvas.height
+  ctx.clearRect(0, 0, w, h)
+
+  if (!peaks.length || !w || !h) return
+
+  const progressX = duration > 0 ? (currentTime / duration) * w : 0
+  const centerY = h / 2
+
+  // One sample point every ~2 physical pixels, capped at peaks length
+  const numPts = Math.max(2, Math.min(peaks.length, Math.ceil(w / 2)))
+
+  const topYs = new Float32Array(numPts)
+  const botYs = new Float32Array(numPts)
+  const xs    = new Float32Array(numPts)
+
+  for (let i = 0; i < numPts; i++) {
+    const t = (i / (numPts - 1)) * (peaks.length - 1)
+    const lo = Math.floor(t)
+    const hi = Math.min(lo + 1, peaks.length - 1)
+    const amp = Math.max(0.02, peaks[lo] + (peaks[hi] - peaks[lo]) * (t - lo))
+    xs[i]    = (i / (numPts - 1)) * w
+    topYs[i] = centerY - amp * centerY * 0.9
+    botYs[i] = centerY + amp * centerY * 0.9
+  }
+
+  const path = buildWaveformPath(topYs, botYs, xs)
+  fillPathProgress(ctx, path, w, h, progressX, waveColor, progressColor, cursorColor)
+}
+
+/**
+ * Draw a smooth continuous waveform for a specific viewport window of a longer peaks array.
  *
- * The canvas element should have its width/height set in physical pixels (devicePixelRatio)
- * before calling this function.
+ * Renders the visible portion of the waveform using bezier smoothing and clip-based
+ * progress coloring. The canvas element should have its width/height set in physical
+ * pixels (devicePixelRatio) before calling this function.
  */
 export function drawViewportWaveform(
   canvas: HTMLCanvasElement,
@@ -129,9 +271,6 @@ export function drawViewportWaveform(
     waveColor = '#4f46e5',
     progressColor = '#818cf8',
     cursorColor = '#f59e0b',
-    barWidth = 2,
-    barGap = 1,
-    overscanFactor = OVERSCAN_FACTOR,
   } = opts
 
   const ctx = canvas.getContext('2d')
@@ -140,114 +279,40 @@ export function drawViewportWaveform(
   const w = canvas.width
   const h = canvas.height
   ctx.clearRect(0, 0, w, h)
-
-  const stride = barWidth + barGap
-  // Bars that fit in the visible canvas, capped at MAX_BARS
-  const visibleBarCount = Math.min(Math.floor(w / stride), MAX_BARS)
-  if (visibleBarCount <= 0) return
+  if (!w || !h) return
 
   const viewportDuration = viewportEnd - viewportStart
-  const secsPerBar = viewportDuration / visibleBarCount
+  const progressX = ((currentTime - viewportStart) / viewportDuration) * w
+  const centerY = h / 2
 
-  // Overscan: extra bars beyond each edge, tracked in barOpacities but not drawn
-  const overscanBars = Math.ceil(visibleBarCount * overscanFactor)
-  // Total slots needed: overscan-left + visible + overscan-right
-  const totalSlots = overscanBars + visibleBarCount + overscanBars
+  // One sample point every ~2 physical pixels
+  const numPts = Math.max(2, Math.ceil(w / 2))
 
-  const progressX = (currentTime - viewportStart) / viewportDuration * w
+  const topYs = new Float32Array(numPts)
+  const botYs = new Float32Array(numPts)
+  const xs    = new Float32Array(numPts)
 
-  for (let i = 0; i < totalSlots; i++) {
-    const barOffset = i - overscanBars  // negative = left of viewport
-    const barTime = viewportStart + (barOffset + 0.5) * secsPerBar
-    if (barTime < 0 || barTime > totalDuration) continue
+  for (let i = 0; i < numPts; i++) {
+    const frac    = i / (numPts - 1)
+    const barTime = viewportStart + frac * viewportDuration
+    if (barTime < 0 || barTime > totalDuration) {
+      // Outside audio: flat center line
+      xs[i]    = frac * w
+      topYs[i] = centerY
+      botYs[i] = centerY
+      continue
+    }
 
-    const isVisible = barOffset >= 0 && barOffset < visibleBarCount
-    if (!isVisible) continue
-
-    // Sample peak at barTime via linear interpolation into allPeaks
     const peakT = (barTime / totalDuration) * (allPeaks.length - 1)
-    const lo = Math.floor(peakT)
-    const hi = Math.min(lo + 1, allPeaks.length - 1)
-    const amp = allPeaks[lo] + (allPeaks[hi] - allPeaks[lo]) * (peakT - lo)
-    const barHeight = Math.max(2, amp * h * 0.9)
+    const lo    = Math.floor(peakT)
+    const hi    = Math.min(lo + 1, allPeaks.length - 1)
+    const amp   = Math.max(0.02, allPeaks[lo] + (allPeaks[hi] - allPeaks[lo]) * (peakT - lo))
 
-    const x = barOffset * stride
-    const y = (h - barHeight) / 2
-
-    ctx.fillStyle = x < progressX ? progressColor : waveColor
-    ctx.fillRect(x, y, barWidth, barHeight)
+    xs[i]    = frac * w
+    topYs[i] = centerY - amp * centerY * 0.9
+    botYs[i] = centerY + amp * centerY * 0.9
   }
 
-  ctx.globalAlpha = 1
-
-  // Playhead cursor
-  if (progressX > 0 && progressX < w) {
-    ctx.fillStyle = cursorColor
-    ctx.fillRect(Math.floor(progressX), 0, 2, h)
-  }
-}
-
-/**
- * Draw waveform bars onto a Canvas element.
- * Used by SliceWaveform, WaveformMinimap, and useCompactWaveform.
- * Bar count is capped at MAX_BARS. No overscan — use drawViewportWaveform for that.
- *
- * The canvas element should have its width/height set in physical pixels (devicePixelRatio)
- * before calling this function.
- */
-export function drawWaveformBars(
-  canvas: HTMLCanvasElement,
-  peaks: number[],
-  currentTime: number,
-  duration: number,
-  opts: {
-    waveColor?: string
-    progressColor?: string
-    cursorColor?: string
-    barWidth?: number
-    barGap?: number
-    /** Max bars to render. Defaults to MAX_BARS. */
-    maxBars?: number
-  } = {}
-): void {
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-
-  const {
-    waveColor = '#4f46e5',
-    progressColor = '#818cf8',
-    cursorColor = '#f59e0b',
-    barWidth = 2,
-    barGap = 1,
-    maxBars = MAX_BARS,
-  } = opts
-
-  const w = canvas.width
-  const h = canvas.height
-  ctx.clearRect(0, 0, w, h)
-
-  const stride = barWidth + barGap
-  const barCount = Math.min(Math.floor(w / stride), maxBars)
-  if (barCount <= 0) return
-
-  const progressX = duration > 0 ? (currentTime / duration) * w : 0
-
-  for (let i = 0; i < barCount; i++) {
-    const t = (i / Math.max(barCount - 1, 1)) * (peaks.length - 1)
-    const lo = Math.floor(t)
-    const hi = Math.min(lo + 1, peaks.length - 1)
-    const amp = peaks[lo] + (peaks[hi] - peaks[lo]) * (t - lo)
-    const barHeight = Math.max(2, amp * h * 0.9)
-    const x = i * stride
-    const y = (h - barHeight) / 2
-
-    ctx.fillStyle = x < progressX ? progressColor : waveColor
-    ctx.fillRect(x, y, barWidth, barHeight)
-  }
-
-  // Playhead cursor
-  if (duration > 0 && progressX > 0 && progressX < w) {
-    ctx.fillStyle = cursorColor
-    ctx.fillRect(Math.floor(progressX), 0, 2, h)
-  }
+  const path = buildWaveformPath(topYs, botYs, xs)
+  fillPathProgress(ctx, path, w, h, progressX, waveColor, progressColor, cursorColor)
 }

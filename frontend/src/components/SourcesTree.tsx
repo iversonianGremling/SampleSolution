@@ -61,6 +61,8 @@ interface SourcesTreeProps {
   onMoveCollection?: (id: number, direction: 'up' | 'down') => void
   onOpenAdvancedCategoryManagement?: () => void
   onOpenLibraryImport?: () => void
+  isAddSourceHighlighted?: boolean
+  onAddSourceHighlightAcknowledged?: () => void
   showFavoritesOnly?: boolean
   onToggleFavoritesOnly?: () => void
 }
@@ -96,6 +98,8 @@ export function SourcesTree({
   onMoveCollection,
   onOpenAdvancedCategoryManagement,
   onOpenLibraryImport,
+  isAddSourceHighlighted = false,
+  onAddSourceHighlightAcknowledged,
   showFavoritesOnly = false,
   onToggleFavoritesOnly,
 }: SourcesTreeProps) {
@@ -1389,7 +1393,11 @@ export function SourcesTree({
                 className="space-y-px rounded-md border-surface-border/70 bg-surface-base/20 p-0.5"
                 data-tour="sources-section"
               >
-              <AddSourceMenu onOpenLibraryImport={onOpenLibraryImport} />
+              <AddSourceMenu
+                onOpenLibraryImport={onOpenLibraryImport}
+                isHighlighted={isAddSourceHighlighted}
+                onHighlightAcknowledged={onAddSourceHighlightAcknowledged}
+              />
 
               {(() => {
                 const showAllActive = isActive({ type: 'all' })

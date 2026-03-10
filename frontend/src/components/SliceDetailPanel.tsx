@@ -1,11 +1,13 @@
 import { Play, Square, Heart, Download, Wand2, Loader2 } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
 import type { SliceWithTrackExtended, SamplePoint } from '../types'
-import { getSliceDownloadUrl, batchReanalyzeSamples } from '../api/client'
+import { getSliceDownloadUrl } from '../api/client'
 import { InstrumentIcon } from './InstrumentIcon'
 import { freqToPitchDisplay } from '../utils/musicTheory'
 import { useToggleFavorite } from '../hooks/useTracks'
+import { getAnalysisJobErrorMessage, useAnalysisJobControls } from '../hooks/useAnalysisJob'
+import { useToast } from '../contexts/ToastContext'
+import { formatAnalysisJobLabel } from '../utils/analysisPreferences'
 
 interface SliceDetailPanelProps {
   selectedPoint: SamplePoint
@@ -18,8 +20,9 @@ export function SliceDetailPanel({
   sliceData: sample,
   onClose: _onClose,
 }: SliceDetailPanelProps) {
+  const { showToast } = useToast()
   const toggleFavoriteMutation = useToggleFavorite()
-  const queryClient = useQueryClient()
+  const { startAnalysisJob } = useAnalysisJobControls()
   const [isPlaying, setIsPlaying] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -72,11 +75,18 @@ export function SliceDetailPanel({
     if (!sample) return
     try {
       setIsAnalyzing(true)
-      await batchReanalyzeSamples([sample.id])
-      queryClient.invalidateQueries({ queryKey: ['slices'] })
-      queryClient.invalidateQueries({ queryKey: ['audioFeatures', sample.id] })
+      await startAnalysisJob({
+        sliceIds: [sample.id],
+        jobLabel: formatAnalysisJobLabel({
+          mode: 'single',
+          sampleName: sample.name,
+        }),
+      })
     } catch (error) {
-      console.error('Failed to analyze sample:', error)
+      showToast({
+        kind: 'error',
+        message: getAnalysisJobErrorMessage(error, 'Failed to start sample analysis.'),
+      })
     } finally {
       setIsAnalyzing(false)
     }

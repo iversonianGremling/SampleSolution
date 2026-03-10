@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   LogOut,
@@ -20,21 +20,33 @@ import {
 import { driver, type DriveStep } from 'driver.js'
 import 'driver.js/dist/driver.css'
 import frontendPackageJson from '../package.json'
+import { AnalysisProgressPanel } from './components/AnalysisProgressPanel'
 import { SourcesSettings } from './components/SourcesSettings'
 import { WorkspaceLayout } from './components/WorkspaceLayout'
 import { GlobalTuneControl } from './components/GlobalTuneControl'
 import type { PlayMode } from './components/SourcesView'
-import { useAuthStatus } from './hooks/useTracks'
+import { useAnalysisJobControls } from './hooks/useAnalysisJob'
+import { useAuthStatus, useImportJobs } from './hooks/useTracks'
 import { useImportProgress } from './hooks/useImportProgress'
 import { useDrumRack } from './contexts/DrumRackContext'
 import { useAccessibility } from './contexts/AccessibilityContext'
-import { getBatchReanalyzeStatus, getImportAnalysisStatus, getSliceCount, logout } from './api/client'
+import {
+  getBatchReanalyzeStatus,
+  getImportAnalysisStatus,
+  getSliceCount,
+  logout,
+  type ImportAnalysisStatus,
+  type ImportJobStatus,
+} from './api/client'
 import { ensureGlobalAudioTracking, panicStopAllAudio } from './services/globalAudioVolume'
+import type { ImportProgressEntry } from './services/importProgress'
+import { formatAnalysisJobLabel } from './utils/analysisPreferences'
 import { formatReanalyzeEtaLabel } from './utils/reanalyzeEta'
 import { handleTrustedTourAdvanceClick } from './utils/tourEventGuards'
 
 type Tab = 'workspace' | 'settings'
 type TourSectionKey = 'introduction' | 'importSources' | 'navbar' | 'mainPanel' | 'filters' | 'rightPanel' | 'settings'
+type OnboardingHighlightTarget = 'tour' | 'add-source' | null
 const SETTINGS_TRANSITION_MS = 220
 const LARGE_REANALYZE_SAMPLE_THRESHOLD = 50
 const NAVBAR_REANALYZE_SUCCESS_MS = 30_000
@@ -163,6 +175,11 @@ type NavbarReanalyzeIndicator =
     }
   | {
       kind: 'success'
+      processed: number
+      total: number
+      analyzed: number
+      failed: number
+      elapsedMs: number
     }
 
 type NavbarImportIndicator =
@@ -188,6 +205,217 @@ function formatBytes(bytes: number): string {
   if (safeBytes < 1024 * 1024) return `${(safeBytes / 1024).toFixed(1)} KB`
   if (safeBytes < 1024 * 1024 * 1024) return `${(safeBytes / (1024 * 1024)).toFixed(1)} MB`
   return `${(safeBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function formatImportCount(value: number, singular: string, plural = `${singular}s`): string {
+  return `${value.toLocaleString()} ${value === 1 ? singular : plural}`
+}
+
+function formatElapsedDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`
+  }
+
+  return `${seconds}s`
+}
+
+function getImportPathLeaf(pathValue: string | null): string | null {
+  if (!pathValue) return null
+
+  const normalized = pathValue.replace(/\\/g, '/').trim()
+  if (!normalized) return null
+
+  const segments = normalized.split('/').filter(Boolean)
+  return segments.length > 0 ? segments[segments.length - 1] : normalized
+}
+
+function formatImportAnalysisQueueLabel(status: ImportAnalysisStatus | undefined): string | null {
+  if (!status?.isActive) return null
+
+  const parts: string[] = []
+  if (status.activeTaskCount > 0) {
+    parts.push(`${formatImportCount(status.activeTaskCount, 'analysis', 'analyses')} active`)
+  }
+  if (status.queuedTaskCount > 0) {
+    parts.push(`${formatImportCount(status.queuedTaskCount, 'task')} queued`)
+  }
+
+  if (parts.length === 0) return 'analysis queue active'
+  return `analysis queue: ${parts.join(', ')}`
+}
+
+function getAnimatedLocalImportPercent(entry: ImportProgressEntry, nowMs: number): number {
+  if (entry.phase !== 'processing') {
+    return clampPercent(entry.progressPercent)
+  }
+
+  const processingStartedAt = entry.processingStartedAt ?? entry.startedAt
+  const elapsedMs = Math.max(0, nowMs - processingStartedAt)
+  const estimatedMsPerFile = entry.sourceKind === 'folder' ? 180 : 120
+  const estimatedDurationMs = Math.min(
+    120_000,
+    Math.max(12_000, (entry.totalFiles ?? 1) * estimatedMsPerFile),
+  )
+  const baseProgress = Math.max(82, entry.progressPercent)
+  const maxProgress = entry.importType === 'sample' ? 97 : 99
+  const ratio = Math.min(1, elapsedMs / estimatedDurationMs)
+
+  return clampPercent(baseProgress + (maxProgress - baseProgress) * ratio)
+}
+
+function buildLocalImportIndicator({
+  activeImport,
+  activeImportCount,
+  importAnalysisStatus,
+  nowMs,
+}: {
+  activeImport: ImportProgressEntry
+  activeImportCount: number
+  importAnalysisStatus: ImportAnalysisStatus | undefined
+  nowMs: number
+}): NavbarImportIndicator {
+  const sourceLabel = activeImport.sourceKind === 'folder' ? 'folder' : 'files'
+  const modeLabel = activeImport.importType === 'sample' ? 'sample mode' : 'track mode'
+  const fileCountLabel = typeof activeImport.totalFiles === 'number'
+    ? formatImportCount(activeImport.totalFiles, 'file')
+    : 'file count pending'
+  const detailParts = [fileCountLabel, modeLabel]
+
+  if (activeImport.phase === 'processing') {
+    const processingStartedAt = activeImport.processingStartedAt ?? activeImport.startedAt
+    const processingElapsedMs = Math.max(0, nowMs - processingStartedAt)
+    const queueLabel = activeImport.importType === 'sample'
+      ? formatImportAnalysisQueueLabel(importAnalysisStatus)
+      : null
+
+    detailParts.push(
+      activeImport.importType === 'sample'
+        ? 'registering files, generating previews, and queuing analysis'
+        : 'reading metadata and building track previews',
+    )
+    if (queueLabel) detailParts.push(queueLabel)
+    detailParts.push(`elapsed ${formatElapsedDuration(processingElapsedMs)}`)
+
+    if ((activeImport.totalFiles ?? 0) >= 100 && processingElapsedMs >= 10_000) {
+      detailParts.push('large imports can stay here while the server indexes every file')
+    }
+  } else {
+    detailParts.push(`uploading ${sourceLabel} to the app`)
+
+    if (activeImport.totalBytes && activeImport.totalBytes > 0) {
+      detailParts.push(`${formatBytes(activeImport.uploadedBytes)} / ${formatBytes(activeImport.totalBytes)}`)
+    }
+  }
+
+  if (activeImportCount > 1) {
+    detailParts.push(`${activeImportCount.toLocaleString()} active imports`)
+  }
+
+  return {
+    kind: 'progress',
+    title: activeImport.phase === 'processing'
+      ? activeImport.importType === 'sample'
+        ? `Indexing imported ${sourceLabel}`
+        : `Registering imported ${sourceLabel}`
+      : `Uploading ${sourceLabel}`,
+    detail: detailParts.join(' • '),
+    progressPercent: getAnimatedLocalImportPercent(activeImport, nowMs),
+    isProcessing: activeImport.phase === 'processing',
+  }
+}
+
+function buildImportJobIndicator({
+  job,
+  activeImportCount,
+  nowMs,
+}: {
+  job: ImportJobStatus
+  activeImportCount: number
+  nowMs: number
+}): NavbarImportIndicator {
+  const modeLabel = job.importType === 'sample' ? 'sample mode' : 'track mode'
+  const elapsedMs = Math.max(0, nowMs - (job.createdAt ?? nowMs))
+  const elapsedLabel = `elapsed ${formatElapsedDuration(elapsedMs)}`
+  const latestPathLabel = getImportPathLeaf(job.lastProcessedPath)
+  const activeCountLabel = activeImportCount > 1
+    ? `${activeImportCount.toLocaleString()} active imports`
+    : null
+
+  if (job.phase === 'scanning') {
+    return {
+      kind: 'progress',
+      title: 'Scanning folder',
+      detail: [
+        modeLabel,
+        'discovering audio files before import starts',
+        formatImportCount(job.discoveredCount, 'file'),
+        elapsedLabel,
+        activeCountLabel,
+      ].filter(Boolean).join(' • '),
+      progressPercent: clampPercent(Math.min(24, 10 + Math.floor(elapsedMs / 1000))),
+      isProcessing: true,
+    }
+  }
+
+  if (job.phase === 'importing') {
+    const processedCount = Math.max(0, job.registeredCount + job.failedCount)
+    const totalCount = typeof job.totalCount === 'number' ? job.totalCount : null
+    const progressCap = job.importType === 'sample' ? 78 : 96
+    const progressPercent = totalCount && totalCount > 0
+      ? clampPercent(25 + (Math.min(processedCount, totalCount) / totalCount) * (progressCap - 25))
+      : clampPercent(job.importType === 'sample' ? 52 : 68)
+
+    return {
+      kind: 'progress',
+      title: job.importType === 'sample' ? 'Indexing imported folder' : 'Importing folder',
+      detail: [
+        modeLabel,
+        job.importType === 'sample'
+          ? 'creating library entries and waveforms'
+          : 'importing tracks and reading metadata',
+        totalCount && totalCount > 0
+          ? `${processedCount.toLocaleString()}/${totalCount.toLocaleString()} files processed`
+          : `${processedCount.toLocaleString()} files processed`,
+        latestPathLabel ? `latest ${latestPathLabel}` : null,
+        job.failedCount > 0 ? `${job.failedCount.toLocaleString()} failed` : null,
+        elapsedLabel,
+        activeCountLabel,
+      ].filter(Boolean).join(' • '),
+      progressPercent,
+      isProcessing: true,
+    }
+  }
+
+  const analyzedCountLabel = formatImportCount(job.analyzedCount, 'sample')
+
+  return {
+    kind: 'progress',
+    title: 'Analyzing imported samples',
+    detail: [
+      modeLabel,
+      'running analysis and auto-tagging',
+      `${analyzedCountLabel} processed`,
+      latestPathLabel ? `latest ${latestPathLabel}` : null,
+      job.failedCount > 0 ? `${job.failedCount.toLocaleString()} failed` : null,
+      elapsedLabel,
+      activeCountLabel,
+    ].filter(Boolean).join(' • '),
+    progressPercent: clampPercent(82 + Math.min(15, Math.floor(Math.log2(job.analyzedCount + 1) * 3))),
+    isProcessing: true,
+  }
 }
 
 interface SamplePlayModeControlProps {
@@ -291,17 +519,26 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('workspace')
   const [isTourMenuOpen, setIsTourMenuOpen] = useState(false)
   const [isSupportMenuOpen, setIsSupportMenuOpen] = useState(false)
+  const [analysisPanelModalOpen, setAnalysisPanelModalOpen] = useState(false)
+  const [reanalyzeIndicatorDismissed, setReanalyzeIndicatorDismissed] = useState(false)
+  const [showStopAnalysisConfirm, setShowStopAnalysisConfirm] = useState(false)
+  const navbarIndicatorsRef = useRef<HTMLDivElement>(null)
+  const [indicatorBarLeft, setIndicatorBarLeft] = useState(0)
   const [isFeedbackEmailModalOpen, setIsFeedbackEmailModalOpen] = useState(false)
   const [isFeedbackEmailCopied, setIsFeedbackEmailCopied] = useState(false)
   const [isSettingsRendered, setIsSettingsRendered] = useState(false)
   const [isSettingsVisible, setIsSettingsVisible] = useState(false)
+  const [activeOnboardingHighlight, setActiveOnboardingHighlight] = useState<OnboardingHighlightTarget>(null)
   const [tuneTargetNote, setTuneTargetNote] = useState<string | null>(null)
   const [samplePlayMode, setSamplePlayMode] = useState<PlayMode>('normal')
   const [sampleLoopEnabled, setSampleLoopEnabled] = useState(false)
   const [etaNowMs, setEtaNowMs] = useState(() => Date.now())
+  const { cancelAnalysisJob } = useAnalysisJobControls()
+  const wasBatchAnalysisActiveRef = useRef(false)
   const wasImportAnalysisActiveRef = useRef(false)
   const importProgress = useImportProgress()
   const { data: authStatus } = useAuthStatus()
+  const { data: activeImportJobs } = useImportJobs(true)
   const { data: reanalyzeStatus } = useQuery({
     queryKey: ['batch-reanalyze-status'],
     queryFn: getBatchReanalyzeStatus,
@@ -324,6 +561,22 @@ function App() {
     refetchInterval: (query) => (query.state.data?.isActive ? 1000 : 4000),
     refetchIntervalInBackground: true,
   })
+  const activeImportJobCount = activeImportJobs?.length ?? 0
+  const activeImportCount = importProgress.activeCount + activeImportJobCount
+  const mostRecentImportJob = useMemo(() => {
+    if (!activeImportJobs?.length) return null
+
+    return activeImportJobs.reduce((latestJob, currentJob) => {
+      const latestTimestamp = latestJob.updatedAt ?? latestJob.createdAt ?? 0
+      const currentTimestamp = currentJob.updatedAt ?? currentJob.createdAt ?? 0
+      return currentTimestamp > latestTimestamp ? currentJob : latestJob
+    })
+  }, [activeImportJobs])
+  const hasTimedNavbarActivity = Boolean(
+    reanalyzeStatus?.isActive
+    || importProgress.active?.phase === 'processing'
+    || activeImportJobCount > 0,
+  )
 
   useEffect(() => {
     if (activeTab === 'settings') {
@@ -416,14 +669,42 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!reanalyzeStatus?.isActive) return
+    if (!hasTimedNavbarActivity) return
 
     const timerId = window.setInterval(() => {
       setEtaNowMs(Date.now())
-    }, 500)
+    }, 1000)
 
     return () => window.clearInterval(timerId)
-  }, [reanalyzeStatus?.isActive])
+  }, [hasTimedNavbarActivity])
+
+  useEffect(() => {
+    if (!reanalyzeStatus?.isActive) return
+
+    const refresh = () => {
+      void queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      void queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      void queryClient.invalidateQueries({ queryKey: ['tracks'] })
+      void queryClient.invalidateQueries({ queryKey: ['sourceTree'] })
+      void queryClient.invalidateQueries({ queryKey: ['audioFeatures'] })
+    }
+
+    refresh()
+    const timerId = window.setInterval(refresh, 1500)
+    return () => window.clearInterval(timerId)
+  }, [reanalyzeStatus?.isActive, queryClient])
+
+  useEffect(() => {
+    const isActive = Boolean(reanalyzeStatus?.isActive)
+    if (wasBatchAnalysisActiveRef.current && !isActive) {
+      void queryClient.invalidateQueries({ queryKey: ['allSlices'] })
+      void queryClient.invalidateQueries({ queryKey: ['scopedSamples'] })
+      void queryClient.invalidateQueries({ queryKey: ['tracks'] })
+      void queryClient.invalidateQueries({ queryKey: ['sourceTree'] })
+      void queryClient.invalidateQueries({ queryKey: ['audioFeatures'] })
+    }
+    wasBatchAnalysisActiveRef.current = isActive
+  }, [reanalyzeStatus?.isActive, queryClient])
 
   useEffect(() => {
     if (!importAnalysisStatus?.isActive) return
@@ -511,9 +792,122 @@ function App() {
     })
   }
 
+  const startSpotlightTour = (step: DriveStep) => {
+    appTourRef.current?.destroy()
+    const tour = driver({
+      overlayColor: '#0f1216',
+      overlayOpacity: 0.74,
+      stagePadding: 8,
+      stageRadius: 10,
+      popoverClass: 'app-tour-popover',
+      steps: [step],
+    })
+    appTourRef.current = tour
+    tour.drive(0)
+  }
+
+  const waitForVisibleTourElement = (
+    selector: string,
+    onReady: (element: HTMLElement) => void,
+    attempt = 0,
+  ) => {
+    const element = document.querySelector<HTMLElement>(selector)
+    const rect = element?.getBoundingClientRect()
+    const style = element ? window.getComputedStyle(element) : null
+    const isVisible = Boolean(
+      element
+      && rect
+      && rect.width > 0
+      && rect.height > 0
+      && rect.bottom > 0
+      && rect.right > 0
+      && rect.top < window.innerHeight
+      && rect.left < window.innerWidth
+      && style
+      && style.display !== 'none'
+      && style.visibility !== 'hidden',
+    )
+
+    if (isVisible && element) {
+      onReady(element)
+      return
+    }
+
+    if (attempt >= 24) return
+    window.setTimeout(() => {
+      waitForVisibleTourElement(selector, onReady, attempt + 1)
+    }, 60)
+  }
+
+  const focusOnboardingTarget = (
+    selector: string,
+    step: DriveStep,
+    highlightTarget: OnboardingHighlightTarget,
+    beforeWait?: () => void,
+  ) => {
+    setActiveTab('workspace')
+    setIsTourMenuOpen(false)
+    setIsSupportMenuOpen(false)
+    setActiveOnboardingHighlight(highlightTarget)
+
+    window.setTimeout(() => {
+      beforeWait?.()
+      waitForVisibleTourElement(selector, (element) => {
+        element.scrollIntoView({
+          block: 'center',
+          inline: 'nearest',
+          behavior: 'smooth',
+        })
+        startSpotlightTour(step)
+      })
+    }, 0)
+  }
+
+  const handleHighlightHelpMenu = () => {
+    focusOnboardingTarget(
+      '[data-tour="tour-launch"]',
+      {
+        element: '[data-tour="tour-launch"]',
+        popover: {
+          title: 'Guided tours',
+          description: 'Use this help button to open guided tours for imports, navigation, filters, and workspace tools.',
+          doneBtnText: 'Close',
+        },
+      },
+      'tour',
+    )
+  }
+
+  const handleHighlightImportSources = () => {
+    focusOnboardingTarget(
+      '[data-tour="add-source-button"]',
+      {
+        element: '[data-tour="add-source-button"]',
+        popover: {
+          title: 'Import sources',
+          description: 'Use Add source to import folders, files, links, playlists, and full library sources.',
+          doneBtnText: 'Close',
+        },
+      },
+      'add-source',
+      () => {
+        const sourcesSidebarToggle = document.querySelector<HTMLButtonElement>('[data-tour="sources-sidebar-toggle"]')
+        const sidebarToggleLabel = sourcesSidebarToggle?.getAttribute('aria-label')?.toLowerCase() ?? ''
+        if (sourcesSidebarToggle && (sidebarToggleLabel.includes('expand') || sidebarToggleLabel.includes('show'))) {
+          sourcesSidebarToggle.click()
+        }
+      },
+    )
+  }
+
+  const handleClearOnboardingHighlight = () => {
+    setActiveOnboardingHighlight(null)
+  }
+
   const handleStartTour = (sectionKey: TourSectionKey) => {
     setIsTourMenuOpen(false)
     setIsSupportMenuOpen(false)
+    setActiveOnboardingHighlight(null)
     const selectedSectionIndex = TOUR_SECTIONS.findIndex((section) => section.key === sectionKey)
     if (selectedSectionIndex < 0) return
     const selectedSection = TOUR_SECTIONS[selectedSectionIndex]
@@ -1012,7 +1406,7 @@ function App() {
         {
           popover: {
             title: 'Folder import flow',
-            description: 'If your folder import opened "Choose Where and How to Import", click Next and we will guide those options. If not, click Next to skip.',
+            description: 'If your folder import opened "Choose Where and How to Import", click Next. We will start with the default new-collection option and the related preview. If not, click Next to skip.',
             onNextClick: (_element, _step, opts) => {
               closeAddSourceMenu()
               if (isImportDestinationPromptOpen()) {
@@ -1041,14 +1435,7 @@ function App() {
           element: '[data-tour="import-collection-strategy"]',
           popover: {
             title: 'Collection strategy',
-            description: 'Collections are like superfolders, and folders live inside them. Choose whether to import into existing destinations, one new collection, or split by first subfolder.',
-          },
-        },
-        {
-          element: '[data-tour="import-destination-tree"]',
-          popover: {
-            title: 'Destination tree',
-            description: 'Pick where imports should land. You can create collections or folders here to keep everything organized the way you want.',
+            description: 'Collections are like superfolders, and folders live inside them. The first and default option creates one new collection, the middle option splits by first subfolder, and the last option assigns into an existing collection or folder.',
           },
         },
         {
@@ -1063,6 +1450,13 @@ function App() {
           popover: {
             title: 'Create per first subfolder',
             description: 'This creates one collection per first source subfolder. Example: "Serum samples", "Vengeance samples", "Hardstyle samples", and "Hip hop samples" become separate categories.',
+          },
+        },
+        {
+          element: '[data-tour="import-destination-tree"]',
+          popover: {
+            title: 'Destination preview',
+            description: 'With the default new-collection mode, this panel previews what will be created. If you switch to the last option, this same panel becomes the picker for existing collections or folders.',
           },
         },
         {
@@ -2227,7 +2621,20 @@ function App() {
       (reanalyzeStatus.isActive || isCompletedRecently)
 
     if (hasReachedCompletion) {
-      return { kind: 'success' }
+      const startedAtMs = reanalyzeStatus.startedAt
+        ? new Date(reanalyzeStatus.startedAt).getTime()
+        : Number.NaN
+      const elapsedMs = Number.isFinite(startedAtMs) && Number.isFinite(finishedAtMs)
+        ? Math.max(0, finishedAtMs - startedAtMs)
+        : 0
+      return {
+        kind: 'success',
+        processed: reanalyzeStatus.processed,
+        total: reanalyzeStatus.total,
+        analyzed: reanalyzeStatus.analyzed,
+        failed: reanalyzeStatus.failed,
+        elapsedMs,
+      }
     }
 
     if (!reanalyzeStatus.isActive) return null
@@ -2251,31 +2658,134 @@ function App() {
     }
   }, [reanalyzeStatus, librarySampleCount, etaNowMs])
 
+  const analysisBannerState = useMemo(() => {
+    if (!reanalyzeStatus) return null
+    if (reanalyzeStatus.status === 'idle') return null
+
+    const finishedAtMs = reanalyzeStatus.finishedAt
+      ? new Date(reanalyzeStatus.finishedAt).getTime()
+      : Number.NaN
+    const isRecentlyFinished =
+      Number.isFinite(finishedAtMs) &&
+      Date.now() - finishedAtMs <= NAVBAR_REANALYZE_SUCCESS_MS
+
+    if (!reanalyzeStatus.isActive && !isRecentlyFinished) {
+      return null
+    }
+
+    const elapsedMs = (() => {
+      const startedAtMs = reanalyzeStatus.startedAt
+        ? new Date(reanalyzeStatus.startedAt).getTime()
+        : Number.NaN
+      if (!Number.isFinite(startedAtMs)) return 0
+      const endAtMs = reanalyzeStatus.finishedAt
+        ? new Date(reanalyzeStatus.finishedAt).getTime()
+        : etaNowMs
+      if (!Number.isFinite(endAtMs)) return 0
+      return Math.max(0, endAtMs - startedAtMs)
+    })()
+
+    const etaLabel = reanalyzeStatus.isActive
+      ? formatReanalyzeEtaLabel({
+          isStopping: reanalyzeStatus.isStopping,
+          startedAt: reanalyzeStatus.startedAt,
+          updatedAt: reanalyzeStatus.updatedAt,
+          processed: reanalyzeStatus.processed,
+          total: reanalyzeStatus.total,
+          nowMs: etaNowMs,
+        })
+      : null
+
+    const fallbackJobLabel =
+      typeof librarySampleCount === 'number' &&
+      librarySampleCount > 0 &&
+      reanalyzeStatus.total >= librarySampleCount
+        ? formatAnalysisJobLabel({ mode: 'library' })
+        : reanalyzeStatus.total === 1
+          ? formatAnalysisJobLabel({ mode: 'single' })
+          : formatAnalysisJobLabel({ mode: 'selection', count: reanalyzeStatus.total })
+
+    return {
+      jobLabel: reanalyzeStatus.jobLabel || fallbackJobLabel,
+      status: reanalyzeStatus.status,
+      stage: reanalyzeStatus.stage,
+      isActive: reanalyzeStatus.isActive,
+      isStopping: reanalyzeStatus.isStopping,
+      total: reanalyzeStatus.total > 0 ? reanalyzeStatus.total : null,
+      processed: reanalyzeStatus.processed,
+      analyzed: reanalyzeStatus.analyzed,
+      failed: reanalyzeStatus.failed,
+      progressPercent: reanalyzeStatus.progressPercent,
+      parallelism: reanalyzeStatus.concurrency,
+      elapsedMs,
+      etaLabel,
+      statusNote: reanalyzeStatus.statusNote,
+      error: reanalyzeStatus.error,
+    }
+  }, [reanalyzeStatus, librarySampleCount, etaNowMs])
+
+  const handleStopAnalysis = useCallback(() => {
+    void cancelAnalysisJob().catch((error) => {
+      console.error('Failed to stop analysis:', error)
+    })
+  }, [cancelAnalysisJob])
+
+  // Keep modal left-aligned with the indicators bar
+  useEffect(() => {
+    if (!analysisPanelModalOpen) return
+    const update = () => {
+      if (navbarIndicatorsRef.current) {
+        setIndicatorBarLeft(navbarIndicatorsRef.current.getBoundingClientRect().left)
+      }
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [analysisPanelModalOpen])
+
+  // Reset dismissal when a new analysis run starts
+  useEffect(() => {
+    if (navbarReanalyzeIndicator?.kind === 'progress' && reanalyzeIndicatorDismissed) {
+      setReanalyzeIndicatorDismissed(false)
+    }
+  }, [navbarReanalyzeIndicator?.kind, reanalyzeIndicatorDismissed])
+
+  // Close modal when there's nothing left to show
+  useEffect(() => {
+    if (!analysisBannerState) {
+      setAnalysisPanelModalOpen(false)
+    }
+  }, [analysisBannerState])
+
   const navbarImportIndicator = useMemo<NavbarImportIndicator | null>(() => {
     const activeImport = importProgress.active
+    const activeImportStartedAt = activeImport?.startedAt ?? -1
+    const activeJobStartedAt = mostRecentImportJob?.createdAt ?? -1
+
+    if (activeImport && activeImportStartedAt >= activeJobStartedAt) {
+      return buildLocalImportIndicator({
+        activeImport,
+        activeImportCount,
+        importAnalysisStatus,
+        nowMs: etaNowMs,
+      })
+    }
+
+    if (mostRecentImportJob) {
+      return buildImportJobIndicator({
+        job: mostRecentImportJob,
+        activeImportCount,
+        nowMs: etaNowMs,
+      })
+    }
+
     if (activeImport) {
-      const sourceLabel = activeImport.sourceKind === 'folder' ? 'folder' : 'files'
-      const modeLabel = activeImport.importType === 'sample' ? 'sample mode' : 'track mode'
-      const fileCountLabel = typeof activeImport.totalFiles === 'number'
-        ? `${activeImport.totalFiles} ${activeImport.totalFiles === 1 ? 'file' : 'files'}`
-        : 'unknown file count'
-      const byteProgressLabel = activeImport.totalBytes && activeImport.totalBytes > 0
-        ? `${formatBytes(activeImport.uploadedBytes)} / ${formatBytes(activeImport.totalBytes)}`
-        : null
-      const detailParts = [fileCountLabel, modeLabel]
-      if (byteProgressLabel) detailParts.push(byteProgressLabel)
-      if (importProgress.activeCount > 1) {
-        detailParts.push(`${importProgress.activeCount} active imports`)
-      }
-      return {
-        kind: 'progress',
-        title: activeImport.phase === 'processing'
-          ? `Processing imported ${sourceLabel}`
-          : `Importing ${sourceLabel}`,
-        detail: detailParts.join(' • '),
-        progressPercent: Math.max(0, Math.min(100, activeImport.progressPercent)),
-        isProcessing: activeImport.phase === 'processing',
-      }
+      return buildLocalImportIndicator({
+        activeImport,
+        activeImportCount,
+        importAnalysisStatus,
+        nowMs: etaNowMs,
+      })
     }
 
     const latestImport = importProgress.latest
@@ -2300,9 +2810,9 @@ function App() {
     }
 
     return null
-  }, [importProgress])
+  }, [activeImportCount, etaNowMs, importAnalysisStatus, importProgress, mostRecentImportJob])
 
-  const hasNavbarIndicators = Boolean(navbarImportIndicator || navbarReanalyzeIndicator)
+  const hasNavbarIndicators = Boolean(navbarImportIndicator || (navbarReanalyzeIndicator && !reanalyzeIndicatorDismissed))
 
   useEffect(() => () => {
     appTourRef.current?.destroy()
@@ -2326,19 +2836,21 @@ function App() {
           </div>
 
           {hasNavbarIndicators && (
-            <div className="order-3 basis-full min-w-0 flex flex-col gap-1 md:order-none md:flex-1 md:basis-auto md:items-center">
+            <div ref={navbarIndicatorsRef} className="order-3 basis-full min-w-0 overflow-hidden flex flex-col gap-1 md:order-none md:flex-1 md:basis-auto md:items-center">
               {navbarImportIndicator?.kind === 'progress' ? (
                 <div
-                  className="w-full md:max-w-md rounded-md border border-emerald-400/30 bg-surface-overlay px-2 py-1"
+                  className="w-full min-w-0 overflow-hidden md:max-w-md rounded-md border border-emerald-400/30 bg-surface-overlay px-2 py-1"
                   title={`${navbarImportIndicator.title} — ${navbarImportIndicator.detail}`}
                 >
-                  <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide">
-                    <span className={navbarImportIndicator.isProcessing ? 'text-amber-300' : 'text-emerald-300'}>
+                  <div className="mb-1 flex min-w-0 items-center justify-between gap-1 text-[10px] uppercase tracking-wide">
+                    <span className={`min-w-0 truncate leading-tight ${navbarImportIndicator.isProcessing ? 'text-amber-300' : 'text-emerald-300'}`}>
                       {navbarImportIndicator.title}
                     </span>
-                    <span className="font-mono text-slate-200">{navbarImportIndicator.progressPercent}%</span>
+                    <span className="flex-shrink-0 font-mono text-slate-200 pl-2">
+                      {navbarImportIndicator.progressPercent}%
+                    </span>
                   </div>
-                  <div className="mb-1 text-[10px] text-slate-300 truncate">
+                  <div className="mb-1 truncate text-[10px] leading-tight text-slate-300">
                     {navbarImportIndicator.detail}
                   </div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-surface-border">
@@ -2352,44 +2864,90 @@ function App() {
                     />
                   </div>
                 </div>
-              ) : navbarImportIndicator?.kind === 'success' ? (
-                <div className="w-full md:max-w-md rounded-md border border-green-400/25 bg-green-500/10 px-2 py-1 text-center text-[10px] uppercase tracking-wide text-green-300">
-                  {navbarImportIndicator.message}
-                </div>
               ) : navbarImportIndicator?.kind === 'error' ? (
                 <div className="w-full md:max-w-md rounded-md border border-red-400/25 bg-red-500/10 px-2 py-1 text-center text-[10px] uppercase tracking-wide text-red-300 truncate">
                   {navbarImportIndicator.message}
                 </div>
               ) : null}
 
-              {navbarReanalyzeIndicator?.kind === 'progress' ? (
+              {navbarReanalyzeIndicator && !reanalyzeIndicatorDismissed ? (
                 <div
-                  className="w-full md:max-w-md rounded-md border border-accent-primary/25 bg-surface-overlay px-2 py-1"
-                  title={`Re-analyzing ${navbarReanalyzeIndicator.processed}/${navbarReanalyzeIndicator.total} samples`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setAnalysisPanelModalOpen(true)}
+                  onKeyDown={(e) => e.key === 'Enter' && setAnalysisPanelModalOpen(true)}
+                  className={`w-full cursor-pointer md:max-w-md rounded-md border px-2 py-1 ${
+                    navbarReanalyzeIndicator.kind === 'success'
+                      ? 'border-green-400/30 bg-surface-overlay hover:bg-surface-raised'
+                      : navbarReanalyzeIndicator.isStopping
+                        ? 'border-amber-400/30 bg-surface-overlay hover:bg-surface-raised'
+                        : 'border-accent-primary/25 bg-surface-overlay hover:bg-surface-raised'
+                  } transition-colors`}
                 >
-                  <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide">
-                    <span className={navbarReanalyzeIndicator.isStopping ? 'text-amber-300' : 'text-accent-primary'}>
-                      {navbarReanalyzeIndicator.isStopping ? 'Stopping re-analysis...' : 'Re-analyzing samples'}
+                  <div className="mb-1 flex min-w-0 items-center justify-between gap-1 text-[10px] uppercase tracking-wide">
+                    <span
+                      className={`min-w-0 truncate leading-tight ${
+                        navbarReanalyzeIndicator.kind === 'success'
+                          ? 'text-green-300'
+                          : navbarReanalyzeIndicator.isStopping
+                            ? 'text-amber-300'
+                            : 'text-accent-primary'
+                      }`}
+                    >
+                      {navbarReanalyzeIndicator.kind === 'success'
+                        ? 'Library analyzed'
+                        : navbarReanalyzeIndicator.isStopping
+                          ? 'Stopping analysis...'
+                          : 'Analyzing samples'}
                     </span>
-                    <span className="font-mono text-slate-200">
-                      {navbarReanalyzeIndicator.progressPercent}%
-                      {navbarReanalyzeIndicator.etaLabel ? ` ETA ${navbarReanalyzeIndicator.etaLabel}` : ''}
-                    </span>
+                    <div className="flex flex-shrink-0 items-center gap-1">
+                      {navbarReanalyzeIndicator.kind === 'progress' && (
+                        <span className="font-mono text-slate-200">
+                          {navbarReanalyzeIndicator.progressPercent}%
+                          {navbarReanalyzeIndicator.etaLabel ? ` ETA ${navbarReanalyzeIndicator.etaLabel}` : ''}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        title="Show details"
+                        onClick={(e) => { e.stopPropagation(); setAnalysisPanelModalOpen((prev) => !prev) }}
+                        className="rounded p-0.5 text-slate-400 hover:text-slate-200 transition-colors"
+                      >
+                        <ChevronDown
+                          size={12}
+                          className={`transition-transform duration-200 ${analysisPanelModalOpen ? 'rotate-180' : ''}`}
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        title={analysisBannerState?.isActive ? 'Stop analysis' : 'Dismiss'}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (analysisBannerState?.isActive) {
+                            setShowStopAnalysisConfirm(true)
+                          } else {
+                            setReanalyzeIndicatorDismissed(true)
+                            setAnalysisPanelModalOpen(false)
+                          }
+                        }}
+                        className="rounded p-0.5 text-slate-400 hover:text-slate-200 transition-colors"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
                   </div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-surface-border">
                     <div
                       className={`h-full rounded-full transition-[width] duration-300 ${
-                        navbarReanalyzeIndicator.isStopping
-                          ? 'bg-gradient-to-r from-amber-400 to-amber-300'
-                          : 'bg-gradient-to-r from-accent-primary to-cyan-400'
+                        navbarReanalyzeIndicator.kind === 'success'
+                          ? 'w-full bg-gradient-to-r from-green-500 to-green-400'
+                          : navbarReanalyzeIndicator.isStopping
+                            ? 'bg-gradient-to-r from-amber-400 to-amber-300'
+                            : 'bg-gradient-to-r from-accent-primary to-cyan-400'
                       }`}
-                      style={{ width: `${navbarReanalyzeIndicator.progressPercent}%` }}
+                      style={navbarReanalyzeIndicator.kind === 'progress' ? { width: `${navbarReanalyzeIndicator.progressPercent}%` } : undefined}
                     />
                   </div>
-                </div>
-              ) : navbarReanalyzeIndicator?.kind === 'success' ? (
-                <div className="w-full md:max-w-md rounded-md border border-green-400/25 bg-green-500/10 px-2 py-1 text-center text-[10px] uppercase tracking-wide text-green-300">
-                  Library successfully analyzed
                 </div>
               ) : null}
             </div>
@@ -2519,11 +3077,16 @@ function App() {
                 <button
                   type="button"
                   onClick={() => {
+                    handleClearOnboardingHighlight()
                     setIsSupportMenuOpen(false)
                     setIsTourMenuOpen((prev) => !prev)
                   }}
                   data-tour="tour-launch"
-                  className="p-1.5 rounded-lg border border-surface-border bg-surface-overlay text-text-secondary hover:text-text-primary hover:bg-surface-raised transition-colors"
+                  className={`rounded-lg border p-1.5 transition-colors ${
+                    activeOnboardingHighlight === 'tour'
+                      ? 'onboarding-target-highlight border-violet-400/70 bg-violet-500/18 text-violet-100 hover:bg-violet-500/24'
+                      : 'border-surface-border bg-surface-overlay text-text-secondary hover:bg-surface-raised hover:text-text-primary'
+                  }`}
                   title="Open guided tours"
                   aria-label="Open guided tours"
                   aria-haspopup="menu"
@@ -2578,6 +3141,77 @@ function App() {
         </div>
       </header>
 
+      {analysisBannerState && analysisPanelModalOpen && !reanalyzeIndicatorDismissed && (
+        <>
+          {/* Backdrop — covers everything below the navbar */}
+          <div
+            className="fixed inset-x-0 bottom-0 top-[52px] z-40 bg-surface-base/60"
+            onClick={() => setAnalysisPanelModalOpen(false)}
+          />
+          <div className="fixed top-[52px] z-50 flex justify-start pointer-events-none pr-4" style={{ left: indicatorBarLeft }}>
+            <div className="pointer-events-auto w-full max-w-lg shadow-2xl">
+              <AnalysisProgressPanel
+                variant="card"
+                jobLabel={analysisBannerState.jobLabel}
+                status={analysisBannerState.status}
+                stage={analysisBannerState.stage}
+                isActive={analysisBannerState.isActive}
+                isStopping={analysisBannerState.isStopping}
+                total={analysisBannerState.total}
+                processed={analysisBannerState.processed}
+                analyzed={analysisBannerState.analyzed}
+                failed={analysisBannerState.failed}
+                progressPercent={analysisBannerState.progressPercent}
+                parallelism={analysisBannerState.parallelism}
+                elapsedMs={analysisBannerState.elapsedMs}
+                etaLabel={analysisBannerState.etaLabel}
+                statusNote={analysisBannerState.statusNote}
+                error={analysisBannerState.error}
+                onStop={analysisBannerState.isActive ? handleStopAnalysis : undefined}
+                onClose={() => { setReanalyzeIndicatorDismissed(true); setAnalysisPanelModalOpen(false) }}
+              />
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Stop analysis confirmation modal */}
+      {showStopAnalysisConfirm && (
+        <>
+          <div
+            className="fixed inset-0 z-[60] bg-surface-base/60"
+            onClick={() => setShowStopAnalysisConfirm(false)}
+          />
+          <div className="fixed inset-0 z-[70] flex items-center justify-center px-4 pointer-events-none">
+            <div className="pointer-events-auto w-full max-w-sm rounded-lg border border-surface-border bg-surface-raised p-4 shadow-2xl">
+              <h3 className="text-sm font-medium text-white">Stop analysis?</h3>
+              <p className="mt-1.5 text-xs text-slate-400">
+                This will terminate the running analysis job. Progress made so far will be saved.
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowStopAnalysisConfirm(false)}
+                  className="rounded-md border border-surface-border bg-surface-base px-3 py-1.5 text-xs text-slate-300 hover:bg-surface-overlay hover:text-slate-100 transition-colors"
+                >
+                  Keep running
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleStopAnalysis()
+                    setShowStopAnalysisConfirm(false)
+                  }}
+                  className="rounded-md border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-500/25 transition-colors"
+                >
+                  Stop analysis
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
       {/* ── Main Content ─────────────────────────────────── */}
       <main
         className="relative flex-1 min-h-0 overflow-hidden"
@@ -2589,6 +3223,10 @@ function App() {
           onTuneToNote={setTuneTargetNote}
           samplePlayMode={samplePlayMode}
           sampleLoopEnabled={sampleLoopEnabled}
+          isAddSourceHighlighted={activeOnboardingHighlight === 'add-source'}
+          onAddSourceHighlightAcknowledged={handleClearOnboardingHighlight}
+          onHighlightHelpMenu={handleHighlightHelpMenu}
+          onOpenSourcesAndHighlightImport={handleHighlightImportSources}
         />
         {isSettingsRendered && (
           <section

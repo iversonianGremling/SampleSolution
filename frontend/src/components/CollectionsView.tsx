@@ -37,7 +37,6 @@ import { SampleSortMenu } from './SampleSortMenu'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import { useResizablePanel } from '../hooks/useResizablePanel'
 import { useAppDialog } from '../hooks/useAppDialog'
-import { AnalysisWarningAlertContent } from './AnalysisWarningAlertContent'
 import {
   useCollections,
   useCreateCollection,
@@ -59,9 +58,9 @@ import {
   useRemoveSliceFromFolder,
   useCreateTag,
   useBatchDeleteSlices,
-  useBatchReanalyzeSlices,
   useBatchAddSlicesToFolder,
 } from '../hooks/useTracks'
+import { getAnalysisJobErrorMessage, useAnalysisJobControls } from '../hooks/useAnalysisJob'
 import { getRelatedKeys, getRelatedNotes } from '../utils/musicTheory'
 import { getSliceDownloadUrl } from '../api/client'
 import {
@@ -80,6 +79,7 @@ import {
   type SampleSearchCustomField,
   type SampleSearchScope,
 } from '../utils/sampleSearch'
+import { formatAnalysisJobLabel } from '../utils/analysisPreferences'
 import type { SourceScope, Folder } from '../types'
 
 const FOLDER_COLORS = [
@@ -428,8 +428,9 @@ export function FoldersView() {
   const removeSliceFromFolder = useRemoveSliceFromFolder()
   const createTag = useCreateTag()
   const batchDeleteSlices = useBatchDeleteSlices()
-  const batchReanalyzeSlices = useBatchReanalyzeSlices()
+  const { startAnalysisJob } = useAnalysisJobControls()
   const batchAddSlices = useBatchAddSlicesToFolder()
+  const [isStartingSelectedAnalysis, setIsStartingSelectedAnalysis] = useState(false)
 
   // Custom Order modal state
   const [showCustomOrder, setShowCustomOrder] = useState(false)
@@ -640,31 +641,25 @@ export function FoldersView() {
       })
       if (!confirmed) return
 
-      batchReanalyzeSlices.mutate(
-        {
+      setIsStartingSelectedAnalysis(true)
+      try {
+        await startAnalysisJob({
           sliceIds: ids,
-          analysisLevel: 'advanced',
-          concurrency: 2,
-          includeFilenameTags: true,
-        },
-        {
-          onSuccess: async (result) => {
-            if (result.warnings && result.warnings.totalWithWarnings > 0) {
-              await showAlert({
-                title: 'Analysis Warning',
-                message: (
-                  <AnalysisWarningAlertContent
-                    totalWithWarnings={result.warnings.totalWithWarnings}
-                    warningMessages={result.warnings.messages}
-                    phase="re-analysis"
-                  />
-                ),
-              })
-            }
-            setSelectedSampleIds(new Set())
-          },
-        }
-      )
+          jobLabel: formatAnalysisJobLabel({
+            mode: 'selection',
+            count: ids.length,
+          }),
+        })
+        setSelectedSampleIds(new Set())
+      } catch (error) {
+        await showAlert({
+          title: 'Analysis Failed',
+          message: getAnalysisJobErrorMessage(error, 'Failed to start sample analysis.'),
+          isDestructive: true,
+        })
+      } finally {
+        setIsStartingSelectedAnalysis(false)
+      }
     })()
   }
 
@@ -1584,7 +1579,7 @@ export function FoldersView() {
             onMove={() => setShowMoveModal(true)}
             onClearSelection={() => setSelectedSampleIds(new Set())}
             isDeleting={batchDeleteSlices.isPending}
-            isAnalyzing={batchReanalyzeSlices.isPending}
+            isAnalyzing={isStartingSelectedAnalysis}
           />
         )}
 

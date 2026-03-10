@@ -275,7 +275,7 @@ export function useCustomWaveform({
   }, [])
 
   // ─────────────────────────────────────────────────────────────────────────
-  // drawFrame — render the current buffer to canvas
+  // drawFrame — render the current buffer to canvas as a smooth continuous waveform
   // ─────────────────────────────────────────────────────────────────────────
   const drawFrame = useCallback(() => {
     const canvas = canvasRef.current
@@ -290,16 +290,9 @@ export function useCustomWaveform({
     const meta = bufferMetaRef.current
     if (!meta) return
 
-    const { visibleBarOffset, bufferStartSample, samplesPerBar, totalSamples } = meta
+    const { visibleBarOffset } = meta
     const { tops, bots } = renderBufferRef.current
-    const bw     = barWidthRef.current
-    const bg     = barGapRef.current
-    const stride = bw + bg
-    const barCount = Math.min(MAX_VISIBLE_BARS, Math.floor(w / stride))
-    const centerY  = h / 2
-
-    // Where audio content ends within the buffer (don't draw past this)
-    const audioEndBar = (totalSamples - bufferStartSample) / samplesPerBar
+    const centerY = h / 2
 
     // ── Playhead ──────────────────────────────────────────────────────────
     const dur          = audio?.duration ?? 0
@@ -309,72 +302,87 @@ export function useCustomWaveform({
       ? ((timeFraction - scrollRef.current) / visibleFrac) * w
       : 0
 
-    // ── Edge fade ─────────────────────────────────────────────────────────
+    // Advance edge fade timer (keeps animation loop running; no longer affects alpha)
     const ef = edgeFadeRef.current
-    let efT = 1
     if (ef) {
-      efT = Math.min(1, (performance.now() - ef.startTime) / EDGE_FADE_MS)
+      const efT = Math.min(1, (performance.now() - ef.startTime) / EDGE_FADE_MS)
       if (efT >= 1) {
         edgeFadeRef.current = null
         isFadingRef.current = false
       }
     }
 
-    // Determine the contiguous range of bars that are fading in
-    let fadeFrom = barCount   // first fading bar index (inclusive)
-    let fadeTo   = barCount   // last  fading bar index (exclusive)
-    if (ef && efT < 1) {
-      if (ef.direction === 'right') {
-        fadeFrom = Math.max(0, barCount - ef.barCount)
-        fadeTo   = barCount
-      } else {
-        fadeFrom = 0
-        fadeTo   = Math.min(barCount, ef.barCount)
-      }
+    // ── Build continuous waveform path ────────────────────────────────────
+    // One sample point every ~2 physical pixels for smooth rendering
+    const numPts = Math.max(2, Math.min(MAX_VISIBLE_BARS, Math.ceil(w / 2)))
+
+    const topYs = new Float32Array(numPts)
+    const botYs = new Float32Array(numPts)
+    const xs    = new Float32Array(numPts)
+
+    for (let i = 0; i < numPts; i++) {
+      const frac   = i / (numPts - 1)
+      const bufIdx = visibleBarOffset + frac * MAX_VISIBLE_BARS
+      const lo     = Math.max(0, Math.min(TOTAL_BARS - 2, Math.floor(bufIdx)))
+      const hi     = lo + 1
+      const t      = bufIdx - lo
+
+      const top = (tops[lo] ?? 0) * (1 - t) + (tops[hi] ?? 0) * t
+      const bot = (bots[lo] ?? 0) * (1 - t) + (bots[hi] ?? 0) * t
+
+      xs[i]    = frac * w
+      // Ensure a minimum visible height even for silent regions
+      topYs[i] = centerY - Math.max(0.01, top) * centerY * 0.95
+      botYs[i] = centerY + Math.max(0.01, bot) * centerY * 0.95
     }
+
+    // Build smooth path using midpoint quadratic bezier
+    const path = new Path2D()
+    path.moveTo(xs[0], topYs[0])
+    for (let i = 0; i < numPts - 1; i++) {
+      const mx = (xs[i] + xs[i + 1]) / 2
+      const my = (topYs[i] + topYs[i + 1]) / 2
+      path.quadraticCurveTo(xs[i], topYs[i], mx, my)
+    }
+    path.lineTo(xs[numPts - 1], topYs[numPts - 1])
+    path.lineTo(xs[numPts - 1], botYs[numPts - 1])
+    for (let i = numPts - 1; i > 0; i--) {
+      const mx = (xs[i] + xs[i - 1]) / 2
+      const my = (botYs[i] + botYs[i - 1]) / 2
+      path.quadraticCurveTo(xs[i], botYs[i], mx, my)
+    }
+    path.lineTo(xs[0], botYs[0])
+    path.closePath()
 
     const wc = waveColorRef.current
     const pc = progressColorRef.current
 
-    let currentAlpha = 1.0
-    ctx.globalAlpha  = 1.0
-
-    for (let i = 0; i < barCount; i++) {
-      const idx = visibleBarOffset + i
-      if (idx >= audioEndBar) break
-
-      const top = tops[idx] ?? 0
-      const bot = bots[idx] ?? 0
-      if (top === 0 && bot === 0) continue
-
-      // Bars in the edge-fade zone get a lower alpha
-      const alpha = (ef && efT < 1 && i >= fadeFrom && i < fadeTo) ? efT : 1.0
-      if (alpha !== currentAlpha) {
-        ctx.globalAlpha = alpha
-        currentAlpha    = alpha
-      }
-
-      const x = i * stride
-      ctx.fillStyle = x < playheadX ? pc : wc
-
-      // Positive peak: bar grows upward from center
-      if (top > 0) {
-        const th = Math.max(1, top * centerY * 0.95)
-        ctx.fillRect(x, Math.floor(centerY - th), bw, Math.ceil(th))
-      }
-      // Negative peak: bar grows downward from center
-      if (bot > 0) {
-        const bh = Math.max(1, bot * centerY * 0.95)
-        ctx.fillRect(x, Math.floor(centerY), bw, Math.ceil(bh))
-      }
+    // ── Draw played region (left of playhead) ─────────────────────────────
+    if (playheadX > 0) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(0, 0, Math.min(playheadX, w), h)
+      ctx.clip()
+      ctx.fillStyle = pc
+      ctx.fill(path)
+      ctx.restore()
     }
 
-    if (currentAlpha !== 1.0) ctx.globalAlpha = 1.0
+    // ── Draw unplayed region (right of playhead) ───────────────────────────
+    if (playheadX < w) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(Math.max(0, playheadX), 0, w, h)
+      ctx.clip()
+      ctx.fillStyle = wc
+      ctx.fill(path)
+      ctx.restore()
+    }
 
     // ── Playhead cursor ───────────────────────────────────────────────────
     if (dur > 0 && playheadX >= 0 && playheadX < w) {
       ctx.fillStyle = cursorColorRef.current
-      ctx.fillRect(Math.floor(playheadX), 0, 2, h)
+      ctx.fillRect(Math.round(playheadX) - 0.5, 0, 1.5, h)
     }
   }, [])
 

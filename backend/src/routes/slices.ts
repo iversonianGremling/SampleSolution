@@ -118,6 +118,7 @@ type BatchReanalyzeRequestBody = {
   concurrency?: number
   includeFilenameTags?: boolean
   allowAiTagging?: boolean
+  jobLabel?: string
 }
 type BatchReanalyzeResultItem = {
   sliceId: number
@@ -192,6 +193,7 @@ type BatchReanalyzeAuditSummary = {
 }
 type BatchReanalyzeJobState = {
   jobId: string | null
+  jobLabel: string | null
   status: BatchReanalyzeJobStatus
   stage: BatchReanalyzeStage
   startedAt: string | null
@@ -211,6 +213,7 @@ type BatchReanalyzeJobState = {
 }
 type BatchReanalyzeStatusResponse = {
   jobId: string | null
+  jobLabel: string | null
   status: BatchReanalyzeJobStatus
   stage: BatchReanalyzeStage
   isActive: boolean
@@ -231,6 +234,11 @@ type BatchReanalyzeStatusResponse = {
   warnings: BatchReanalyzeWarningSummary
   audit: BatchReanalyzeAuditSummary
   resultSummary: BatchReanalyzeResultSummary | null
+  capabilities: {
+    supportsConcurrencySelection: boolean
+    defaultConcurrency: number
+    maxConcurrency: number
+  }
 }
 
 function createEmptyBatchReanalyzeWarnings(): BatchReanalyzeWarningSummary {
@@ -256,6 +264,7 @@ function createEmptyBatchReanalyzeAuditSummary(enabled = BATCH_REANALYZE_AUDIT_E
 let batchReanalyzeAbortController: AbortController | null = null
 let batchReanalyzeJobState: BatchReanalyzeJobState = {
   jobId: null,
+  jobLabel: null,
   status: 'idle',
   stage: 'analysis',
   startedAt: null,
@@ -314,6 +323,12 @@ function resolveBatchReanalyzeConcurrency(rawConcurrency: number | undefined): n
   return resolvedConcurrency
 }
 
+function normalizeBatchReanalyzeJobLabel(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed.slice(0, 160) : null
+}
+
 function isBatchReanalyzeCancellationError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -325,11 +340,9 @@ function getBatchReanalyzeStatusNote(state: BatchReanalyzeJobState): string | nu
   switch (state.status) {
     case 'running':
       if (state.stage === 'audit') {
-        return 'Running final AI tag audit and correction pass.'
+        return 'Reviewing suspicious tags and applying the final AI correction pass.'
       }
-      return state.allowAiTagging
-        ? 'Running advanced feature extraction with AI-assisted tag review.'
-        : 'Running advanced feature extraction with fallback tag review.'
+      return 'Extracting features, refreshing tags, and saving results.'
     case 'cancelling':
       return 'Stopping analysis and terminating active workers...'
     case 'completed':
@@ -341,9 +354,9 @@ function getBatchReanalyzeStatusNote(state: BatchReanalyzeJobState): string | nu
         `Audit fixed ${state.audit.fixedSamples}/${state.audit.weirdSamples} weird-tag samples.`
       )
     case 'canceled':
-      return 'Re-analysis stopped by user.'
+      return 'Analysis stopped by user.'
     case 'failed':
-      return state.error ? `Re-analysis failed: ${state.error}` : 'Re-analysis failed.'
+      return state.error ? `Analysis failed: ${state.error}` : 'Analysis failed.'
     case 'idle':
     default:
       return null
@@ -360,6 +373,7 @@ function getBatchReanalyzeStatusResponse(): BatchReanalyzeStatusResponse {
 
   return {
     jobId: batchReanalyzeJobState.jobId,
+    jobLabel: batchReanalyzeJobState.jobLabel,
     status: batchReanalyzeJobState.status,
     stage: batchReanalyzeJobState.stage,
     isActive:
@@ -381,6 +395,11 @@ function getBatchReanalyzeStatusResponse(): BatchReanalyzeStatusResponse {
     warnings: batchReanalyzeJobState.warnings,
     audit: batchReanalyzeJobState.audit,
     resultSummary: batchReanalyzeJobState.resultSummary,
+    capabilities: {
+      supportsConcurrencySelection: MAX_BATCH_REANALYZE_CONCURRENCY > 1,
+      defaultConcurrency: DEFAULT_BATCH_REANALYZE_CONCURRENCY,
+      maxConcurrency: MAX_BATCH_REANALYZE_CONCURRENCY,
+    },
   }
 }
 
@@ -4696,10 +4715,11 @@ router.post('/slices/batch-reanalyze/start', async (req, res) => {
     })
   }
 
-  const { sliceIds, concurrency, includeFilenameTags, allowAiTagging } = req.body as BatchReanalyzeRequestBody
+  const { sliceIds, concurrency, includeFilenameTags, allowAiTagging, jobLabel } = req.body as BatchReanalyzeRequestBody
   const resolvedConcurrency = resolveBatchReanalyzeConcurrency(concurrency)
   const normalizedIncludeFilenameTags = includeFilenameTags === true
   const normalizedAllowAiTagging = true
+  const normalizedJobLabel = normalizeBatchReanalyzeJobLabel(jobLabel)
   if (allowAiTagging === false) {
     console.warn('[reanalyze] allowAiTagging=false requested at job start, but AI tagging is forced on.')
   }
@@ -4710,6 +4730,7 @@ router.post('/slices/batch-reanalyze/start', async (req, res) => {
 
   batchReanalyzeJobState = {
     jobId,
+    jobLabel: normalizedJobLabel,
     status: 'running',
     stage: 'analysis',
     startedAt,

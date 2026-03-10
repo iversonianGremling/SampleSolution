@@ -13,6 +13,7 @@ import {
   LayoutGrid,
   List,
   Sparkles,
+  HelpCircle,
   ChevronRight,
   Layers3,
   FlaskConical,
@@ -44,7 +45,6 @@ import { useSourceTree } from '../hooks/useSourceTree'
 import { useScopedSamples } from '../hooks/useScopedSamples'
 import { useResizablePanel } from '../hooks/useResizablePanel'
 import { useAppDialog } from '../hooks/useAppDialog'
-import { AnalysisWarningAlertContent } from './AnalysisWarningAlertContent'
 import {
   useTags,
   useFolders,
@@ -59,7 +59,6 @@ import {
   useUpdateSliceGlobal,
   useDeleteSliceGlobal,
   useBatchDeleteSlices,
-  useBatchReanalyzeSlices,
   useCreateTagFromFolder,
   useCollections,
   useCreateCollection,
@@ -69,6 +68,7 @@ import {
   useDeleteSource,
   useBatchAddSlicesToFolder,
 } from '../hooks/useTracks'
+import { getAnalysisJobErrorMessage, useAnalysisJobControls } from '../hooks/useAnalysisJob'
 import type { SourceScope, SliceWithTrackExtended, Tag } from '../types'
 import {
   downloadBatchSlicesZip,
@@ -119,6 +119,7 @@ import {
   readPersistedSetting,
   writePersistedSetting,
 } from '../utils/persistentSettings'
+import { formatAnalysisJobLabel } from '../utils/analysisPreferences'
 import { isElectron } from '../utils/platform'
 import {
   applyBulkRenameRules,
@@ -463,6 +464,10 @@ interface SourcesViewProps {
   onTuneToNote?: (note: string | null) => void
   playMode?: PlayMode
   loopEnabled?: boolean
+  isAddSourceHighlighted?: boolean
+  onAddSourceHighlightAcknowledged?: () => void
+  onHighlightHelpMenu?: () => void
+  onOpenSourcesAndHighlightImport?: () => void
   bulkRenameMode?: boolean
   bulkRenameRules?: BulkRenameRules
   onBulkRenameRulesChange: Dispatch<SetStateAction<BulkRenameRules>>
@@ -480,6 +485,10 @@ export function SourcesView({
   onTuneToNote,
   playMode = 'normal',
   loopEnabled = false,
+  isAddSourceHighlighted = false,
+  onAddSourceHighlightAcknowledged,
+  onHighlightHelpMenu,
+  onOpenSourcesAndHighlightImport,
   bulkRenameMode = false,
   bulkRenameRules = DEFAULT_BULK_RENAME_RULES,
   onBulkRenameRulesChange,
@@ -903,11 +912,12 @@ export function SourcesView({
   const updateSlice = useUpdateSliceGlobal()
   const deleteSlice = useDeleteSliceGlobal()
   const batchDeleteSlices = useBatchDeleteSlices()
-  const batchReanalyzeSlices = useBatchReanalyzeSlices()
+  const { startAnalysisJob } = useAnalysisJobControls()
   const batchAddSlicesToFolder = useBatchAddSlicesToFolder()
   const createTagFromFolder = useCreateTagFromFolder()
   const createImportedFolder = useCreateImportedFolder()
   const deleteSource = useDeleteSource()
+  const [isStartingSelectedAnalysis, setIsStartingSelectedAnalysis] = useState(false)
   const [showMoveModal, setShowMoveModal] = useState(false)
 
   // Derived data
@@ -2565,31 +2575,25 @@ export function SourcesView({
       })
       if (!confirmed) return
 
-      batchReanalyzeSlices.mutate(
-        {
+      setIsStartingSelectedAnalysis(true)
+      try {
+        await startAnalysisJob({
           sliceIds: ids,
-          analysisLevel: 'advanced',
-          concurrency: 2,
-          includeFilenameTags: true,
-        },
-        {
-          onSuccess: async (result) => {
-            if (result.warnings && result.warnings.totalWithWarnings > 0) {
-              await showAlert({
-                title: 'Analysis Warning',
-                message: (
-                  <AnalysisWarningAlertContent
-                    totalWithWarnings={result.warnings.totalWithWarnings}
-                    warningMessages={result.warnings.messages}
-                    phase="re-analysis"
-                  />
-                ),
-              })
-            }
-            setSelectedSampleIds(new Set())
-          },
-        }
-      )
+          jobLabel: formatAnalysisJobLabel({
+            mode: 'selection',
+            count: ids.length,
+          }),
+        })
+        setSelectedSampleIds(new Set())
+      } catch (error) {
+        await showAlert({
+          title: 'Analysis Failed',
+          message: getAnalysisJobErrorMessage(error, 'Failed to start sample analysis.'),
+          isDestructive: true,
+        })
+      } finally {
+        setIsStartingSelectedAnalysis(false)
+      }
     })()
   }
 
@@ -3400,6 +3404,13 @@ export function SourcesView({
       setIsTreeSidebarOpen(true)
     }
   }
+  const handleHighlightHelpFromWelcome = () => {
+    onHighlightHelpMenu?.()
+  }
+  const handleOpenSourcesFromWelcome = () => {
+    handleShowSourcesSidebar()
+    onOpenSourcesAndHighlightImport?.()
+  }
 
   return (
     <div className="relative h-full flex overflow-hidden bg-surface-base">
@@ -3443,6 +3454,8 @@ export function SourcesView({
                 onMoveCollection={handleMoveCollection}
                 onOpenAdvancedCategoryManagement={() => setShowCustomOrder(true)}
                 onOpenLibraryImport={() => setShowLibraryImportModal(true)}
+                isAddSourceHighlighted={isAddSourceHighlighted}
+                onAddSourceHighlightAcknowledged={onAddSourceHighlightAcknowledged}
                 showFavoritesOnly={showFavoritesOnly}
                 onToggleFavoritesOnly={() => setShowFavoritesOnly((prev) => !prev)}
               />
@@ -3519,6 +3532,8 @@ export function SourcesView({
                 onMoveCollection={handleMoveCollection}
                 onOpenAdvancedCategoryManagement={() => setShowCustomOrder(true)}
                 onOpenLibraryImport={() => setShowLibraryImportModal(true)}
+                isAddSourceHighlighted={isAddSourceHighlighted}
+                onAddSourceHighlightAcknowledged={onAddSourceHighlightAcknowledged}
                 showFavoritesOnly={showFavoritesOnly}
                 onToggleFavoritesOnly={() => setShowFavoritesOnly((prev) => !prev)}
               />
@@ -3793,7 +3808,7 @@ export function SourcesView({
             onClearSelection={() => setSelectedSampleIds(new Set())}
             isEditing={isBulkEditSubmitting}
             isDeleting={batchDeleteSlices.isPending}
-            isAnalyzing={batchReanalyzeSlices.isPending}
+            isAnalyzing={isStartingSelectedAnalysis}
           />
         )}
 
@@ -3801,21 +3816,43 @@ export function SourcesView({
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden" data-tour="samples-main-pane">
           <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
             {showEmptyDatabaseWelcome ? (
-              <div className="h-full min-h-0 flex items-center justify-center p-6">
-                <div className="w-full max-w-2xl rounded-xl border border-surface-border bg-surface-raised/80 p-6 text-center shadow-lg">
-                  <h2 className="text-2xl font-semibold text-text-primary">Welcome to Sample Solution</h2>
-                  <p className="mt-2 text-sm text-text-secondary">
-                    Your database is empty. Open the left panel to manage your sources there.
-                  </p>
-                  <div className="mt-5 flex justify-center">
-                    <button
-                      type="button"
-                      onClick={handleShowSourcesSidebar}
-                      className="inline-flex items-center gap-2 rounded-lg border border-accent-primary/50 bg-accent-primary/15 px-4 py-2 text-sm font-medium text-accent-primary transition-colors hover:bg-accent-primary/25"
-                    >
-                      <Plus size={15} />
-                      Add source
-                    </button>
+              <div className="relative h-full min-h-0 w-full overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(139,92,246,0.18),transparent_34%),radial-gradient(circle_at_78%_24%,rgba(59,130,246,0.16),transparent_28%),linear-gradient(180deg,rgba(8,10,14,0.98),rgba(15,18,22,0.98))]">
+                <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(139,92,246,0.06),transparent_26%,transparent_72%,rgba(91,141,239,0.08))]" />
+                <div className="relative flex min-h-full flex-col justify-center gap-10 px-6 py-10 sm:px-8 lg:px-12 lg:py-14">
+                  <div className="flex flex-col gap-10 lg:flex-row lg:items-center lg:gap-14">
+                    <div className="flex flex-1 justify-center lg:basis-[42%] lg:justify-center">
+                      <img
+                        src="/SampleSolutionLogo.transparent.png"
+                        alt="Sample Solution logo"
+                        className="h-36 w-auto max-w-full object-contain opacity-90 drop-shadow-[0_18px_44px_rgba(0,0,0,0.42)] sm:h-44 lg:h-52"
+                      />
+                    </div>
+                    <div className="max-w-3xl flex-1 text-left lg:basis-[58%]">
+                      <h2 className="mt-4 text-3xl font-semibold text-text-primary sm:text-4xl lg:text-5xl">Welcome to Sample Solution</h2>
+                      <p className="mt-4 max-w-2xl text-sm leading-7 text-text-secondary sm:text-[15px]">
+                        Start by adding some samples from the left panel on add source. 
+                        <br/>
+                        If you need help press the button on the top right on the navbar.
+                      </p>
+                      <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+                        <button
+                          type="button"
+                          onClick={handleOpenSourcesFromWelcome}
+                          className="inline-flex items-center justify-center gap-2 border border-violet-400/55 bg-black/30 px-4 py-3 text-sm font-medium text-violet-100 transition-colors hover:bg-violet-500/14"
+                        >
+                          <Plus size={16} />
+                          Import samples
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleHighlightHelpFromWelcome}
+                          className="inline-flex items-center justify-center gap-2 border border-violet-400/45 bg-violet-500/12 px-4 py-3 text-sm font-medium text-violet-100 transition-colors hover:bg-violet-500/18"
+                        >
+                          <HelpCircle size={16} />
+                          Help menu
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

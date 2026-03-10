@@ -1,7 +1,22 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import request from 'supertest'
+import fs from 'fs'
+import path from 'path'
 import { resetDatabase, TEST_DATA_DIR, getAppDb } from './setup.js'
 import { createTestTrack, createTestTrackWithAudio } from './helpers.js'
+import { getTrackPeaksCachePath, writeTrackPeaksCache } from '../src/services/peaks.js'
+
+const { generatePeaksMock } = vi.hoisted(() => ({
+  generatePeaksMock: vi.fn(),
+}))
+
+vi.mock('../src/services/ffmpeg.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/services/ffmpeg.js')>('../src/services/ffmpeg.js')
+  return {
+    ...actual,
+    generatePeaks: generatePeaksMock,
+  }
+})
 
 // Mock yt-dlp service to avoid actual YouTube calls
 vi.mock('../src/services/ytdlp.js', () => ({
@@ -32,6 +47,7 @@ describe('Tracks API', () => {
   beforeEach(async () => {
     // Clear module cache to get fresh imports
     vi.resetModules()
+    generatePeaksMock.mockReset()
 
     // Reset database
     resetDatabase()
@@ -577,6 +593,73 @@ describe('Tracks API', () => {
       expect(res.status).toBe(200)
       expect(Array.isArray(res.body)).toBe(true)
       expect(res.body).toEqual([0.5, 0.7, 0.3, 0.8, 0.4])
+    })
+
+    it('reads compact binary peaks caches', async () => {
+      const track = await createTestTrack(app, { status: 'ready' })
+      const db = await getAppDb()
+      const peaksPath = getTrackPeaksCachePath(TEST_DATA_DIR, track.youtubeId)
+
+      await writeTrackPeaksCache(peaksPath, [0, 0.5, 1])
+      db.prepare('UPDATE tracks SET peaks_path = ? WHERE id = ?').run(peaksPath, track.id)
+
+      const res = await request(app).get(`/api/tracks/${track.id}/peaks`)
+
+      expect(res.status).toBe(200)
+      expect(res.body).toHaveLength(3)
+      expect(res.body[0]).toBeCloseTo(0, 5)
+      expect(res.body[1]).toBeCloseTo(0.5, 1)
+      expect(res.body[2]).toBeCloseTo(1, 5)
+    })
+
+    it('migrates legacy JSON peaks caches to compact binary on read', async () => {
+      const track = await createTestTrackWithAudio(app)
+      const db = await getAppDb()
+
+      const res = await request(app).get(`/api/tracks/${track.id}/peaks`)
+
+      expect(res.status).toBe(200)
+
+      const row = db.prepare('SELECT peaks_path FROM tracks WHERE id = ?').get(track.id) as { peaks_path: string }
+      expect(row.peaks_path.endsWith('.peaks.bin')).toBe(true)
+      expect(fs.existsSync(row.peaks_path)).toBe(true)
+      expect(fs.existsSync(track.peaksPath)).toBe(false)
+    })
+
+    it('regenerates missing peaks caches into the compact format', async () => {
+      const track = await createTestTrackWithAudio(app)
+      const db = await getAppDb()
+
+      fs.unlinkSync(track.peaksPath)
+      generatePeaksMock.mockResolvedValueOnce([0.2, 0.4, 0.6])
+
+      const res = await request(app).get(`/api/tracks/${track.id}/peaks`)
+
+      expect(res.status).toBe(200)
+      expect(res.body).toEqual([0.2, 0.4, 0.6])
+      expect(generatePeaksMock).toHaveBeenCalledWith(track.audioPath, null, 800)
+
+      const row = db.prepare('SELECT peaks_path FROM tracks WHERE id = ?').get(track.id) as { peaks_path: string }
+      expect(row.peaks_path.endsWith('.peaks.bin')).toBe(true)
+      expect(fs.existsSync(row.peaks_path)).toBe(true)
+    })
+  })
+
+  describe('DELETE /api/tracks/:id', () => {
+    it('removes track peaks artifacts and prunes unrelated orphan peaks files', async () => {
+      const track = await createTestTrackWithAudio(app)
+      const binaryPath = getTrackPeaksCachePath(TEST_DATA_DIR, track.youtubeId)
+      const orphanPath = path.join(TEST_DATA_DIR, 'peaks', 'orphan.peaks.bin')
+
+      await writeTrackPeaksCache(binaryPath, [0.1, 0.2])
+      await writeTrackPeaksCache(orphanPath, [0.9])
+
+      const res = await request(app).delete(`/api/tracks/${track.id}`)
+
+      expect(res.status).toBe(200)
+      expect(fs.existsSync(track.peaksPath)).toBe(false)
+      expect(fs.existsSync(binaryPath)).toBe(false)
+      expect(fs.existsSync(orphanPath)).toBe(false)
     })
   })
 })

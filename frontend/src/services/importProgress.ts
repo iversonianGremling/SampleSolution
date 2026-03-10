@@ -10,6 +10,7 @@ export interface ImportProgressEntry {
   progressPercent: number
   uploadedBytes: number
   totalBytes: number | null
+  processingStartedAt: number | null
   successful: number | null
   failed: number | null
   startedAt: number
@@ -132,6 +133,7 @@ export function startImportProgress({
     progressPercent: sourceKind === 'folder' ? 8 : 4,
     uploadedBytes: 0,
     totalBytes: null,
+    processingStartedAt: null,
     successful: null,
     failed: null,
     startedAt: Date.now(),
@@ -153,6 +155,7 @@ export function startImportProgress({
           current.progressPercent = Math.max(current.progressPercent, Math.round(uploadRatio * 78))
           if (uploadRatio >= 1) {
             current.phase = 'processing'
+            current.processingStartedAt ??= Date.now()
             current.progressPercent = Math.max(current.progressPercent, 82)
           } else {
             current.phase = 'uploading'
@@ -167,6 +170,7 @@ export function startImportProgress({
     markProcessing: () => {
       updateEntry(id, (current) => {
         current.phase = 'processing'
+        current.processingStartedAt = Date.now()
         current.progressPercent = Math.max(current.progressPercent, 82)
       })
     },

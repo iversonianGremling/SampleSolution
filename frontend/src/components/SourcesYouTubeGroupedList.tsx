@@ -849,7 +849,7 @@ export function SourcesYouTubeGroupedList({
             >
               {/* Video header */}
               <div
-                className="sticky z-20 flex items-center gap-3 border-b border-surface-border bg-surface-raised p-3 transition-colors hover:bg-surface-base"
+                className="sticky z-20 flex items-center gap-3 border-b border-surface-border bg-surface-raised p-3 transition-colors hover:bg-surface-base group/videoheader"
                 style={{ top: columnHeaderHeight > 0 ? columnHeaderHeight : 32 }}
               >
                 <button
@@ -881,29 +881,32 @@ export function SourcesYouTubeGroupedList({
                   </div>
                 </button>
 
-                {/* Open sample cut editor for this video */}
-                {onEditTrack && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onEditTrack(group.trackId)
-                    }}
-                    className="p-1.5 flex-shrink-0 text-slate-400 hover:text-white hover:bg-surface-overlay rounded transition-colors"
-                    title="Open sample cut view"
-                  >
-                    <Scissors size={16} />
-                  </button>
-                )}
+                {/* Sticky right actions: scissors + checkbox */}
+                <div className="sticky right-3 flex items-center gap-2 flex-shrink-0 bg-surface-raised group-hover/videoheader:bg-surface-base transition-colors pl-2">
+                  {/* Open sample cut editor for this video */}
+                  {onEditTrack && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onEditTrack(group.trackId)
+                      }}
+                      className="p-1.5 flex-shrink-0 text-slate-400 hover:text-white hover:bg-surface-overlay rounded transition-colors"
+                      title="Open sample cut view"
+                    >
+                      <Scissors size={16} />
+                    </button>
+                  )}
 
-                {/* Select all checkbox for this video */}
-                {group.sliceCount > 0 && (
-                  <CustomCheckbox
-                    checked={allVideoSlicesSelected}
-                    indeterminate={someVideoSlicesSelected}
-                    onChange={handleVideoCheckboxChange}
-                    title={`Select all slices from ${group.trackTitle}`}
-                  />
-                )}
+                  {/* Select all checkbox for this video */}
+                  {group.sliceCount > 0 && (
+                    <CustomCheckbox
+                      checked={allVideoSlicesSelected}
+                      indeterminate={someVideoSlicesSelected}
+                      onChange={handleVideoCheckboxChange}
+                      title={`Select all slices from ${group.trackTitle}`}
+                    />
+                  )}
+                </div>
               </div>
 
               {/* Slices list */}

@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
 import { Play, Download, Trash2, X, Pencil, Check, Pause, ZapIcon, Hand, Wand2, Loader2 } from 'lucide-react'
-import { useQueryClient } from '@tanstack/react-query'
-import { getSliceDownloadUrl, batchReanalyzeSamples } from '../api/client'
+import { getSliceDownloadUrl } from '../api/client'
 import { useTags, useAddTagToSlice, useRemoveTagFromSlice, useCreateTag, useUpdateSlice } from '../hooks/useTracks'
 import { TagSearchInput } from './TagSearchInput'
 import type { Slice } from '../types'
+import { getAnalysisJobErrorMessage, useAnalysisJobControls } from '../hooks/useAnalysisJob'
+import { useToast } from '../contexts/ToastContext'
+import { formatAnalysisJobLabel } from '../utils/analysisPreferences'
 
 type PlayMode = 'toggle' | 'oneshot' | 'hold'
 
@@ -19,13 +21,14 @@ interface SliceListProps {
 }
 
 export function SliceList({ slices, trackId, playingSliceId, onTogglePlay, onOneShotPlay, onDelete, formatTime }: SliceListProps) {
+  const { showToast } = useToast()
   const [editingSliceId, setEditingSliceId] = useState<number | null>(null)
   const [editingName, setEditingName] = useState('')
   const [playMode, setPlayMode] = useState<PlayMode>('toggle')
   const [holdingSliceId, setHoldingSliceId] = useState<number | null>(null)
   const [analyzingSliceId, setAnalyzingSliceId] = useState<number | null>(null)
   const editInputRef = useRef<HTMLInputElement>(null)
-  const queryClient = useQueryClient()
+  const { startAnalysisJob } = useAnalysisJobControls()
   const updateSlice = useUpdateSlice(trackId)
   const { data: allTags } = useTags()
   const addTagToSlice = useAddTagToSlice()
@@ -105,12 +108,21 @@ export function SliceList({ slices, trackId, playingSliceId, onTogglePlay, onOne
   }
 
   const handleAnalyze = async (sliceId: number) => {
+    const slice = slices.find((candidate) => candidate.id === sliceId) || null
     try {
       setAnalyzingSliceId(sliceId)
-      await batchReanalyzeSamples([sliceId])
-      queryClient.invalidateQueries({ queryKey: ['slices', trackId] })
+      await startAnalysisJob({
+        sliceIds: [sliceId],
+        jobLabel: formatAnalysisJobLabel({
+          mode: 'single',
+          sampleName: slice?.name ?? null,
+        }),
+      })
     } catch (error) {
-      console.error('Failed to analyze slice:', error)
+      showToast({
+        kind: 'error',
+        message: getAnalysisJobErrorMessage(error, 'Failed to start slice analysis.'),
+      })
     } finally {
       setAnalyzingSliceId(null)
     }

@@ -1,14 +1,24 @@
-const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, session, Menu } = require('electron');
 const { spawn, execSync, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const appPackage = require('../package.json');
 const runtimeConfig = require('./runtime-config.json');
 
 let mainWindow;
 let splashWindow;
 let backendProcess = null;
 let _appIsQuitting = false;
+
+const APP_USER_MODEL_ID =
+  typeof appPackage?.build?.appId === 'string' && appPackage.build.appId.trim()
+    ? appPackage.build.appId.trim()
+    : appPackage?.name || 'sample-solution-frontend';
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId(APP_USER_MODEL_ID);
+}
 
 // ── Structured persistent log ──
 // Log file locations:
@@ -192,6 +202,26 @@ function getResourcePath(relativePath) {
     // Development
     return path.join(__dirname, '..', relativePath);
   }
+}
+
+function getAssetRoots() {
+  const projectRoot = path.join(__dirname, '..');
+  const distRoot = path.join(projectRoot, 'dist');
+  const publicRoot = path.join(projectRoot, 'public');
+  return app.isPackaged ? [distRoot, publicRoot] : [publicRoot, distRoot];
+}
+
+function resolveAppAsset(...relativeCandidates) {
+  const roots = getAssetRoots();
+  for (const relativePath of relativeCandidates) {
+    for (const root of roots) {
+      const candidate = path.join(root, relativePath);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
 }
 
 function isDevelopmentRuntime() {
@@ -602,21 +632,13 @@ async function startBackend() {
 }
 
 function resolveWindowIcon() {
-  // Windows prefers .ico, macOS uses .icns, Linux/fallback uses .png.
-  // We try the platform-specific variant first; if it doesn't exist we fall
-  // back to .png so the window always gets some icon rather than throwing.
-  const base = path.join(__dirname, '../public');
-  const candidates =
-    process.platform === 'win32'
-      ? [path.join(base, 'icon.ico'), path.join(base, 'icon.png')]
-      : process.platform === 'darwin'
-      ? [path.join(base, 'icon.icns'), path.join(base, 'icon.png')]
-      : [path.join(base, 'icon.png')];
-
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
+  if (process.platform === 'win32') {
+    return resolveAppAsset('icon.ico', 'SampleSolutionLogo.png', 'SampleSolutionLogo.transparent.png');
   }
-  return undefined; // No icon found — Electron will use its default
+  if (process.platform === 'darwin') {
+    return resolveAppAsset('icon.icns', 'SampleSolutionLogo.png', 'SampleSolutionLogo.transparent.png');
+  }
+  return resolveAppAsset('icon.png', 'SampleSolutionLogo.png', 'SampleSolutionLogo.transparent.png');
 }
 
 async function createWindow() {
@@ -631,6 +653,7 @@ async function createWindow() {
     minHeight: 600,
     show: false, // Don't show until backend is ready
     backgroundColor: '#1a1a1a',
+    autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -641,6 +664,7 @@ async function createWindow() {
   });
 
   const isDev = isDevelopmentRuntime();
+  mainWindow.removeMenu();
 
   if (isDev) {
     mainWindow.loadURL(getDevFrontendOrigin());
@@ -825,6 +849,7 @@ const SPLASH_QUOTES = [
 const _appStartMs = Date.now();
 
 app.whenReady().then(async () => {
+  Menu.setApplicationMenu(null);
   console.log('=== Sample Solution Starting ===');
   console.log('Chrome:', process.versions.chrome);
   console.log('Node:', process.versions.node);
@@ -848,7 +873,19 @@ app.whenReady().then(async () => {
     }
   });
 
-  splashWindow.loadFile(path.join(__dirname, '../public/splash/index.html'));
+  const splashHtmlPath = resolveAppAsset(path.join('splash', 'index.html'));
+  logInfo('startup', 'splash asset resolved to', splashHtmlPath || '(none)');
+  if (splashHtmlPath) {
+    splashWindow.loadFile(splashHtmlPath);
+  } else {
+    logError('startup', 'Splash asset missing, using minimal fallback splash');
+    splashWindow.loadURL(
+      'data:text/html;charset=utf-8,' +
+        encodeURIComponent(
+          '<!doctype html><html><body style="margin:0;display:grid;place-items:center;background:#101010;color:#f3f3f3;font:16px sans-serif;">Starting Sample Solution...</body></html>'
+        )
+    );
+  }
 
   splashWindow.once('ready-to-show', () => {
     splashWindow.show();

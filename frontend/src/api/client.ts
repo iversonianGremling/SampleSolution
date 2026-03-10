@@ -689,6 +689,7 @@ export type LocalImportSourceKind = ImportSourceKind
 
 export interface LocalImportProgressOptions {
   sourceKind?: LocalImportSourceKind
+  deferSampleAnalysis?: boolean
 }
 
 type LocalFileWithPath = File & {
@@ -724,6 +725,7 @@ export const importLocalFile = async (
   importType?: 'sample' | 'track',
   analysisLevel?: 'advanced',
   _allowAiTagging?: boolean,
+  options?: { deferSampleAnalysis?: boolean },
 ): Promise<LocalImportResult> => {
   const resolvedImportType = importType ?? 'sample'
   const localFile = file as LocalFileWithPath
@@ -731,6 +733,9 @@ export const importLocalFile = async (
   const params = new URLSearchParams()
   params.append('importType', resolvedImportType)
   if (analysisLevel) params.append('analysisLevel', analysisLevel)
+  if (options?.deferSampleAnalysis && resolvedImportType === 'sample') {
+    params.append('deferAnalysis', 'true')
+  }
   const url = `/import/file${params.toString() ? `?${params.toString()}` : ''}`
 
   if (referencePayload) {
@@ -769,6 +774,9 @@ export const importLocalFiles = async (
   const params = new URLSearchParams()
   params.append('importType', resolvedImportType)
   if (analysisLevel) params.append('analysisLevel', analysisLevel)
+  if (options?.deferSampleAnalysis && resolvedImportType === 'sample') {
+    params.append('deferAnalysis', 'true')
+  }
   const url = `/import/files${params.toString() ? `?${params.toString()}` : ''}`
   const referencePayload = resolveElectronReferenceImportPayload(files)
 
@@ -1247,8 +1255,15 @@ export interface BatchReanalyzeStatusSummary {
   audit: BatchReanalyzeResponse['audit']
 }
 
+export interface BatchReanalyzeCapabilities {
+  supportsConcurrencySelection: boolean
+  defaultConcurrency: number
+  maxConcurrency: number
+}
+
 export interface BatchReanalyzeStatusResponse {
   jobId: string | null
+  jobLabel: string | null
   status: BatchReanalyzeJobState
   stage: BatchReanalyzeStage
   isActive: boolean
@@ -1273,6 +1288,7 @@ export interface BatchReanalyzeStatusResponse {
   }
   audit: BatchReanalyzeResponse['audit']
   resultSummary: BatchReanalyzeStatusSummary | null
+  capabilities?: BatchReanalyzeCapabilities
 }
 
 export const batchReanalyzeSamples = (
@@ -1297,11 +1313,12 @@ export const startBatchReanalyzeSamples = (
   concurrency?: number,
   includeFilenameTags?: boolean,
   allowAiTagging?: boolean,
+  jobLabel?: string,
 ) =>
   api
     .post<{ started: boolean; status: BatchReanalyzeStatusResponse }>(
       '/slices/batch-reanalyze/start',
-      { sliceIds, analysisLevel, concurrency, includeFilenameTags, allowAiTagging },
+      { sliceIds, analysisLevel, concurrency, includeFilenameTags, allowAiTagging, jobLabel },
     )
     .then((r) => r.data)
 

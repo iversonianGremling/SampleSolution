@@ -3,16 +3,15 @@ import fs from 'fs/promises'
 import path from 'path'
 import { db, schema } from '../db/index.js'
 import { downloadAudio } from './ytdlp.js'
-import { generatePeaks, getAudioDuration } from './ffmpeg.js'
+import { getAudioDuration } from './ffmpeg.js'
+import { generateAndStoreTrackPeaks } from './peaks.js'
 
 const DATA_DIR = process.env.DATA_DIR || './data'
 
 export async function processTrack(videoId: string): Promise<void> {
   const audioDir = path.join(DATA_DIR, 'audio')
-  const peaksDir = path.join(DATA_DIR, 'peaks')
 
   await fs.mkdir(audioDir, { recursive: true })
-  await fs.mkdir(peaksDir, { recursive: true })
 
   try {
     // Update status to downloading
@@ -30,8 +29,7 @@ export async function processTrack(videoId: string): Promise<void> {
 
     // Generate peaks
     console.log(`Generating peaks for ${videoId}...`)
-    const peaksPath = path.join(peaksDir, `${videoId}.json`)
-    await generatePeaks(audioPath, peaksPath)
+    const peaksPath = await generateAndStoreTrackPeaks(audioPath, DATA_DIR, videoId)
 
     // Update track as ready
     await db

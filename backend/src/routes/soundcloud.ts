@@ -4,8 +4,9 @@ import path from 'path'
 import fs from 'fs/promises'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
-import { generatePeaks, getAudioDuration } from '../services/ffmpeg.js'
+import { getAudioDuration } from '../services/ffmpeg.js'
 import { ensureDownloadTool } from '../services/downloadTools.js'
+import { generateAndStoreTrackPeaks } from '../services/peaks.js'
 
 const router = Router()
 const DATA_DIR = process.env.DATA_DIR || './data'
@@ -188,9 +189,6 @@ router.post('/import', async (req, res) => {
 })
 
 async function processSoundCloudTrack(url: string, trackId: string, dbId: string) {
-  const peaksDir = path.join(DATA_DIR, 'peaks')
-  await fs.mkdir(peaksDir, { recursive: true })
-
   try {
     await db
       .update(schema.tracks)
@@ -200,8 +198,7 @@ async function processSoundCloudTrack(url: string, trackId: string, dbId: string
     const audioPath = await downloadSoundCloudTrack(url, trackId)
     const duration = await getAudioDuration(audioPath)
 
-    const peaksPath = path.join(peaksDir, `${dbId}.json`)
-    await generatePeaks(audioPath, peaksPath)
+    const peaksPath = await generateAndStoreTrackPeaks(audioPath, DATA_DIR, dbId)
 
     await db
       .update(schema.tracks)
