@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import 'pixi.js/unsafe-eval'
 import * as PIXI from 'pixi.js'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, Plus, Minus } from 'lucide-react'
 import type { SamplePoint } from '../types'
 import { getClusterColor } from '../hooks/useClustering'
 import AudioManager from '../services/AudioManager'
@@ -264,9 +264,25 @@ export function WebGLScatter({
   const initialWidthRef = useRef(width)
   const initialHeightRef = useRef(height)
 
+  // Zoom/pan state (using refs to avoid re-render on every mouse event)
+  const zoomRef = useRef(1)
+  const panRef = useRef({ x: 0, y: 0 })
+  const isPanningRef = useRef(false)
+  const hasPannedRef = useRef(false)
+  const panStartRef = useRef({ x: 0, y: 0 })
+  const panStartOffsetRef = useRef({ x: 0, y: 0 })
+  const zoomAnimRef = useRef<number | null>(null)
+  const actualContainerSizeRef = useRef({ width, height })
+  const [displayZoom, setDisplayZoom] = useState(1)
+
   // Dirty tracking for optimization - never overdraw
   const previousHoverRef = useRef<number | null>(null)
   const previousSelectionRef = useRef<Set<number>>(new Set())
+
+  // Keep container size ref in sync for use in callbacks without stale closure issues
+  useEffect(() => {
+    actualContainerSizeRef.current = actualContainerSize
+  }, [actualContainerSize])
 
   // Transform coordinates from -1..1 to screen space using full available panel area.
   // Keep edge padding so points never touch container borders.
@@ -303,6 +319,66 @@ export function WebGLScatter({
     setResizeCounter((prev) => prev + 1)
     app.render()
   }, [])
+
+  // Apply zoom/pan transform to the PIXI points container (no React re-render needed)
+  const applyContainerTransform = useCallback(() => {
+    const container = pointsContainerRef.current
+    if (!container) return
+    container.scale.set(zoomRef.current)
+    container.position.set(panRef.current.x, panRef.current.y)
+    // Large hit area covers full canvas regardless of pan/zoom (local space)
+    container.hitArea = new PIXI.Rectangle(-100000, -100000, 200000, 200000)
+    appRef.current?.render()
+  }, [])
+
+  // Smooth animated zoom towards a pivot point (default: canvas center)
+  const animateZoomTo = useCallback(
+    (targetZoom: number, pivotX?: number, pivotY?: number) => {
+      if (zoomAnimRef.current) {
+        cancelAnimationFrame(zoomAnimRef.current)
+        zoomAnimRef.current = null
+      }
+
+      const clampedTarget = Math.max(0.2, Math.min(8, targetZoom))
+      const startZoom = zoomRef.current
+      const startPan = { ...panRef.current }
+      const startTime = performance.now()
+      const duration = 220
+
+      const cx = pivotX ?? actualContainerSizeRef.current.width / 2
+      const cy = pivotY ?? actualContainerSizeRef.current.height / 2
+
+      // Target pan keeps the pivot point fixed on screen
+      const scale = clampedTarget / startZoom
+      const targetPan = {
+        x: cx - (cx - startPan.x) * scale,
+        y: cy - (cy - startPan.y) * scale,
+      }
+
+      const animate = (now: number) => {
+        const progress = Math.min((now - startTime) / duration, 1)
+        const eased = easeOutCubic(progress)
+
+        zoomRef.current = startZoom + (clampedTarget - startZoom) * eased
+        panRef.current = {
+          x: startPan.x + (targetPan.x - startPan.x) * eased,
+          y: startPan.y + (targetPan.y - startPan.y) * eased,
+        }
+
+        applyContainerTransform()
+        setDisplayZoom(zoomRef.current)
+
+        if (progress < 1) {
+          zoomAnimRef.current = requestAnimationFrame(animate)
+        } else {
+          zoomAnimRef.current = null
+        }
+      }
+
+      zoomAnimRef.current = requestAnimationFrame(animate)
+    },
+    [applyContainerTransform]
+  )
 
   // Initialize PIXI application
   useEffect(() => {
@@ -387,6 +463,9 @@ export function WebGLScatter({
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current)
       }
+      if (zoomAnimRef.current) {
+        cancelAnimationFrame(zoomAnimRef.current)
+      }
       animationStateRef.current.clear()
       pointSpritesRef.current.clear()
       previousPointsRef.current = []
@@ -446,6 +525,110 @@ export function WebGLScatter({
       }
     }
   }, [resizeRenderer])
+
+  // DOM event listeners for wheel zoom and drag-to-pan
+  useEffect(() => {
+    if (appReadyVersion === 0) return
+    const canvasEl = containerRef.current?.querySelector('canvas') as HTMLCanvasElement | null
+    if (!canvasEl) return
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault()
+
+      // Cancel any running button-zoom animation
+      if (zoomAnimRef.current) {
+        cancelAnimationFrame(zoomAnimRef.current)
+        zoomAnimRef.current = null
+      }
+
+      const rect = canvasEl.getBoundingClientRect()
+      const mouseX = e.clientX - rect.left
+      const mouseY = e.clientY - rect.top
+
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1
+      const newZoom = Math.max(0.2, Math.min(8, zoomRef.current * factor))
+
+      // Zoom around mouse cursor position
+      panRef.current = {
+        x: mouseX - (mouseX - panRef.current.x) * (newZoom / zoomRef.current),
+        y: mouseY - (mouseY - panRef.current.y) * (newZoom / zoomRef.current),
+      }
+      zoomRef.current = newZoom
+      setDisplayZoom(newZoom)
+      applyContainerTransform()
+    }
+
+    const handleMouseDown = (e: MouseEvent) => {
+      hasPannedRef.current = false
+
+      if (e.button === 1) {
+        // Middle click: always pan
+        e.preventDefault()
+        isPanningRef.current = true
+        panStartRef.current = { x: e.clientX, y: e.clientY }
+        panStartOffsetRef.current = { ...panRef.current }
+        canvasEl.style.cursor = 'grabbing'
+        return
+      }
+
+      if (e.button === 0) {
+        // Left click: pan only if not over a point
+        const rect = canvasEl.getBoundingClientRect()
+        const mouseX = e.clientX - rect.left
+        const mouseY = e.clientY - rect.top
+        const localX = (mouseX - panRef.current.x) / zoomRef.current
+        const localY = (mouseY - panRef.current.y) / zoomRef.current
+
+        let overPoint = false
+        pointSpritesRef.current.forEach((data) => {
+          if (overPoint) return
+          const dx = localX - data.screenX
+          const dy = localY - data.screenY
+          if (Math.sqrt(dx * dx + dy * dy) <= data.currentRadius + 3) {
+            overPoint = true
+          }
+        })
+
+        if (!overPoint) {
+          isPanningRef.current = true
+          panStartRef.current = { x: e.clientX, y: e.clientY }
+          panStartOffsetRef.current = { ...panRef.current }
+          canvasEl.style.cursor = 'grabbing'
+        }
+      }
+    }
+
+    const handleMouseMoveForPan = (e: MouseEvent) => {
+      if (!isPanningRef.current) return
+      hasPannedRef.current = true
+      const dx = e.clientX - panStartRef.current.x
+      const dy = e.clientY - panStartRef.current.y
+      panRef.current = {
+        x: panStartOffsetRef.current.x + dx,
+        y: panStartOffsetRef.current.y + dy,
+      }
+      applyContainerTransform()
+    }
+
+    const handleMouseUp = () => {
+      if (isPanningRef.current) {
+        isPanningRef.current = false
+        canvasEl.style.cursor = ''
+      }
+    }
+
+    canvasEl.addEventListener('wheel', handleWheel, { passive: false })
+    canvasEl.addEventListener('mousedown', handleMouseDown)
+    window.addEventListener('mousemove', handleMouseMoveForPan)
+    window.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      canvasEl.removeEventListener('wheel', handleWheel)
+      canvasEl.removeEventListener('mousedown', handleMouseDown)
+      window.removeEventListener('mousemove', handleMouseMoveForPan)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [appReadyVersion, applyContainerTransform])
 
   // Check if cursor is over a menu element
   const isOverMenu = useCallback((): boolean => {
@@ -803,7 +986,8 @@ export function WebGLScatter({
     if (!container) return
 
     container.eventMode = 'static'
-    container.hitArea = new PIXI.Rectangle(0, 0, actualContainerSize.width, actualContainerSize.height)
+    // Use a large hit area to cover all zoom/pan positions in local container space
+    container.hitArea = new PIXI.Rectangle(-100000, -100000, 200000, 200000)
 
     let currentHoveredId: number | null = null
 
@@ -819,9 +1003,9 @@ export function WebGLScatter({
         return
       }
 
-      // Get mouse position in canvas space (already accounts for DPR)
-      const mouseX = event.global.x
-      const mouseY = event.global.y
+      // Convert from stage space to container-local space (accounting for zoom/pan)
+      const mouseX = (event.global.x - panRef.current.x) / zoomRef.current
+      const mouseY = (event.global.y - panRef.current.y) / zoomRef.current
 
       let closestPointId: number | null = null
       let closestDistance = Infinity
@@ -858,6 +1042,8 @@ export function WebGLScatter({
     }
 
     const handlePointerTap = () => {
+      // Don't fire click if the user was panning (dragged background)
+      if (hasPannedRef.current) return
       if (currentHoveredId !== null) {
         hoverPlaybackRequestRef.current += 1
         const data = pointSpritesRef.current.get(currentHoveredId)
@@ -948,6 +1134,10 @@ export function WebGLScatter({
       cancelAnimationFrame(animationRef.current)
       animationRef.current = null
     }
+    if (zoomAnimRef.current) {
+      cancelAnimationFrame(zoomAnimRef.current)
+      zoomAnimRef.current = null
+    }
 
     // Clear animation state
     animationStateRef.current.clear()
@@ -962,9 +1152,15 @@ export function WebGLScatter({
     // Reset previous points so everything is treated as new
     previousPointsRef.current = []
 
+    // Reset zoom/pan
+    zoomRef.current = 1
+    panRef.current = { x: 0, y: 0 }
+    setDisplayZoom(1)
+    applyContainerTransform()
+
     // Trigger re-render
     setRefreshCounter((prev) => prev + 1)
-  }, [])
+  }, [applyContainerTransform])
 
   return (
     <div
@@ -972,13 +1168,46 @@ export function WebGLScatter({
       className="relative rounded-lg overflow-hidden w-full h-full"
       onContextMenu={(e) => e.preventDefault()}
     >
-      <button
-        onClick={handleRefresh}
-        className="sample-space-refresh-btn absolute top-2 left-2 z-10 inline-flex items-center justify-center rounded-md border border-surface-border bg-surface-raised/85 p-1 text-slate-400 hover:text-slate-200 hover:bg-surface-overlay transition-colors"
-        title="Refresh"
+      {/* Top-left controls: refresh + zoom */}
+      <div className="panel-surface absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto"
+        onMouseMove={(e) => e.stopPropagation()}
+        onPointerMove={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
       >
-        <RefreshCw size={16} />
-      </button>
+        <button
+          onClick={handleRefresh}
+          className="sample-space-refresh-btn inline-flex items-center justify-center rounded-md border border-surface-border bg-surface-raised/85 p-1 text-slate-400 hover:text-slate-200 hover:bg-surface-overlay transition-colors"
+          title="Refresh"
+        >
+          <RefreshCw size={16} />
+        </button>
+
+        {/* Zoom control widget */}
+        <div className="flex flex-col items-center rounded-md border border-surface-border bg-surface-raised/85 overflow-hidden">
+          <button
+            className="w-full inline-flex items-center justify-center p-1 text-slate-400 hover:text-slate-200 hover:bg-surface-overlay transition-colors"
+            onClick={() => animateZoomTo(zoomRef.current * 1.3)}
+            title="Zoom in"
+          >
+            <Plus size={14} />
+          </button>
+          <div
+            className="w-full text-center px-1 py-0.5 text-[10px] text-slate-500 font-mono cursor-pointer hover:text-slate-300 transition-colors border-y border-surface-border select-none"
+            onClick={() => animateZoomTo(1)}
+            title="Reset zoom"
+          >
+            {Math.round(displayZoom * 100)}%
+          </div>
+          <button
+            className="w-full inline-flex items-center justify-center p-1 text-slate-400 hover:text-slate-200 hover:bg-surface-overlay transition-colors"
+            onClick={() => animateZoomTo(zoomRef.current / 1.3)}
+            title="Zoom out"
+          >
+            <Minus size={14} />
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

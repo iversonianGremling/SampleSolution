@@ -823,6 +823,7 @@ export const importFolder = (
   importType?: 'sample' | 'track',
   _analysisLevel?: 'advanced',
   _allowAiTagging?: boolean,
+  analysisConcurrency?: number,
 ): Promise<FolderImportJobResponse> => {
   const resolvedImportType = importType ?? 'sample'
 
@@ -830,6 +831,7 @@ export const importFolder = (
     .post<FolderImportJobResponse>('/import/folder', {
       folderPath,
       importType: resolvedImportType,
+      analysisConcurrency,
     })
     .then((r) => r.data)
 }

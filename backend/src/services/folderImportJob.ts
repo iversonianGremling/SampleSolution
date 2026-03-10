@@ -31,6 +31,11 @@ const TRACK_IMPORT_FILENAME_TAG_LIMIT = Math.max(
 
 const CHUNK_SIZE = 100
 const DISCOVERY_UPDATE_INTERVAL = 500
+export const IMPORT_ANALYSIS_MAX_CONCURRENCY = 10
+const analysisConcurrency_DEFAULT = Math.min(
+  IMPORT_ANALYSIS_MAX_CONCURRENCY,
+  Math.max(1, parseInt(process.env.AUDIO_ANALYSIS_MAX_CONCURRENT ?? '2', 10) || 2)
+)
 
 /** In-memory map of active jobs for cancellation signaling */
 const activeJobs = new Map<string, { cancelled: boolean }>()
@@ -381,6 +386,7 @@ export function startFolderImportJob(
   folderPath: string,
   importType: 'sample' | 'track',
   resumeFromPath?: string | null,
+  analysisConcurrency?: number | null,
 ): string {
   const jobId = uuidv4()
   const now = Date.now()
@@ -406,8 +412,13 @@ export function startFolderImportJob(
   const signal = { cancelled: false }
   activeJobs.set(jobId, signal)
 
+  const resolvedConcurrency = Math.min(
+    IMPORT_ANALYSIS_MAX_CONCURRENCY,
+    Math.max(1, analysisConcurrency ?? analysisConcurrency_DEFAULT)
+  )
+
   // Run async — don't await
-  runImportJob(jobId, folderPath, importType, signal, resumeFromPath ?? null)
+  runImportJob(jobId, folderPath, importType, signal, resumeFromPath ?? null, resolvedConcurrency)
     .catch((err) => {
       console.error(`[importJob] Fatal error in job ${jobId}:`, err)
       updateJobRow(jobId, {
@@ -428,6 +439,7 @@ async function runImportJob(
   importType: 'sample' | 'track',
   signal: { cancelled: boolean },
   resumeFromPath: string | null,
+  analysisConcurrency: number,
 ): Promise<void> {
   const folderRootPath = path.resolve(folderPath)
 
@@ -521,26 +533,49 @@ async function runImportJob(
     }
   }
 
-  // Phase 3: ANALYSIS — process queued analysis tasks serially
+  // Phase 3: ANALYSIS — process queued analysis tasks with bounded concurrency
   if (analysisQueue.length > 0) {
     updateJobRow(jobId, { phase: 'analyzing' })
-    console.log(`[importJob] ${jobId} Starting analysis of ${analysisQueue.length} files`)
+    console.log(
+      `[importJob] ${jobId} Starting analysis of ${analysisQueue.length} files` +
+      ` (concurrency: ${analysisConcurrency})`
+    )
 
     let analyzedCount = 0
-    for (const { sliceId, slicePath } of analysisQueue) {
+    const queue = [...analysisQueue]
+    const active = new Set<Promise<void>>()
+
+    const startNext = (): void => {
+      if (signal.cancelled || queue.length === 0) return
+      const { sliceId, slicePath } = queue.shift()!
+      const promise: Promise<void> = autoTagSlice(sliceId, slicePath)
+        .catch((err) => {
+          console.error(`[importJob] ${jobId} Analysis failed for slice ${sliceId}:`, err)
+        })
+        .finally(() => {
+          active.delete(promise)
+          analyzedCount++
+          updateJobRow(jobId, { analyzedCount })
+        })
+      active.add(promise)
+    }
+
+    // Fill initial slots
+    while (active.size < analysisConcurrency && queue.length > 0) {
+      startNext()
+    }
+
+    while (active.size > 0) {
       if (signal.cancelled) {
         updateJobRow(jobId, { phase: 'cancelled', analyzedCount })
         console.log(`[importJob] ${jobId} Cancelled during analysis`)
         return
       }
-
-      try {
-        await autoTagSlice(sliceId, slicePath)
-      } catch (err) {
-        console.error(`[importJob] ${jobId} Analysis failed for slice ${sliceId}:`, err)
+      await Promise.race(active)
+      // Refill slots after each completion
+      while (active.size < analysisConcurrency && queue.length > 0 && !signal.cancelled) {
+        startNext()
       }
-      analyzedCount++
-      updateJobRow(jobId, { analyzedCount })
     }
   }
 

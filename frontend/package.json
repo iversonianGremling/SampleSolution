@@ -1,7 +1,7 @@
 {
   "name": "sample-solution-frontend",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "main": "electron/main.cjs",
   "homepage": "https://github.com/iversonianGremling/SampleSolution",

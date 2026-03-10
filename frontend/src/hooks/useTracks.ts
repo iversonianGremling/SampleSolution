@@ -658,11 +658,13 @@ export function useImportFolder() {
       folderPath,
       importType,
       allowAiTagging,
+      analysisConcurrency,
     }: {
       folderPath: string
       importType?: 'sample' | 'track'
       allowAiTagging?: boolean
-    }) => api.importFolder(folderPath, importType, undefined, allowAiTagging),
+      analysisConcurrency?: number
+    }) => api.importFolder(folderPath, importType, undefined, allowAiTagging, analysisConcurrency),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['importJobs'] })
       queryClient.invalidateQueries({ queryKey: ['tracks'] })

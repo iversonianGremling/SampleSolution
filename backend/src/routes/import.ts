@@ -942,9 +942,10 @@ router.post('/import/files', upload.array('files'), async (req, res) => {
 
 // Import from folder path (server-side) — async chunked job
 router.post('/import/folder', async (req, res) => {
-  const { folderPath } = req.body as {
+  const { folderPath, analysisConcurrency } = req.body as {
     folderPath: string
     importType?: 'sample' | 'track'
+    analysisConcurrency?: number
   }
   const importType = resolveImportType(req.body?.importType)
   logIgnoredAllowAiTagging(req.body?.allowAiTagging, '/import/folder')
@@ -959,7 +960,7 @@ router.post('/import/folder', async (req, res) => {
       return res.status(400).json({ error: 'Path is not a directory' })
     }
 
-    const jobId = startFolderImportJob(path.resolve(folderPath), importType)
+    const jobId = startFolderImportJob(path.resolve(folderPath), importType, null, analysisConcurrency)
     res.status(202).json({ jobId })
   } catch (error) {
     console.error('Error starting folder import:', error)
