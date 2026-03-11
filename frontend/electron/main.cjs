@@ -633,12 +633,12 @@ async function startBackend() {
 
 function resolveWindowIcon() {
   if (process.platform === 'win32') {
-    return resolveAppAsset('icon.ico', 'SampleSolutionLogo.png', 'SampleSolutionLogo.transparent.png');
+    return resolveAppAsset('icon.ico', 'SampleSolutionIcon.png');
   }
   if (process.platform === 'darwin') {
-    return resolveAppAsset('icon.icns', 'SampleSolutionLogo.png', 'SampleSolutionLogo.transparent.png');
+    return resolveAppAsset('icon.icns', 'SampleSolutionIcon.png');
   }
-  return resolveAppAsset('icon.png', 'SampleSolutionLogo.png', 'SampleSolutionLogo.transparent.png');
+  return resolveAppAsset('icon.png', 'SampleSolutionIcon.png');
 }
 
 async function createWindow() {

@@ -54,7 +54,7 @@
       "output": "release"
     },
     "linux": {
-      "icon": "public/SampleSolutionLogo.png",
+      "icon": "public/SampleSolutionIcon.png",
       "target": [
         "AppImage",
         "deb"
@@ -64,7 +64,7 @@
       "maintainer": "Sample Solution Team <contact@sample-solution.local>"
     },
     "win": {
-      "icon": "public/SampleSolutionLogo.png",
+      "icon": "public/SampleSolutionIcon.png",
       "target": [
         {
           "target": "nsis",
@@ -81,7 +81,7 @@
       ]
     },
     "mac": {
-      "icon": "public/SampleSolutionLogo.png",
+      "icon": "public/SampleSolutionIcon.png",
       "target": [
         "dmg",
         "zip"
