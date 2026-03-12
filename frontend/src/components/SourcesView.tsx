@@ -3822,7 +3822,7 @@ export function SourcesView({
                   <div className="flex flex-col gap-10 lg:flex-row lg:items-center lg:gap-14">
                     <div className="flex flex-1 justify-center lg:basis-[42%] lg:justify-center">
                       <img
-                        src="/SampleSolutionLogo.transparent.png"
+                        src={`${import.meta.env.BASE_URL}SampleSolutionLogo.transparent.png`}
                         alt="Sample Solution logo"
                         className="h-36 w-auto max-w-full object-contain opacity-90 drop-shadow-[0_18px_44px_rgba(0,0,0,0.42)] sm:h-44 lg:h-52"
                       />
