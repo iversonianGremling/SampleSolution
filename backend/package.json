@@ -34,7 +34,7 @@
     "@types/node": "^20.11.5",
     "@types/supertest": "^6.0.2",
     "@types/uuid": "^9.0.7",
-    "drizzle-kit": "^0.20.13",
+    "drizzle-kit": "^0.31.9",
     "supertest": "^6.3.4",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3",
