@@ -25,6 +25,7 @@
   "build": {
     "appId": "com.sample-solution.app",
     "productName": "Sample Solution",
+    "afterPack": "scripts/after-pack-macos.cjs",
     "files": [
       "dist/**/*",
       "electron/**/*.cjs",
@@ -87,7 +88,9 @@
         "zip"
       ],
       "artifactName": "sample-solution-${version}-${arch}-mac.${ext}",
-      "category": "public.app-category.music"
+      "category": "public.app-category.music",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
     },
     "nsis": {
       "oneClick": false,

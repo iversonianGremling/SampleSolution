@@ -634,6 +634,13 @@ jobs:
             echo "### macOS"
           } >> "$notes_file"
           append_links_for_patterns "release-assets/*-mac.dmg" "release-assets/*-mac.zip"
+          {
+            echo ""
+            echo "> **First launch:** builds are ad-hoc signed but not notarized, so macOS quarantines the download and may show \"Sample Solution is damaged and can't be opened.\" After moving the app to \`/Applications\`, clear the quarantine flag once:"
+            echo '> ```bash'
+            echo '> xattr -dr com.apple.quarantine "/Applications/Sample Solution.app"'
+            echo '> ```'
+          } >> "$notes_file"
           echo "" >> "$notes_file"
 
           {

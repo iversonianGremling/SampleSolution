@@ -98,6 +98,13 @@ These notes are minimal and low-scope.
 
 - **Release/Electron users**
   - If Electron dev fails to start, clear Vite cache in `frontend/node_modules/.vite` and retry. Just delete whatever is on that folder.
+- **macOS users — "Sample Solution is damaged and can't be opened"**
+  - This is macOS Gatekeeper, not a corrupt download. Releases are ad-hoc signed but not notarized (the project has no paid Apple Developer ID), so the download gets quarantined.
+  - Fix it once, after moving the app to `/Applications`, by removing the quarantine flag:
+    ```bash
+    xattr -dr com.apple.quarantine "/Applications/Sample Solution.app"
+    ```
+  - Then open it normally. (Right-click → Open also works on some macOS versions once quarantine is cleared.)
 - **Docker users**
   - If ports are busy run on the terminal: `fuser -k 3000/tcp` and `fuser -k 4000/tcp`
   - If OAuth features fail, verify backend env values for provider credentials and callback URLs.
