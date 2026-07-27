@@ -94,7 +94,7 @@ A practical audio sample management and analysis platform for music producers an
 
 ## Troubleshooting (Very Limited)
 
-These notes are minimal and low-scope.
+These notes are minimal and low-scope. For anything not covered here, ask in [Q&A Discussions](https://github.com/iversonianGremling/SampleSolution/discussions/categories/q-a).
 
 - **Release/Electron users**
   - If Electron dev fails to start, clear Vite cache in `frontend/node_modules/.vite` and retry. Just delete whatever is on that folder.
